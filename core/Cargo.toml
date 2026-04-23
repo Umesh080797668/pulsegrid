@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "core-engine",
+    "core-vm",
+    "core-connectors",
+    "core-vault",
+    "core-ai",
+    "core-cli",
+    "core-proto"
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,0 +1,11 @@
+[package]
+name = "core-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8.9"
+redis = { version = "0.27", features = ["streams", "tokio-comp", "aio"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.52.1", features = ["full"] }
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
