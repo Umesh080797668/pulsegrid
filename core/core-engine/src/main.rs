@@ -4,6 +4,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
+mod models;
+use models::PulseEvent;
+
 #[tokio::main]
 async fn main() {
     println!("Starting PulseCore Engine...");
@@ -68,7 +71,18 @@ async fn start_event_listener() {
                         // Grab the actual event payload (we assume it's stored under a 'payload' field)
                         if let Some(redis::Value::BulkString(data)) = node.map.get("payload") {
                             let payload_str = String::from_utf8_lossy(data);
-                            println!("🔥 Received PulseEvent (ID: {}): {}", last_id, payload_str);
+                            
+                            // Try parsing into our structural PulseEvent model
+                            match serde_json::from_str::<PulseEvent>(&payload_str) {
+                                Ok(event) => {
+                                    println!("🔥 Received PulseEvent (ID: {}): Parsed Event: {:?}", last_id, event);
+                                    // TODO: Send to Rule VM / Action Executor
+                                }
+                                Err(err) => {
+                                    println!("⚠️ Raw message received (ID: {}). Parsing to PulseEvent failed: {}", last_id, err);
+                                    println!("   Raw Data: {}", payload_str);
+                                }
+                            }
                         }
                     }
                 }
