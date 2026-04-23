@@ -3,6 +3,7 @@ use redis::{streams::{StreamReadOptions, StreamReadReply}, AsyncCommands};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use sqlx::postgres::PgPoolOptions;
 
 mod models;
 use models::PulseEvent;
@@ -10,6 +11,17 @@ use models::PulseEvent;
 #[tokio::main]
 async fn main() {
     println!("Starting PulseCore Engine...");
+    dotenvy::dotenv().ok(); // Load environment variables from .env
+
+    // Setup PostgreSQL connection pool
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to Postgres");
+
+    println!("Connected to PostgreSQL databases!");
 
     // Build the Axum application
     let app = Router::new().route("/health", get(|| async { "OK" }));
@@ -19,8 +31,9 @@ async fn main() {
     println!("Listening on http://{}", addr);
 
     // Spawn our background worker for Redis Streams Event Bus
+    let pool_clone = pool.clone();
     tokio::spawn(async move {
-        start_event_listener().await;
+        start_event_listener(pool_clone).await;
     });
 
     let listener = TcpListener::bind(&addr).await.unwrap();
@@ -28,7 +41,7 @@ async fn main() {
 }
 
 /// Connects to Redis and indefinitely reads from the Real-Time Event Stream
-async fn start_event_listener() {
+async fn start_event_listener(pg_pool: sqlx::PgPool) {
     let redis_url = "redis://127.0.0.1:6379/";
     let client = match redis::Client::open(redis_url) {
         Ok(c) => c,
@@ -76,7 +89,24 @@ async fn start_event_listener() {
                             match serde_json::from_str::<PulseEvent>(&payload_str) {
                                 Ok(event) => {
                                     println!("🔥 Received PulseEvent (ID: {}): Parsed Event: {:?}", last_id, event);
-                                    // TODO: Send to Rule VM / Action Executor
+                                    
+                                    // Send to Postgres to track event/log run details properly
+                                    let insert_result = sqlx::query!(
+                                        r#"
+                                        INSERT INTO flow_runs (workspace_id, status, trigger_event_id, started_at) 
+                                        VALUES ($1, $2, $3, NOW())
+                                        "#,
+                                        event.tenant_id as _,
+                                        "running",
+                                        event.id as _
+                                    )
+                                    .execute(&pg_pool)
+                                    .await;
+
+                                    match insert_result {
+                                        Ok(_) => println!("   ✅ Logged flow_run securely in Postgres!"),
+                                        Err(e) => eprintln!("   ❌ Error saving to Postgres: {}", e),
+                                    }
                                 }
                                 Err(err) => {
                                     println!("⚠️ Raw message received (ID: {}). Parsing to PulseEvent failed: {}", last_id, err);
