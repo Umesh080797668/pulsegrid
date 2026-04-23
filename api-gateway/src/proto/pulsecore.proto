@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package pulsecore;
+
+service PulseCoreService {
+  rpc TriggerFlow (TriggerFlowRequest) returns (TriggerFlowResponse);
+}
+
+message TriggerFlowRequest {
+  string workspace_id = 1;
+  string flow_id = 2;
+  string payload_json = 3;
+}
+
+message TriggerFlowResponse {
+  bool success = 1;
+  string run_id = 2;
+  string message = 3;
+}

@@ -4,9 +4,13 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
+use core_vm::{CoreVm, Pipeline, Step};
 
 mod models;
+mod grpc;
 use models::PulseEvent;
+use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
+use grpc::MyPulseCoreService;
 
 #[tokio::main]
 async fn main() {
@@ -34,6 +38,19 @@ async fn main() {
     let pool_clone = pool.clone();
     tokio::spawn(async move {
         start_event_listener(pool_clone).await;
+    });
+
+    // Start gRPC server
+    let grpc_addr = "127.0.0.1:50051".parse().unwrap();
+    let grpc_pool = pool.clone();
+    let service = MyPulseCoreService::new(grpc_pool);
+    println!("🚀 Starting gRPC server on {}", grpc_addr);
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(PulseCoreServiceServer::new(service))
+            .serve(grpc_addr)
+            .await
+            .unwrap();
     });
 
     let listener = TcpListener::bind(&addr).await.unwrap();
@@ -106,6 +123,47 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                     match insert_result {
                                         Ok(_) => println!("   ✅ Logged flow_run securely in Postgres!"),
                                         Err(e) => eprintln!("   ❌ Error saving to Postgres: {}", e),
+                                    }
+
+                                    // Let's create a stub Pipeline to test core-vm
+                                    let mut pipeline_context = rhai::Map::new();
+                                    pipeline_context.insert("event_id".into(), rhai::Dynamic::from(event.id.clone()));
+                                    pipeline_context.insert("event_type".into(), rhai::Dynamic::from(event.event_type.clone()));
+                                    
+                                    let dummy_pipeline = Pipeline {
+                                        id: "pipe-1".into(),
+                                        name: "Demo Execution".into(),
+                                        steps: vec![
+                                            Step {
+                                                id: "step-1".into(),
+                                                kind: "script".into(),
+                                                code: Some(r#"
+                                                    print("🚀 Running Javascript-like (Rhai) snippet for Event: " + ctx.event_type);
+                                                    ctx.status = "processed";
+                                                    ctx.processing_time_ms = 42;
+                                                    ctx.output_msg = "Hello from PulseGrid core-vm!";
+                                                "#.into()),
+                                            },
+                                            Step {
+                                                id: "step-2".into(),
+                                                kind: "http".into(), // Emulating an external connector step
+                                                code: None,
+                                            }
+                                        ]
+                                    };
+
+                                    println!("   ⚡ Passing payload to Core VM...");
+                                    let vm = CoreVm::new();
+                                    match vm.execute_pipeline(&dummy_pipeline, pipeline_context) {
+                                        Ok(result_ctx) => {
+                                            println!("   🌟 VM Check OK. Output Context:");
+                                            println!("      -> {:?}", result_ctx);
+                                            
+                                            // TODO: Then update flow_run to success if we captured the result
+                                        },
+                                        Err(e) => {
+                                            eprintln!("   ❌ VM Pipeline failed: {:?}", e);
+                                        }
                                     }
                                 }
                                 Err(err) => {
