@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
 use core_vm::{CoreVm, Pipeline, Step};
+use core_connectors::{Connectors, HttpConfig};
+use core_vault::Vault;
 
 mod models;
 mod grpc;
@@ -159,7 +161,36 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                             println!("   🌟 VM Check OK. Output Context:");
                                             println!("      -> {:?}", result_ctx);
                                             
-                                            // TODO: Then update flow_run to success if we captured the result
+                                            // Execute connectors part
+                                            println!("   🔌 Executing Connectors...");
+                                            let connectors = Connectors::new();
+                                            let config = HttpConfig {
+                                                url: "https://httpbin.org/get".into(),
+                                                method: "GET".into(),
+                                                json_body: None,
+                                                headers: None,
+                                            };
+                                            match connectors.execute_http(&config).await {
+                                                Ok(val) => println!("   ✅ HTTP Connector Response: {}", val),
+                                                Err(e) => eprintln!("   ❌ HTTP Connector Error: {:?}", e),
+                                            }
+
+                                            // Vault check
+                                            let vault = Vault::new("my-master-password!");
+                                            let plain = "my-secret-api-key";
+                                            if let Ok(encrypted) = vault.encrypt(plain) {
+                                                println!("   🔒 Vault Encrypted: {}", encrypted);
+                                                if let Ok(decrypted) = vault.decrypt(&encrypted) {
+                                                    println!("   🔓 Vault Decrypted matches: {}", decrypted == plain);
+                                                }
+                                            }
+
+                                            // Then update flow_run to success
+                                            let _ = sqlx::query!(
+                                                r#"UPDATE flow_runs SET status = $1, completed_at = NOW() WHERE trigger_event_id = $2"#,
+                                                "success",
+                                                event.id as _
+                                            ).execute(&pg_pool).await;
                                         },
                                         Err(e) => {
                                             eprintln!("   ❌ VM Pipeline failed: {:?}", e);
