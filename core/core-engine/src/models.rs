@@ -1,6 +1,19 @@
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
+use sqlx::FromRow;
 use uuid::Uuid;
+
+use chrono::{DateTime, Utc};
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct WorkspaceSecret {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub secret_name: String,
+    pub encrypted_secret: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PulseEvent {

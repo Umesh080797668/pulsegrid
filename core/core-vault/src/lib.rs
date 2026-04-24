@@ -1,11 +1,16 @@
 use ring::{aead, rand, pbkdf2};
 use std::num::NonZeroU32;
 use base64::{engine::general_purpose, Engine as _};
+use hmac::{Hmac, Mac, KeyInit};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug)]
 pub enum VaultError {
     EncryptionFailed,
     DecryptionFailed,
+    InvalidSignature,
 }
 
 pub struct Vault {
@@ -14,7 +19,6 @@ pub struct Vault {
 
 impl Vault {
     pub fn new(master_password: &str) -> Self {
-        // Derive a key from the master password (in a real scenario, use KMS/SecretManager)
         let mut key_bytes = [0u8; 32];
         let salt = b"pulsegrid_salt";
         pbkdf2::derive(
@@ -64,5 +68,22 @@ impl Vault {
             .map_err(|_| VaultError::DecryptionFailed)?;
 
         String::from_utf8(decrypted_data.to_vec()).map_err(|_| VaultError::DecryptionFailed)
+    }
+
+    pub fn verify_webhook_signature(&self, payload: &str, signature: &str, plain_secret: &str) -> bool {
+        let mut mac = match HmacSha256::new_from_slice(plain_secret.as_bytes()) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        mac.update(payload.as_bytes());
+
+        // Support both raw hex and "sha256=<hex>" formats.
+        let provided = signature.trim().strip_prefix("sha256=").unwrap_or(signature.trim());
+        let provided_bytes = match hex::decode(provided) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        mac.verify_slice(&provided_bytes).is_ok()
     }
 }

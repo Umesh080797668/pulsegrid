@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
+chrono = { version = "0.4.44", features = ["serde"] }
 core-connectors = { version = "0.1.0", path = "../core-connectors" }
 core-proto = { version = "0.1.0", path = "../core-proto" }
 core-vault = { version = "0.1.0", path = "../core-vault" }

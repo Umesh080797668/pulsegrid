@@ -4,6 +4,29 @@ package pulsecore;
 
 service PulseCoreService {
   rpc TriggerFlow (TriggerFlowRequest) returns (TriggerFlowResponse);
+  rpc SetWorkspaceSecret (SetWorkspaceSecretRequest) returns (SetWorkspaceSecretResponse);
+  rpc VerifyWebhookSignature (VerifyWebhookRequest) returns (VerifyWebhookResponse);
+}
+
+message SetWorkspaceSecretRequest {
+  string workspace_id = 1;
+  string secret_name = 2;
+  string secret_value = 3;
+}
+
+message SetWorkspaceSecretResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message VerifyWebhookRequest {
+  string workspace_id = 1;
+  string raw_payload = 2;
+  string provided_signature = 3;
+}
+
+message VerifyWebhookResponse {
+  bool is_valid = 1;
 }
 
 message TriggerFlowRequest {

@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 base64 = "0.22.1"
+hex = "0.4.3"
+hmac = "0.13.0"
 rand = "0.10.1"
 ring = "0.17.14"
 serde = "1.0.228"
 serde_json = "1.0.149"
+sha2 = "0.11.0"
