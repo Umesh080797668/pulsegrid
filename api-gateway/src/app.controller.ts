@@ -59,10 +59,27 @@ export class AppController implements OnModuleInit {
   async handleWebhook(
     @Param('tenantId', new ParseUUIDPipe({ version: '4' })) tenantId: string,
     @Headers('x-webhook-signature') signature: string,
+    @Headers('x-webhook-timestamp') webhookTimestamp: string,
+    @Headers('x-webhook-nonce') webhookNonce: string,
     @Req() req: RawBodyRequest<Request>,
   ) {
     if (!signature) {
       throw new UnauthorizedException('Missing x-webhook-signature header');
+    }
+
+    if (!webhookTimestamp || !/^\d+$/.test(webhookTimestamp)) {
+      throw new UnauthorizedException('Missing or invalid x-webhook-timestamp header');
+    }
+
+    if (!webhookNonce || webhookNonce.length < 16) {
+      throw new UnauthorizedException('Missing or invalid x-webhook-nonce header');
+    }
+
+    const allowedSkewSeconds = Number.parseInt(process.env.WEBHOOK_MAX_SKEW_SECONDS || '300', 10);
+    const timestampSeconds = Number.parseInt(webhookTimestamp, 10);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSeconds - timestampSeconds) > allowedSkewSeconds) {
+      throw new UnauthorizedException('Webhook request expired or not yet valid');
     }
 
     const rawBody = req.rawBody;
@@ -83,6 +100,13 @@ export class AppController implements OnModuleInit {
       throw new UnauthorizedException('Invalid Webhook Signature');
     }
 
+    const nonceKey = `webhook:nonce:${tenantId}:${webhookNonce}`;
+    const nonceTtlSeconds = Math.max(allowedSkewSeconds * 2, 600);
+    const nonceSetResult = await this.redis.set(nonceKey, '1', 'EX', nonceTtlSeconds, 'NX');
+    if (nonceSetResult !== 'OK') {
+      throw new UnauthorizedException('Replay detected');
+    }
+
     // Process the webhook safely
     const payload = req.body;
     const eventId = crypto.randomUUID();
@@ -95,6 +119,10 @@ export class AppController implements OnModuleInit {
       data: payload,
       timestamp,
       schema_version: '1.0',
+      security: {
+        webhook_timestamp: webhookTimestamp,
+        webhook_nonce: webhookNonce,
+      },
     };
 
     try {
