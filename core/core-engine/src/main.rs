@@ -1,16 +1,16 @@
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router, extract::{State, Path}, Json};
 use redis::{streams::{StreamReadOptions, StreamReadReply}, AsyncCommands};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
-use core_vm::{CoreVm, Pipeline, Step};
+use core_vm::{CoreVm, Pipeline};
 use core_connectors::{Connectors, HttpConfig};
 use core_vault::Vault;
 
 mod models;
 mod grpc;
-use models::PulseEvent;
+use models::{PulseEvent, CreateFlowRequest, FlowResponse};
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
 use grpc::MyPulseCoreService;
 
@@ -30,7 +30,11 @@ async fn main() {
     println!("Connected to PostgreSQL databases!");
 
     // Build the Axum application
-    let app = Router::new().route("/health", get(|| async { "OK" }));
+    let app = Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .route("/api/v1/flows", post(create_flow))
+        .route("/api/v1/flows/{workspace_id}", get(list_flows))
+        .with_state(pool.clone());
 
     // Run the server on port 8000 to avoid Tomcat conflict
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
@@ -127,35 +131,36 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         Err(e) => eprintln!("   ❌ Error saving to Postgres: {}", e),
                                     }
 
-                                    // Let's create a stub Pipeline to test core-vm
-                                    let mut pipeline_context = rhai::Map::new();
-                                    pipeline_context.insert("event_id".into(), rhai::Dynamic::from(event.id.clone()));
-                                    pipeline_context.insert("event_type".into(), rhai::Dynamic::from(event.event_type.clone()));
+                                    let active_flows = sqlx::query!(
+                                        r#"
+                                        SELECT id, name, definition FROM flows 
+                                        WHERE workspace_id = $1 AND enabled = true
+                                        "#,
+                                        event.tenant_id as _
+                                    )
+                                    .fetch_all(&pg_pool)
+                                    .await.unwrap_or_else(|_| vec![]);
                                     
-                                    let dummy_pipeline = Pipeline {
-                                        id: "pipe-1".into(),
-                                        name: "Demo Execution".into(),
-                                        steps: vec![
-                                            Step {
-                                                id: "step-1".into(),
-                                                kind: "script".into(),
-                                                code: Some(r#"
-                                                    print("🚀 Running Javascript-like (Rhai) snippet for Event: " + ctx.event_type);
-                                                    ctx.status = "processed";
-                                                    ctx.processing_time_ms = 42;
-                                                    ctx.output_msg = "Hello from PulseGrid core-vm!";
-                                                "#.into()),
-                                            },
-                                            Step {
-                                                id: "step-2".into(),
-                                                kind: "http".into(), // Emulating an external connector step
-                                                code: None,
-                                            }
-                                        ]
-                                    };
+                                    if active_flows.is_empty() {
+                                        println!("   ⚠️ No active flows found for workspace {}", event.tenant_id);
+                                    }
 
-                                    println!("   ⚡ Passing payload to Core VM...");
-                                    let vm = CoreVm::new();
+                                    for flow in active_flows {
+                                        // Parse Pipeline
+                                        let dummy_pipeline: Pipeline = match serde_json::from_value(flow.definition.clone()) {
+                                            Ok(p) => p,
+                                            Err(e) => {
+                                                eprintln!("   ❌ Invalid pipeline definition for flow {}: {}", flow.id, e);
+                                                continue;
+                                            }
+                                        };
+
+                                        println!("   ⚡ Executing flow {}...", flow.name);
+                                        let mut pipeline_context = rhai::Map::new();
+                                        pipeline_context.insert("event_id".into(), rhai::Dynamic::from(event.id.clone().to_string()));
+                                        pipeline_context.insert("event_type".into(), rhai::Dynamic::from(event.event_type.clone()));
+                                        
+                                                                        let vm = CoreVm::new();
                                     match vm.execute_pipeline(&dummy_pipeline, pipeline_context) {
                                         Ok(result_ctx) => {
                                             println!("   🌟 VM Check OK. Output Context:");
@@ -185,6 +190,7 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                 }
                                             }
 
+
                                             // Then update flow_run to success
                                             let _ = sqlx::query!(
                                                 r#"UPDATE flow_runs SET status = $1, completed_at = NOW() WHERE trigger_event_id = $2"#,
@@ -195,6 +201,7 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         Err(e) => {
                                             eprintln!("   ❌ VM Pipeline failed: {:?}", e);
                                         }
+                                    }
                                     }
                                 }
                                 Err(err) => {
@@ -213,4 +220,64 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
             }
         }
     }
+}
+
+async fn create_flow(
+    State(pool): State<sqlx::PgPool>,
+    Json(payload): Json<CreateFlowRequest>,
+) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!(
+        r#"
+        INSERT INTO flows (workspace_id, name, description, definition, enabled, run_count)
+        VALUES ($1, $2, $3, $4, true, 0)
+        RETURNING id, workspace_id, name, description, definition, enabled, run_count
+        "#,
+        payload.workspace_id,
+        payload.name,
+        payload.description,
+        payload.definition,
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(FlowResponse {
+        id: row.id,
+        workspace_id: row.workspace_id.unwrap_or_default(),
+        name: row.name,
+        description: row.description,
+        definition: row.definition,
+        enabled: row.enabled.unwrap_or(true),
+        run_count: row.run_count.unwrap_or(0),
+    }))
+}
+
+async fn list_flows(
+    State(pool): State<sqlx::PgPool>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<FlowResponse>>, (axum::http::StatusCode, String)> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, workspace_id, name, description, definition, enabled, run_count
+        FROM flows
+        WHERE workspace_id = $1
+        ORDER BY created_at DESC
+        "#,
+        workspace_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let flows = rows.into_iter().map(|row| FlowResponse {
+        id: row.id,
+        workspace_id: row.workspace_id.unwrap_or_default(),
+        name: row.name,
+        description: row.description,
+        definition: row.definition,
+        enabled: row.enabled.unwrap_or(true),
+        run_count: row.run_count.unwrap_or(0),
+    }).collect();
+
+    Ok(Json(flows))
 }
