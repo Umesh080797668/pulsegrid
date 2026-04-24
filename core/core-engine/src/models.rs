@@ -6,9 +6,9 @@ use uuid::Uuid;
 pub struct PulseEvent {
     pub id: Uuid,
     pub tenant_id: Uuid,
-    pub source: String,
+    pub source: Option<String>,
     pub event_type: String,
-    pub payload: Value,
+    pub data: Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
