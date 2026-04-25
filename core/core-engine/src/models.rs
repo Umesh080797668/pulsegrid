@@ -16,6 +16,32 @@ pub struct WorkspaceSecret {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpsertWorkspaceSecretRequest {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkspaceSecretSummary {
+    pub name: String,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FlowRunResponse {
+    pub id: Uuid,
+    pub flow_id: Option<Uuid>,
+    pub workspace_id: Uuid,
+    pub status: String,
+    pub trigger_event_id: Option<Uuid>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub duration_ms: Option<i32>,
+    pub steps_log: Option<Value>,
+    pub error_message: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PulseEvent {
     pub id: Uuid,

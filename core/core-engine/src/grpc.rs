@@ -71,9 +71,8 @@ impl PulseCoreService for MyPulseCoreService {
         let req = request.into_inner();
         let ws_id = Uuid::parse_str(&req.workspace_id).map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
         let secret_name = req.secret_name.trim().to_uppercase();
-
-        if secret_name != "WEBHOOK_SECRET" {
-            return Err(Status::invalid_argument("Unsupported secret name"));
+        if secret_name.is_empty() {
+            return Err(Status::invalid_argument("Secret name is required"));
         }
 
         let workspace_exists = sqlx::query_scalar!(

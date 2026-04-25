@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Post, Query, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 import { AuthService } from './auth.service';
+import { Request } from 'express';
+import { RateLimitService } from '../rate-limit.service';
 
 class RegisterDto {
   @IsEmail()
@@ -32,15 +34,20 @@ class RefreshDto {
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly rateLimitService: RateLimitService,
+  ) {}
 
   @Post('register')
-  register(@Body() body: RegisterDto) {
+  async register(@Body() body: RegisterDto, @Req() req: Request) {
+    await this.checkAuthRateLimit(req, 'register', Number(process.env.RATE_LIMIT_REGISTER_PER_MINUTE || 20));
     return this.authService.register(body.email, body.password, body.name);
   }
 
   @Post('login')
-  login(@Body() body: LoginDto) {
+  async login(@Body() body: LoginDto, @Req() req: Request) {
+    await this.checkAuthRateLimit(req, 'login', Number(process.env.RATE_LIMIT_LOGIN_PER_MINUTE || 30));
     return this.authService.login(body.email, body.password);
   }
 
@@ -82,18 +89,162 @@ export class AuthController {
   }
 
   @Get('google/callback')
-  googleCallback(@Query('email') email?: string, @Query('name') name?: string) {
-    if (!email) {
-      throw new UnauthorizedException('Missing email in callback');
+  async googleCallback(
+    @Query('code') code?: string,
+    @Query('email') fallbackEmail?: string,
+    @Query('name') fallbackName?: string,
+    @Req() req?: Request,
+  ) {
+    if (code) {
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+      const clientId = process.env.GOOGLE_CLIENT_ID;
+      const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+      if (!redirectUri || !clientId || !clientSecret) {
+        throw new UnauthorizedException('Google OAuth callback is not configured');
+      }
+
+      const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }),
+      });
+
+      if (!tokenResp.ok) {
+        throw new UnauthorizedException('Google token exchange failed');
+      }
+
+      const tokenJson = (await tokenResp.json()) as { access_token?: string };
+      const accessToken = tokenJson.access_token;
+      if (!accessToken) {
+        throw new UnauthorizedException('Google access token missing');
+      }
+
+      const profileResp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!profileResp.ok) {
+        throw new UnauthorizedException('Failed to fetch Google profile');
+      }
+
+      const profile = (await profileResp.json()) as { email?: string; name?: string };
+      if (!profile.email) {
+        throw new UnauthorizedException('Google account did not return email');
+      }
+
+      return this.authService.socialLogin('google', profile.email, profile.name);
     }
-    return this.authService.socialLogin('google', email, name);
+
+    if (!fallbackEmail) {
+      throw new UnauthorizedException('Missing code or email in callback');
+    }
+
+    if (req) {
+      await this.checkAuthRateLimit(req, 'google-callback', Number(process.env.RATE_LIMIT_OAUTH_PER_MINUTE || 60));
+    }
+
+    return this.authService.socialLogin('google', fallbackEmail, fallbackName);
   }
 
   @Get('github/callback')
-  githubCallback(@Query('email') email?: string, @Query('name') name?: string) {
-    if (!email) {
-      throw new UnauthorizedException('Missing email in callback');
+  async githubCallback(
+    @Query('code') code?: string,
+    @Query('email') fallbackEmail?: string,
+    @Query('name') fallbackName?: string,
+    @Headers('user-agent') userAgent?: string,
+    @Req() req?: Request,
+  ) {
+    if (code) {
+      const redirectUri = process.env.GITHUB_REDIRECT_URI;
+      const clientId = process.env.GITHUB_CLIENT_ID;
+      const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+      if (!redirectUri || !clientId || !clientSecret) {
+        throw new UnauthorizedException('GitHub OAuth callback is not configured');
+      }
+
+      const tokenResp = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': userAgent || 'pulsegrid-auth',
+        },
+        body: JSON.stringify({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+        }),
+      });
+
+      if (!tokenResp.ok) {
+        throw new UnauthorizedException('GitHub token exchange failed');
+      }
+
+      const tokenJson = (await tokenResp.json()) as { access_token?: string };
+      const accessToken = tokenJson.access_token;
+      if (!accessToken) {
+        throw new UnauthorizedException('GitHub access token missing');
+      }
+
+      const userResp = await fetch('https://api.github.com/user', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': userAgent || 'pulsegrid-auth',
+        },
+      });
+      if (!userResp.ok) {
+        throw new UnauthorizedException('Failed to fetch GitHub user');
+      }
+
+      const user = (await userResp.json()) as { email?: string; name?: string; login?: string };
+      let email = user.email;
+
+      if (!email) {
+        const emailsResp = await fetch('https://api.github.com/user/emails', {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': userAgent || 'pulsegrid-auth',
+          },
+        });
+        if (emailsResp.ok) {
+          const emails = (await emailsResp.json()) as Array<{ email: string; primary?: boolean; verified?: boolean }>;
+          email = emails.find((entry) => entry.primary && entry.verified)?.email || emails[0]?.email;
+        }
+      }
+
+      if (!email) {
+        throw new UnauthorizedException('GitHub account did not return email');
+      }
+
+      return this.authService.socialLogin('github', email, user.name || user.login);
     }
-    return this.authService.socialLogin('github', email, name);
+
+    if (!fallbackEmail) {
+      throw new UnauthorizedException('Missing code or email in callback');
+    }
+
+    if (req) {
+      await this.checkAuthRateLimit(req, 'github-callback', Number(process.env.RATE_LIMIT_OAUTH_PER_MINUTE || 60));
+    }
+
+    return this.authService.socialLogin('github', fallbackEmail, fallbackName);
+  }
+
+  private async checkAuthRateLimit(req: Request, keySuffix: string, limit: number): Promise<void> {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    const ip = typeof forwardedFor === 'string'
+      ? forwardedFor.split(',')[0]!.trim()
+      : req.ip || 'unknown';
+
+    await this.rateLimitService.check(`ratelimit:auth:${keySuffix}:${ip}`, limit, 60);
   }
 }

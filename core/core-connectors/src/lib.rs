@@ -90,6 +90,17 @@ pub struct DiscordConfig {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CustomConnectorConfig {
+    pub endpoint_url: String,
+    pub method: String,
+    pub body: Option<serde_json::Value>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub bearer_token: Option<String>,
+    pub api_key_header: Option<String>,
+    pub api_key_value: Option<String>,
+}
+
 pub struct Connectors {
     http_client: Client,
 }
@@ -345,6 +356,66 @@ impl Connectors {
             .map_err(|e| ConnectorError::HttpError(e.to_string()))
     }
 
+    pub async fn execute_custom_connector(
+        &self,
+        config: &CustomConnectorConfig,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        if config.endpoint_url.is_empty() {
+            return Err(ConnectorError::InvalidConfig(
+                "custom connector endpoint_url is required".into(),
+            ));
+        }
+
+        let method = match config.method.to_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "PATCH" => reqwest::Method::PATCH,
+            "DELETE" => reqwest::Method::DELETE,
+            _ => reqwest::Method::POST,
+        };
+
+        let mut req = self.http_client.request(method, &config.endpoint_url);
+
+        if let Some(token) = &config.bearer_token {
+            req = req.bearer_auth(token);
+        }
+
+        if let (Some(key_header), Some(key_value)) = (&config.api_key_header, &config.api_key_value) {
+            req = req.header(key_header, key_value);
+        }
+
+        if let Some(headers) = &config.headers {
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
+        }
+
+        if let Some(body) = &config.body {
+            req = req.json(body);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err(ConnectorError::HttpError(format!(
+                "custom connector call failed with status {}",
+                resp.status()
+            )));
+        }
+
+        if resp.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(serde_json::json!({"success": true}));
+        }
+
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))
+    }
+
     pub fn verify_webhook_signature(
         &self,
         config: &WebhookVerifyConfig,
@@ -440,5 +511,23 @@ mod tests {
         assert!(!encoded.contains('+'));
         assert!(!encoded.contains('/'));
         assert!(!encoded.contains('='));
+    }
+
+    #[tokio::test]
+    async fn custom_connector_requires_endpoint() {
+        let connectors = Connectors::new();
+        let result = connectors
+            .execute_custom_connector(&CustomConnectorConfig {
+                endpoint_url: String::new(),
+                method: "POST".to_string(),
+                body: None,
+                headers: None,
+                bearer_token: None,
+                api_key_header: None,
+                api_key_value: None,
+            })
+            .await;
+
+        assert!(matches!(result, Err(ConnectorError::InvalidConfig(_))));
     }
 }

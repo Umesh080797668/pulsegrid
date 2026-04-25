@@ -4,9 +4,17 @@ import { Observable, firstValueFrom } from 'rxjs';
 import { Redis } from 'ioredis';
 import { Request } from 'express';
 import * as crypto from 'crypto';
-import { TriggerFlowDto, SetSecretDto, CreateFlowDto, UpdateFlowDto } from './dto';
+import {
+  TriggerFlowDto,
+  SetSecretDto,
+  UpsertWorkspaceCredentialDto,
+  CreateFlowDto,
+  UpdateFlowDto,
+  CustomConnectorContractDto,
+} from './dto';
 import { ManagementApiKeyGuard } from './management-api-key.guard';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
+import { RateLimitService } from './rate-limit.service';
 
 interface PulseCoreService {
   triggerFlow(data: { workspaceId: string; flowId: string; payloadJson: string }): Observable<any>;
@@ -21,7 +29,8 @@ export class AppController implements OnModuleInit {
 
   constructor(
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
-    @Inject('REDIS_CLIENT') private redis: Redis
+    @Inject('REDIS_CLIENT') private redis: Redis,
+    private readonly rateLimitService: RateLimitService,
   ) {}
 
   onModuleInit() {
@@ -30,7 +39,13 @@ export class AppController implements OnModuleInit {
 
   @UseGuards(JwtAuthGuard)
   @Post('trigger')
-  triggerFlow(@Body() body: TriggerFlowDto) {
+  async triggerFlow(@Body() body: TriggerFlowDto, @Req() req: Request) {
+    await this.rateLimitService.check(
+      `ratelimit:trigger:${this.getClientIdentifier(req)}`,
+      Number(process.env.RATE_LIMIT_TRIGGER_PER_MINUTE || 120),
+      60,
+    );
+
     console.log('Sending trigger request to Core Engine over gRPC...', body);
     return this.pulseCoreService.triggerFlow({
       workspaceId: body.workspaceId,
@@ -98,12 +113,48 @@ export class AppController implements OnModuleInit {
     });
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('connectors/custom/schema')
+  getCustomConnectorSchema() {
+    return {
+      connector: 'custom',
+      action: 'call_api',
+      required_input_fields: ['endpoint_url'],
+      optional_input_fields: [
+        'method',
+        'body',
+        'headers',
+        'bearer_token',
+        'api_key_header',
+        'api_key_value',
+      ],
+      contract_example: {
+        endpoint_url: 'https://api.example.com/v1/items',
+        method: 'POST',
+        body: { name: 'PulseGrid' },
+        headers: { 'X-App-Source': 'pulsegrid' },
+      } satisfies CustomConnectorContractDto,
+      notes: [
+        'Use connector=custom or connector=custom_app in flow steps.',
+        'For bearer auth, set bearer_token.',
+        'For API-key auth, set both api_key_header and api_key_value.',
+      ],
+    };
+  }
+
   @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
   @Post('workspaces/:workspaceId/secrets')
-  setSecret(
+  async setSecret(
     @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
-    @Body() body: SetSecretDto
+    @Body() body: SetSecretDto,
+    @Req() req: Request,
   ) {
+    await this.rateLimitService.check(
+      `ratelimit:secret-upsert:${this.getClientIdentifier(req)}`,
+      Number(process.env.RATE_LIMIT_SECRET_WRITES_PER_MINUTE || 30),
+      60,
+    );
+
     if (!body?.value) {
       throw new BadRequestException('Missing secret value');
     }
@@ -117,6 +168,67 @@ export class AppController implements OnModuleInit {
     });
   }
 
+  @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
+  @Post('workspaces/:workspaceId/credentials')
+  async upsertWorkspaceCredential(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Body() body: UpsertWorkspaceCredentialDto,
+    @Req() req: Request,
+  ) {
+    await this.rateLimitService.check(
+      `ratelimit:credential-upsert:${this.getClientIdentifier(req)}`,
+      Number(process.env.RATE_LIMIT_SECRET_WRITES_PER_MINUTE || 30),
+      60,
+    );
+
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/secrets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: body.name,
+        value: body.value,
+      }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
+  @Get('workspaces/:workspaceId/credentials')
+  async listWorkspaceCredentials(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+  ) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/secrets`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
+  @Delete('workspaces/:workspaceId/credentials/:name')
+  async deleteWorkspaceCredential(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Param('name') name: string,
+  ) {
+    const encodedName = encodeURIComponent(name);
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/secrets/${encodedName}`, {
+      method: 'DELETE',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flow-runs')
+  async listFlowRuns(@Query('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string) {
+    return this.coreRequest(`/api/v1/flow-runs/${workspaceId}`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flow-runs/:runId')
+  async getFlowRun(@Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string) {
+    return this.coreRequest(`/api/v1/flow-run/${runId}`, {
+      method: 'GET',
+    });
+  }
+
   @Post('webhook/:tenantId')
   async handleWebhook(
     @Param('tenantId', new ParseUUIDPipe({ version: '4' })) tenantId: string,
@@ -125,6 +237,12 @@ export class AppController implements OnModuleInit {
     @Headers('x-webhook-nonce') webhookNonce: string,
     @Req() req: RawBodyRequest<Request>,
   ) {
+    await this.rateLimitService.check(
+      `ratelimit:webhook:${tenantId}:${webhookNonce.slice(0, 8)}`,
+      Number(process.env.RATE_LIMIT_WEBHOOK_PER_MINUTE || 300),
+      60,
+    );
+
     if (!signature) {
       throw new UnauthorizedException('Missing x-webhook-signature header');
     }
@@ -226,5 +344,18 @@ export class AppController implements OnModuleInit {
     }
 
     return maybeJson;
+  }
+
+  private getClientIdentifier(req: Request): string {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (typeof forwardedFor === 'string' && forwardedFor.trim().length > 0) {
+      return forwardedFor.split(',')[0]!.trim();
+    }
+
+    if (Array.isArray(forwardedFor) && forwardedFor.length > 0) {
+      return forwardedFor[0]!.split(',')[0]!.trim();
+    }
+
+    return req.ip || 'unknown';
   }
 }

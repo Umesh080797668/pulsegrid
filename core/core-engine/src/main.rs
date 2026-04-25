@@ -1,4 +1,8 @@
-use axum::{routing::{get, post}, Router, extract::{State, Path}, Json};
+use axum::{
+    extract::{Path, State},
+    routing::{delete, get, post},
+    Json, Router,
+};
 use redis::{streams::{StreamReadOptions, StreamReadReply}, AsyncCommands};
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -6,14 +10,24 @@ use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use reqwest::Client;
+use core_vault::Vault;
 
 mod models;
 mod grpc;
-use models::{PulseEvent, CreateFlowRequest, FlowResponse, FlowDefinition, UpdateFlowRequest};
+use models::{
+    CreateFlowRequest, FlowDefinition, FlowResponse, FlowRunResponse, PulseEvent,
+    UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceSecretSummary,
+};
 mod executor;
 use executor::FlowExecutor;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
 use grpc::MyPulseCoreService;
+
+#[derive(Clone)]
+struct AppState {
+    pool: sqlx::PgPool,
+    vault: Arc<Vault>,
+}
 
 #[tokio::main]
 async fn main() {
@@ -30,13 +44,30 @@ async fn main() {
 
     println!("Connected to PostgreSQL databases!");
 
+    let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
+        .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
+    let state = AppState {
+        pool: pool.clone(),
+        vault: Arc::new(Vault::new(&master_key)),
+    };
+
     // Build the Axum application
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
         .route("/api/v1/flow/{flow_id}", get(get_flow).put(update_flow).delete(delete_flow))
-        .with_state(pool.clone());
+        .route(
+            "/api/v1/workspaces/{workspace_id}/secrets",
+            post(upsert_workspace_secret).get(list_workspace_secrets),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/secrets/{secret_name}",
+            delete(delete_workspace_secret),
+        )
+        .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
+        .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
+        .with_state(state);
 
     // Run the server on port 8000 to avoid Tomcat conflict
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
@@ -381,7 +412,7 @@ async fn send_failure_email(
 }
 
 async fn create_flow(
-    State(pool): State<sqlx::PgPool>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateFlowRequest>,
 ) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
     let row = sqlx::query!(
@@ -395,7 +426,7 @@ async fn create_flow(
         payload.description,
         payload.definition,
     )
-    .fetch_one(&pool)
+    .fetch_one(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -411,7 +442,7 @@ async fn create_flow(
 }
 
 async fn list_flows(
-    State(pool): State<sqlx::PgPool>,
+    State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
 ) -> Result<Json<Vec<FlowResponse>>, (axum::http::StatusCode, String)> {
     let rows = sqlx::query!(
@@ -423,7 +454,7 @@ async fn list_flows(
         "#,
         workspace_id
     )
-    .fetch_all(&pool)
+    .fetch_all(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -441,7 +472,7 @@ async fn list_flows(
 }
 
 async fn get_flow(
-    State(pool): State<sqlx::PgPool>,
+    State(state): State<AppState>,
     Path(flow_id): Path<uuid::Uuid>,
 ) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
     let row = sqlx::query!(
@@ -452,7 +483,7 @@ async fn get_flow(
         "#,
         flow_id
     )
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
@@ -469,7 +500,7 @@ async fn get_flow(
 }
 
 async fn update_flow(
-    State(pool): State<sqlx::PgPool>,
+    State(state): State<AppState>,
     Path(flow_id): Path<uuid::Uuid>,
     Json(payload): Json<UpdateFlowRequest>,
 ) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
@@ -481,7 +512,7 @@ async fn update_flow(
         "#,
         flow_id
     )
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
@@ -508,7 +539,7 @@ async fn update_flow(
         updated_enabled,
         flow_id
     )
-    .fetch_one(&pool)
+    .fetch_one(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -524,7 +555,7 @@ async fn update_flow(
 }
 
 async fn delete_flow(
-    State(pool): State<sqlx::PgPool>,
+    State(state): State<AppState>,
     Path(flow_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let result = sqlx::query!(
@@ -534,7 +565,7 @@ async fn delete_flow(
         "#,
         flow_id
     )
-    .execute(&pool)
+    .execute(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -543,4 +574,179 @@ async fn delete_flow(
     }
 
     Ok(Json(serde_json::json!({ "success": true, "flowId": flow_id })))
+}
+
+async fn upsert_workspace_secret(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+    Json(payload): Json<UpsertWorkspaceSecretRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let secret_name = payload.name.trim().to_uppercase();
+    if secret_name.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Secret name is required".to_string(),
+        ));
+    }
+
+    if payload.value.trim().is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Secret value is required".to_string(),
+        ));
+    }
+
+    let encrypted_secret = state
+        .vault
+        .encrypt(&payload.value)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("{e:?}")))?;
+
+    sqlx::query!(
+        r#"
+        INSERT INTO workspace_secrets (workspace_id, secret_name, encrypted_secret)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (workspace_id, secret_name)
+        DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret, updated_at = NOW()
+        "#,
+        workspace_id,
+        secret_name,
+        encrypted_secret
+    )
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "workspaceId": workspace_id,
+        "name": secret_name,
+    })))
+}
+
+async fn list_workspace_secrets(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<WorkspaceSecretSummary>>, (axum::http::StatusCode, String)> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT secret_name, updated_at
+        FROM workspace_secrets
+        WHERE workspace_id = $1
+        ORDER BY secret_name ASC
+        "#,
+        workspace_id
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| WorkspaceSecretSummary {
+                name: row.secret_name,
+                updated_at: row.updated_at,
+            })
+            .collect(),
+    ))
+}
+
+async fn delete_workspace_secret(
+    State(state): State<AppState>,
+    Path((workspace_id, secret_name)): Path<(uuid::Uuid, String)>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let normalized = secret_name.trim().to_uppercase();
+    if normalized.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Secret name is required".to_string(),
+        ));
+    }
+
+    let result = sqlx::query!(
+        r#"
+        DELETE FROM workspace_secrets
+        WHERE workspace_id = $1 AND secret_name = $2
+        "#,
+        workspace_id,
+        normalized
+    )
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if result.rows_affected() == 0 {
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            "Secret not found".to_string(),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+async fn list_flow_runs(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<FlowRunResponse>>, (axum::http::StatusCode, String)> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        FROM flow_runs
+        WHERE workspace_id = $1
+        ORDER BY started_at DESC
+        LIMIT 200
+        "#,
+        workspace_id
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| FlowRunResponse {
+                id: row.id,
+                flow_id: row.flow_id,
+                workspace_id: row.workspace_id,
+                status: row.status,
+                trigger_event_id: row.trigger_event_id,
+                started_at: row.started_at,
+                completed_at: row.completed_at,
+                duration_ms: row.duration_ms,
+                steps_log: row.steps_log,
+                error_message: row.error_message,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_flow_run(
+    State(state): State<AppState>,
+    Path(run_id): Path<uuid::Uuid>,
+) -> Result<Json<FlowRunResponse>, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        FROM flow_runs
+        WHERE id = $1
+        "#,
+        run_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow run not found".to_string()))?;
+
+    Ok(Json(FlowRunResponse {
+        id: row.id,
+        flow_id: row.flow_id,
+        workspace_id: row.workspace_id,
+        status: row.status,
+        trigger_event_id: row.trigger_event_id,
+        started_at: row.started_at,
+        completed_at: row.completed_at,
+        duration_ms: row.duration_ms,
+        steps_log: row.steps_log,
+        error_message: row.error_message,
+    }))
 }

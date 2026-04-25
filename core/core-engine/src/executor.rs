@@ -2,8 +2,8 @@ use crate::models::{
     FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition,
 };
 use core_connectors::{
-    Connectors, DiscordConfig, GmailSendConfig, GithubIssueConfig, GoogleSheetsAppendConfig,
-    HttpConfig, NotionCreatePageConfig, TelegramConfig,
+    Connectors, CustomConnectorConfig, DiscordConfig, GmailSendConfig, GithubIssueConfig,
+    GoogleSheetsAppendConfig, HttpConfig, NotionCreatePageConfig, TelegramConfig,
 };
 use rhai::{Dynamic, Engine};
 use serde_json::{json, Value};
@@ -448,6 +448,44 @@ impl FlowExecutor {
                 };
                 connectors
                     .execute_discord_send(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "custom" | "custom_app" => {
+                let headers = input
+                    .get("headers")
+                    .and_then(Value::as_object)
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect::<std::collections::HashMap<String, String>>()
+                    });
+
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: get_required("endpoint_url")?,
+                    method: input
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or("POST")
+                        .to_string(),
+                    body: input.get("body").cloned(),
+                    headers,
+                    bearer_token: input
+                        .get("bearer_token")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    api_key_header: input
+                        .get("api_key_header")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    api_key_value: input
+                        .get("api_key_value")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
                     .await
                     .map_err(|e| e.to_string())
             }

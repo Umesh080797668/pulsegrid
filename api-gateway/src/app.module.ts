@@ -4,6 +4,8 @@ import { AppController } from './app.controller';
 import { Redis } from 'ioredis';
 import { ManagementApiKeyGuard } from './management-api-key.guard';
 import { AuthModule } from './auth/auth.module';
+import { RateLimitService } from './rate-limit.service';
+import { EventsGateway } from './events.gateway';
 
 @Global()
 @Module({
@@ -24,6 +26,8 @@ import { AuthModule } from './auth/auth.module';
   controllers: [AppController],
   providers: [
     ManagementApiKeyGuard,
+    RateLimitService,
+    EventsGateway,
     {
       provide: 'REDIS_CLIENT',
       useFactory: () => {

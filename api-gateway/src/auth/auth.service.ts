@@ -3,14 +3,14 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { AuthTokens, AuthUser, JwtPayload } from './auth.types';
+import { AuthStore } from './auth.store';
 
 @Injectable()
 export class AuthService {
-  private readonly usersByEmail = new Map<string, AuthUser>();
-  private readonly usersById = new Map<string, AuthUser>();
-  private readonly refreshTokenHashes = new Map<string, string>();
-
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly authStore: AuthStore,
+  ) {}
 
   private getAccessTtlSeconds(): number {
     return Number(process.env.JWT_ACCESS_TTL_SECONDS || 900);
@@ -22,29 +22,28 @@ export class AuthService {
 
   async register(email: string, password: string, name?: string): Promise<AuthTokens> {
     const normalizedEmail = email.trim().toLowerCase();
-    if (this.usersByEmail.has(normalizedEmail)) {
+    const existing = await this.authStore.findUserByEmail(normalizedEmail);
+    if (existing) {
       throw new BadRequestException('Email already exists');
     }
 
     const id = crypto.randomUUID();
     const passwordHash = await bcrypt.hash(password, 12);
-    const user: AuthUser = {
+    const row = await this.authStore.createUser({
       id,
       email: normalizedEmail,
-      name,
       passwordHash,
-      createdAt: new Date().toISOString(),
-    };
+      fullName: name,
+    });
 
-    this.usersByEmail.set(normalizedEmail, user);
-    this.usersById.set(id, user);
-
+    const user = this.toAuthUser(row);
     return this.issueTokens(user);
   }
 
   async login(email: string, password: string): Promise<AuthTokens> {
     const normalizedEmail = email.trim().toLowerCase();
-    const user = this.usersByEmail.get(normalizedEmail);
+    const row = await this.authStore.findUserByEmail(normalizedEmail);
+    const user = row ? this.toAuthUser(row) : null;
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -68,40 +67,35 @@ export class AuthService {
     }
 
     const tokenHash = this.hashToken(refreshToken);
-    const storedUserId = this.refreshTokenHashes.get(tokenHash);
+    const storedUserId = await this.authStore.consumeRefreshTokenHash(tokenHash);
     if (!storedUserId || storedUserId !== payload.sub) {
       throw new UnauthorizedException('Refresh token revoked');
     }
 
-    const user = this.usersById.get(payload.sub);
+    const row = await this.authStore.findUserById(payload.sub);
+    const user = row ? this.toAuthUser(row) : null;
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
 
-    this.refreshTokenHashes.delete(tokenHash);
     return this.issueTokens(user);
   }
 
   async logout(refreshToken: string): Promise<void> {
     const tokenHash = this.hashToken(refreshToken);
-    this.refreshTokenHashes.delete(tokenHash);
+    await this.authStore.revokeRefreshTokenHash(tokenHash);
   }
 
   async socialLogin(provider: 'google' | 'github', email: string, name?: string): Promise<AuthTokens> {
     const normalizedEmail = email.trim().toLowerCase();
-    let user = this.usersByEmail.get(normalizedEmail);
+    const row = await this.authStore.upsertSocialUser({
+      id: crypto.randomUUID(),
+      email: normalizedEmail,
+      name: name || `${provider}-user`,
+      passwordHash: await bcrypt.hash(crypto.randomUUID(), 8),
+    });
 
-    if (!user) {
-      user = {
-        id: crypto.randomUUID(),
-        email: normalizedEmail,
-        name: name || `${provider}-user`,
-        passwordHash: await bcrypt.hash(crypto.randomUUID(), 8),
-        createdAt: new Date().toISOString(),
-      };
-      this.usersByEmail.set(normalizedEmail, user);
-      this.usersById.set(user.id, user);
-    }
+    const user = this.toAuthUser(row);
 
     return this.issueTokens(user);
   }
@@ -119,12 +113,33 @@ export class AuthService {
       expiresIn: this.getRefreshTtlSeconds(),
     });
 
-    this.refreshTokenHashes.set(this.hashToken(refreshToken), user.id);
+    const expiresAt = new Date(Date.now() + this.getRefreshTtlSeconds() * 1000);
+    await this.authStore.storeRefreshTokenHash({
+      tokenHash: this.hashToken(refreshToken),
+      userId: user.id,
+      expiresAt,
+    });
 
     return { accessToken, refreshToken };
   }
 
   private hashToken(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
+  private toAuthUser(row: {
+    id: string;
+    email: string;
+    password_hash: string | null;
+    full_name: string | null;
+    created_at: Date;
+  }): AuthUser {
+    return {
+      id: row.id,
+      email: row.email,
+      name: row.full_name ?? undefined,
+      passwordHash: row.password_hash || '',
+      createdAt: row.created_at.toISOString(),
+    };
   }
 }
