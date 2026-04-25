@@ -1817,4 +1817,66 @@ pulsegrid/
 
 ---
 
+## 23. Phase 1 Connector Capability Matrix (Live)
+
+To keep dashboard and API behavior aligned, Phase 1 uses a **live connector catalog contract** exposed by the gateway.
+
+### 23.1 Catalog API Contract
+
+- **Endpoint:** `GET /connectors/catalog`
+- **Auth:** JWT required
+- **Response shape:**
+
+```json
+{
+  "count": 24,
+  "generatedAt": "2026-04-25T00:00:00.000Z",
+  "items": [
+    {
+      "connector": "github",
+      "action": "create_issue",
+      "category": "developer",
+      "auth": "oauth2",
+      "required_input_fields": ["access_token", "owner", "repo", "title"],
+      "optional_input_fields": ["body"]
+    }
+  ]
+}
+```
+
+### 23.2 Phase 1 Matrix (Current Build)
+
+| Connector | Action | Category | Auth |
+|---|---|---|---|
+| `http` | `request` | custom | mixed |
+| `slack` | `send_message` | communication | none |
+| `gmail` | `send_email` | communication | oauth2 |
+| `github` | `create_issue` | developer | oauth2 |
+| `telegram` | `send_message` | communication | api_key |
+| `google_sheets` | `append_rows` | productivity | oauth2 |
+| `notion` | `create_page` | productivity | oauth2 |
+| `discord` | `send_message` | communication | none |
+| `schedule` | `next_run` | core | none |
+| `webhook` | `verify_signature` | core | api_key |
+| `custom` / `custom_app` | `call_api` | custom | mixed |
+| `resend` | `send_email` | communication | bearer |
+| `openai` | `chat_completion` | ai | bearer |
+| `anthropic` | `messages` | ai | api_key |
+| `airtable` | `create_record` | business | bearer |
+| `hubspot` | `create_contact` | business | bearer |
+| `jira` | `create_issue` | developer | bearer |
+| `linear` | `graphql` | developer | bearer |
+| `asana` | `create_task` | business | bearer |
+| `clickup` | `create_task` | business | api_key |
+| `trello` | `create_card` | productivity | api_key |
+| `zendesk` | `create_ticket` | business | bearer |
+| `pagerduty` | `enqueue_event` | developer | api_key |
+| `stripe` | `request` | finance | api_key |
+
+### 23.3 Dashboard Consumption Rule
+
+The dashboard must render connector choices from `/connectors/catalog` dynamically instead of hard-coded lists.
+
+---
+
 *PulseGrid Blueprint v1.0 — Built with Rust at the core, designed to last.*

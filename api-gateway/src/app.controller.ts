@@ -22,6 +22,212 @@ interface PulseCoreService {
   verifyWebhookSignature(data: { workspaceId: string; rawPayload: string; providedSignature: string }): Observable<{ isValid: boolean }>;
 }
 
+interface ConnectorCatalogItem {
+  connector: string;
+  action: string;
+  category: string;
+  auth: 'none' | 'bearer' | 'api_key' | 'oauth2' | 'mixed';
+  required_input_fields: string[];
+  optional_input_fields: string[];
+  notes?: string[];
+}
+
+const CONNECTOR_CATALOG: ConnectorCatalogItem[] = [
+  {
+    connector: 'http',
+    action: 'request',
+    category: 'custom',
+    auth: 'mixed',
+    required_input_fields: ['url'],
+    optional_input_fields: ['method', 'json_body', 'headers'],
+  },
+  {
+    connector: 'slack',
+    action: 'send_message',
+    category: 'communication',
+    auth: 'none',
+    required_input_fields: ['webhook_url', 'text'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'gmail',
+    action: 'send_email',
+    category: 'communication',
+    auth: 'oauth2',
+    required_input_fields: ['access_token', 'from', 'to', 'subject', 'body'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'github',
+    action: 'create_issue',
+    category: 'developer',
+    auth: 'oauth2',
+    required_input_fields: ['access_token', 'owner', 'repo', 'title'],
+    optional_input_fields: ['body'],
+  },
+  {
+    connector: 'telegram',
+    action: 'send_message',
+    category: 'communication',
+    auth: 'api_key',
+    required_input_fields: ['bot_token', 'chat_id', 'text'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'google_sheets',
+    action: 'append_rows',
+    category: 'productivity',
+    auth: 'oauth2',
+    required_input_fields: ['access_token', 'spreadsheet_id', 'range', 'values'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'notion',
+    action: 'create_page',
+    category: 'productivity',
+    auth: 'oauth2',
+    required_input_fields: ['access_token', 'database_id', 'properties'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'discord',
+    action: 'send_message',
+    category: 'communication',
+    auth: 'none',
+    required_input_fields: ['webhook_url', 'content'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'schedule',
+    action: 'next_run',
+    category: 'core',
+    auth: 'none',
+    required_input_fields: ['cron'],
+    optional_input_fields: ['from'],
+  },
+  {
+    connector: 'webhook',
+    action: 'verify_signature',
+    category: 'core',
+    auth: 'api_key',
+    required_input_fields: ['secret', 'raw_payload', 'provided_signature'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'custom',
+    action: 'call_api',
+    category: 'custom',
+    auth: 'mixed',
+    required_input_fields: ['endpoint_url'],
+    optional_input_fields: ['method', 'body', 'headers', 'bearer_token', 'api_key_header', 'api_key_value'],
+    notes: ['Use connector=custom or connector=custom_app for generic API actions.'],
+  },
+  {
+    connector: 'resend',
+    action: 'send_email',
+    category: 'communication',
+    auth: 'bearer',
+    required_input_fields: ['api_key', 'from', 'to', 'subject', 'html'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'openai',
+    action: 'chat_completion',
+    category: 'ai',
+    auth: 'bearer',
+    required_input_fields: ['api_key', 'messages'],
+    optional_input_fields: ['model', 'temperature', 'endpoint_url'],
+  },
+  {
+    connector: 'anthropic',
+    action: 'messages',
+    category: 'ai',
+    auth: 'api_key',
+    required_input_fields: ['api_key', 'messages'],
+    optional_input_fields: ['model', 'max_tokens', 'endpoint_url'],
+  },
+  {
+    connector: 'airtable',
+    action: 'create_record',
+    category: 'business',
+    auth: 'bearer',
+    required_input_fields: ['api_key', 'base_id', 'table', 'fields'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'hubspot',
+    action: 'create_contact',
+    category: 'business',
+    auth: 'bearer',
+    required_input_fields: ['access_token', 'properties'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'jira',
+    action: 'create_issue',
+    category: 'developer',
+    auth: 'bearer',
+    required_input_fields: ['domain', 'access_token', 'fields'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'linear',
+    action: 'graphql',
+    category: 'developer',
+    auth: 'bearer',
+    required_input_fields: ['api_key', 'query'],
+    optional_input_fields: ['variables'],
+  },
+  {
+    connector: 'asana',
+    action: 'create_task',
+    category: 'business',
+    auth: 'bearer',
+    required_input_fields: ['access_token', 'data'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'clickup',
+    action: 'create_task',
+    category: 'business',
+    auth: 'api_key',
+    required_input_fields: ['api_key', 'list_id', 'name'],
+    optional_input_fields: ['description', 'assignees', 'tags'],
+  },
+  {
+    connector: 'trello',
+    action: 'create_card',
+    category: 'productivity',
+    auth: 'api_key',
+    required_input_fields: ['key', 'token', 'list_id', 'name'],
+    optional_input_fields: ['desc'],
+  },
+  {
+    connector: 'zendesk',
+    action: 'create_ticket',
+    category: 'business',
+    auth: 'bearer',
+    required_input_fields: ['subdomain', 'access_token', 'ticket'],
+    optional_input_fields: [],
+  },
+  {
+    connector: 'pagerduty',
+    action: 'enqueue_event',
+    category: 'developer',
+    auth: 'api_key',
+    required_input_fields: ['routing_key', 'payload'],
+    optional_input_fields: ['event_action'],
+  },
+  {
+    connector: 'stripe',
+    action: 'request',
+    category: 'finance',
+    auth: 'api_key',
+    required_input_fields: ['api_key'],
+    optional_input_fields: ['endpoint_url', 'method', 'body', 'headers'],
+  },
+];
+
 @Controller()
 export class AppController implements OnModuleInit {
   private pulseCoreService!: PulseCoreService;
@@ -116,6 +322,11 @@ export class AppController implements OnModuleInit {
   @UseGuards(JwtAuthGuard)
   @Get('connectors/custom/schema')
   getCustomConnectorSchema() {
+    const custom = CONNECTOR_CATALOG.find((item) => item.connector === 'custom');
+    const supportedAliases = CONNECTOR_CATALOG
+      .filter((item) => item.connector !== 'custom')
+      .map((item) => item.connector);
+
     return {
       connector: 'custom',
       action: 'call_api',
@@ -138,22 +349,19 @@ export class AppController implements OnModuleInit {
         'Use connector=custom or connector=custom_app in flow steps.',
         'For bearer auth, set bearer_token.',
         'For API-key auth, set both api_key_header and api_key_value.',
+        ...(custom?.notes ?? []),
       ],
-      supported_connector_aliases: [
-        'resend',
-        'openai',
-        'anthropic',
-        'airtable',
-        'hubspot',
-        'jira',
-        'linear',
-        'asana',
-        'clickup',
-        'trello',
-        'zendesk',
-        'pagerduty',
-        'stripe',
-      ],
+      supported_connector_aliases: supportedAliases,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('connectors/catalog')
+  getConnectorCatalog() {
+    return {
+      count: CONNECTOR_CATALOG.length,
+      generatedAt: new Date().toISOString(),
+      items: CONNECTOR_CATALOG,
     };
   }
 

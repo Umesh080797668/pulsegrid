@@ -26,6 +26,15 @@ type FlowRun = {
   completed_at?: string | null;
 };
 
+type ConnectorCatalogItem = {
+  connector: string;
+  action: string;
+  category: string;
+  auth: 'none' | 'bearer' | 'api_key' | 'oauth2' | 'mixed';
+  required_input_fields: string[];
+  optional_input_fields: string[];
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:3000';
 const LS_ACCESS = 'pulsegrid.accessToken';
 const LS_REFRESH = 'pulsegrid.refreshToken';
@@ -43,6 +52,7 @@ export default function HomePage() {
   const [workspaceId, setWorkspaceId] = useState('');
   const [flows, setFlows] = useState<Flow[]>([]);
   const [runs, setRuns] = useState<FlowRun[]>([]);
+  const [connectors, setConnectors] = useState<ConnectorCatalogItem[]>([]);
   const [events, setEvents] = useState<EventPayload[]>([]);
   const [error, setError] = useState('');
   const [authMsg, setAuthMsg] = useState('');
@@ -90,6 +100,12 @@ export default function HomePage() {
       }
     };
   }, [workspaceId, wsUrl]);
+
+  useEffect(() => {
+    if (token && refreshToken) {
+      void loadConnectors();
+    }
+  }, [token, refreshToken]);
 
   const successRuns = runs.filter((run) => run.status === 'success').length;
   const failedRuns = runs.filter((run) => run.status === 'failed').length;
@@ -204,6 +220,22 @@ export default function HomePage() {
       const runsData = (await runsRes.json()) as FlowRun[];
       setRuns(runsData);
     }
+
+    await loadConnectors();
+  }
+
+  async function loadConnectors() {
+    if (!token || !refreshToken) {
+      return;
+    }
+
+    const res = await authenticatedFetch(`${apiBase}/connectors/catalog`);
+    if (!res.ok) {
+      return;
+    }
+
+    const data = await res.json() as { items?: ConnectorCatalogItem[] };
+    setConnectors(data.items || []);
   }
 
   return (
@@ -322,6 +354,26 @@ export default function HomePage() {
           </ul>
         </section>
       </div>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2>Connector Catalog</h2>
+          <button onClick={loadConnectors}>Refresh Catalog</button>
+        </div>
+        <small>{connectors.length} connectors available in this build</small>
+        <ul>
+          {connectors.map((item) => (
+            <li key={`${item.connector}:${item.action}`}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <strong>{item.connector}</strong>
+                <span className="muted">{item.category} • {item.auth}</span>
+              </div>
+              <div className="muted">action: {item.action}</div>
+              <div className="muted">required: {item.required_input_fields.join(', ') || '-'}</div>
+            </li>
+          ))}
+        </ul>
+      </section>
     </main>
   );
 }
