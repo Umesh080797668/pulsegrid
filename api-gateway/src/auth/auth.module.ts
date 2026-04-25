@@ -16,6 +16,6 @@ import { AuthStore } from './auth.store';
   ],
   controllers: [AuthController],
   providers: [AuthStore, AuthService, JwtAuthGuard],
-  exports: [AuthService, JwtAuthGuard],
+  exports: [AuthService, JwtAuthGuard, AuthStore, JwtModule],
 })
 export class AuthModule {}

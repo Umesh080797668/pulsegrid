@@ -83,9 +83,14 @@ export default function HomePage() {
 
   useEffect(() => {
     let socket: Socket | null = null;
-    if (!workspaceId) return;
+    if (!workspaceId || !token) return;
 
-    socket = io(wsUrl, { transports: ['websocket'] });
+    socket = io(wsUrl, {
+      transports: ['websocket'],
+      auth: {
+        token: `Bearer ${token}`,
+      },
+    });
     socket.on('connect', () => {
       socket?.emit('join_workspace', { workspaceId });
     });
@@ -99,7 +104,7 @@ export default function HomePage() {
         socket.disconnect();
       }
     };
-  }, [workspaceId, wsUrl]);
+  }, [workspaceId, token, wsUrl]);
 
   useEffect(() => {
     if (token && refreshToken) {

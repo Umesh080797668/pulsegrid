@@ -118,6 +118,20 @@ export class AuthStore implements OnModuleDestroy {
     );
   }
 
+  async canAccessWorkspace(userId: string, workspaceId: string): Promise<boolean> {
+    const result = await this.pool.query<{ allowed: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM workspaces w
+         WHERE w.id = $1::uuid
+           AND w.owner_user_id = $2::uuid
+       ) AS allowed`,
+      [workspaceId, userId],
+    );
+
+    return result.rows[0]?.allowed === true;
+  }
+
   private async ensureAuthSchema(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
