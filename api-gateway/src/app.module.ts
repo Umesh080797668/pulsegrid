@@ -3,10 +3,12 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
 import { AppController } from './app.controller';
 import { Redis } from 'ioredis';
 import { ManagementApiKeyGuard } from './management-api-key.guard';
+import { AuthModule } from './auth/auth.module';
 
 @Global()
 @Module({
   imports: [
+    AuthModule,
     ClientsModule.register([
       {
         name: 'PULSECORE_PACKAGE',

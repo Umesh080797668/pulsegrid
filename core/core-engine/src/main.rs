@@ -4,13 +4,13 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
-use core_vm::{CoreVm, Pipeline};
-use core_connectors::{Connectors, HttpConfig};
-use core_vault::Vault;
+use std::sync::Arc;
 
 mod models;
 mod grpc;
-use models::{PulseEvent, CreateFlowRequest, FlowResponse};
+use models::{PulseEvent, CreateFlowRequest, FlowResponse, FlowDefinition};
+mod executor;
+use executor::FlowExecutor;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
 use grpc::MyPulseCoreService;
 
@@ -92,6 +92,8 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
         .block(5000) // Block for 5 seconds waiting for events
         .count(10);  // Read up to 10 events per batch
 
+    let executor = Arc::new(FlowExecutor::new());
+
     loop {
         // XREAD block from our blueprint's stream key
         let result: Result<StreamReadReply, redis::RedisError> = con
@@ -111,7 +113,7 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                             // Try parsing into our structural PulseEvent model
                             match serde_json::from_str::<PulseEvent>(&payload_str) {
                                 Ok(event) => {
-                                    println!("🔥 Received PulseEvent (ID: {}): Parsed Event: {:?}", last_id, event);
+                                    println!("🔥 Received PulseEvent (ID: {})", last_id);
                                     
                                     // Send to Postgres to track event/log run details properly
                                     let insert_result = sqlx::query!(
@@ -127,10 +129,11 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                     .await;
 
                                     match insert_result {
-                                        Ok(_) => println!("   ✅ Logged flow_run securely in Postgres!"),
+                                        Ok(_) => println!("   ✅ Logged flow_run in Postgres!"),
                                         Err(e) => eprintln!("   ❌ Error saving to Postgres: {}", e),
                                     }
 
+                                    // Fetch active flows for this workspace
                                     let active_flows = sqlx::query!(
                                         r#"
                                         SELECT id, name, definition FROM flows 
@@ -145,63 +148,101 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         println!("   ⚠️ No active flows found for workspace {}", event.tenant_id);
                                     }
 
+                                    // Process each flow
                                     for flow in active_flows {
-                                        // Parse Pipeline
-                                        let dummy_pipeline: Pipeline = match serde_json::from_value(flow.definition.clone()) {
-                                            Ok(p) => p,
+                                        // Parse FlowDefinition
+                                        let flow_def: FlowDefinition = match serde_json::from_value(flow.definition.clone()) {
+                                            Ok(def) => def,
                                             Err(e) => {
-                                                eprintln!("   ❌ Invalid pipeline definition for flow {}: {}", flow.id, e);
+                                                eprintln!("   ❌ Invalid flow definition for flow {}: {}", flow.id, e);
                                                 continue;
                                             }
                                         };
 
-                                        println!("   ⚡ Executing flow {}...", flow.name);
-                                        let mut pipeline_context = rhai::Map::new();
-                                        pipeline_context.insert("event_id".into(), rhai::Dynamic::from(event.id.clone().to_string()));
-                                        pipeline_context.insert("event_type".into(), rhai::Dynamic::from(event.event_type.clone()));
-                                        
-                                                                        let vm = CoreVm::new();
-                                    match vm.execute_pipeline(&dummy_pipeline, pipeline_context) {
-                                        Ok(result_ctx) => {
-                                            println!("   🌟 VM Check OK. Output Context:");
-                                            println!("      -> {:?}", result_ctx);
-                                            
-                                            // Execute connectors part
-                                            println!("   🔌 Executing Connectors...");
-                                            let connectors = Connectors::new();
-                                            let config = HttpConfig {
-                                                url: "https://httpbin.org/get".into(),
-                                                method: "GET".into(),
-                                                json_body: None,
-                                                headers: None,
-                                            };
-                                            match connectors.execute_http(&config).await {
-                                                Ok(val) => println!("   ✅ HTTP Connector Response: {}", val),
-                                                Err(e) => eprintln!("   ❌ HTTP Connector Error: {:?}", e),
-                                            }
+                                        // Check if trigger matches event
+                                        if !executor.matches_trigger(&flow_def.trigger, &event) {
+                                            println!("   ⏭️  Flow {} trigger did not match event", flow.name);
+                                            continue;
+                                        }
 
-                                            // Vault check
-                                            let vault = Vault::new("my-master-password!");
-                                            let plain = "my-secret-api-key";
-                                            if let Ok(encrypted) = vault.encrypt(plain) {
-                                                println!("   🔒 Vault Encrypted: {}", encrypted);
-                                                if let Ok(decrypted) = vault.decrypt(&encrypted) {
-                                                    println!("   🔓 Vault Decrypted matches: {}", decrypted == plain);
+                                        println!("   ⚡ Executing flow: {}", flow.name);
+                                        
+                                        // Resolve execution order (dependency graph)
+                                        let execution_order = match executor.resolve_execution_order(&flow_def.steps) {
+                                            Ok(order) => order,
+                                            Err(e) => {
+                                                eprintln!("   ❌ Failed to resolve execution order: {}", e);
+                                                continue;
+                                            }
+                                        };
+
+                                        // Execute step groups in parallel where possible
+                                        let mut step_outputs = std::collections::HashMap::new();
+                                        let mut all_steps_succeeded = true;
+                                        let mut steps_log = serde_json::json!([]);
+
+                                        for group in execution_order {
+                                            // Spawn tasks for parallel execution
+                                            let mut tasks = vec![];
+                                            
+                                            for step_id in &group {
+                                                if let Some(step) = flow_def.steps.iter().find(|s| &s.id == step_id) {
+                                                    let step_clone = step.clone();
+                                                    let executor_clone = Arc::clone(&executor);
+                                                    let event_clone = event.clone();
+
+                                                    let task = tokio::spawn(async move {
+                                                        executor_clone.execute_step(
+                                                            &step_clone,
+                                                            serde_json::json!({}),
+                                                            &std::collections::HashMap::new(),
+                                                            &event_clone,
+                                                        )
+                                                        .await
+                                                    });
+                                                    tasks.push(task);
                                                 }
                                             }
 
-
-                                            // Then update flow_run to success
-                                            let _ = sqlx::query!(
-                                                r#"UPDATE flow_runs SET status = $1, completed_at = NOW() WHERE trigger_event_id = $2"#,
-                                                "success",
-                                                event.id as _
-                                            ).execute(&pg_pool).await;
-                                        },
-                                        Err(e) => {
-                                            eprintln!("   ❌ VM Pipeline failed: {:?}", e);
+                                            // Wait for all tasks in this group to complete
+                                            for task in tasks {
+                                                match task.await {
+                                                    Ok(result) => {
+                                                        if result.status == "failed" {
+                                                            all_steps_succeeded = false;
+                                                            println!("      ❌ Step {} failed: {:?}", result.step_id, result.error);
+                                                        } else if result.status == "success" {
+                                                            println!("      ✅ Step {} completed in {}ms", result.step_id, result.duration_ms);
+                                                        } else if result.status == "skipped" {
+                                                            println!("      ⏭️  Step {} skipped (condition not met)", result.step_id);
+                                                        }
+                                                        
+                                                        step_outputs.insert(result.step_id.clone(), result.output.clone());
+                                                        steps_log.as_array_mut().unwrap().push(serde_json::json!({
+                                                            "step_id": result.step_id,
+                                                            "status": result.status,
+                                                            "duration_ms": result.duration_ms,
+                                                            "error": result.error
+                                                        }));
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("      ❌ Task join error: {}", e);
+                                                        all_steps_succeeded = false;
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
+
+                                        // Update flow run status
+                                        let final_status = if all_steps_succeeded { "success" } else { "failed" };
+                                        let _ = sqlx::query!(
+                                            r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE trigger_event_id = $3"#,
+                                            final_status,
+                                            steps_log,
+                                            event.id as _
+                                        ).execute(&pg_pool).await;
+
+                                        println!("   🏁 Flow execution completed with status: {}", final_status);
                                     }
                                 }
                                 Err(err) => {
