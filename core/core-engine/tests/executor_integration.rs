@@ -157,3 +157,33 @@ fn cyclic_dependencies_return_error() {
     let err = executor.resolve_execution_order(&steps).unwrap_err();
     assert!(err.contains("Cyclic"));
 }
+
+#[tokio::test]
+async fn schedule_connector_step_returns_next_run() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "schedule-step".into(),
+        r#type: "action".into(),
+        connector: Some("schedule".into()),
+        action: Some("next_run".into()),
+        input_mapping: Some(HashMap::from([
+            ("cron".to_string(), "0/30 * * * * * *".to_string()),
+            ("from".to_string(), "2026-01-01T00:00:00Z".to_string()),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("schedule".into()),
+        event_type: "tick".into(),
+        data: json!({}),
+    };
+
+    let result = executor.execute_step(&step, json!({}), &HashMap::new(), &event).await;
+    assert_eq!(result.status, "success");
+    assert!(result.output.get("output").is_some());
+}

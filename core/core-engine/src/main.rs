@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
+use reqwest::Client;
 
 mod models;
 mod grpc;
@@ -191,15 +192,16 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                     let step_clone = step.clone();
                                                     let executor_clone = Arc::clone(&executor);
                                                     let event_clone = event.clone();
+                                                    let outputs_snapshot = step_outputs.clone();
 
                                                     let task = tokio::spawn(async move {
-                                                        executor_clone.execute_step(
+                                                        execute_step_with_retry(
+                                                            executor_clone,
                                                             &step_clone,
                                                             serde_json::json!({}),
-                                                            &std::collections::HashMap::new(),
+                                                            &outputs_snapshot,
                                                             &event_clone,
-                                                        )
-                                                        .await
+                                                        ).await
                                                     });
                                                     tasks.push(task);
                                                 }
@@ -212,6 +214,20 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                         if result.status == "failed" {
                                                             all_steps_succeeded = false;
                                                             println!("      ❌ Step {} failed: {:?}", result.step_id, result.error);
+
+                                                            let dlq_key = format!("dlq:failed:{}", event.tenant_id);
+                                                            let dlq_payload = serde_json::json!({
+                                                                "workspace_id": event.tenant_id,
+                                                                "flow_id": flow.id,
+                                                                "flow_name": flow.name,
+                                                                "trigger_event_id": event.id,
+                                                                "step_id": result.step_id,
+                                                                "error": result.error,
+                                                                "failed_at": chrono::Utc::now().to_rfc3339(),
+                                                            });
+                                                            let _ = con
+                                                                .rpush::<_, _, usize>(dlq_key, dlq_payload.to_string())
+                                                                .await;
                                                         } else if result.status == "success" {
                                                             println!("      ✅ Step {} completed in {}ms", result.step_id, result.duration_ms);
                                                         } else if result.status == "skipped" {
@@ -243,6 +259,23 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                             event.id as _
                                         ).execute(&pg_pool).await;
 
+                                        if final_status == "failed" {
+                                            let notify_email = flow_def
+                                                .error_policy
+                                                .notify_email
+                                                .clone()
+                                                .or_else(|| std::env::var("FLOW_FAILURE_NOTIFY_EMAIL").ok());
+
+                                            if let Some(email) = notify_email {
+                                                let _ = send_failure_email(
+                                                    &email,
+                                                    &flow.name,
+                                                    event.id,
+                                                    event.tenant_id,
+                                                ).await;
+                                            }
+                                        }
+
                                         println!("   🏁 Flow execution completed with status: {}", final_status);
                                     }
                                 }
@@ -262,6 +295,89 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
             }
         }
     }
+}
+
+async fn execute_step_with_retry(
+    executor: Arc<FlowExecutor>,
+    step: &models::FlowStep,
+    input_data: serde_json::Value,
+    step_outputs: &std::collections::HashMap<String, serde_json::Value>,
+    event: &models::PulseEvent,
+) -> models::StepExecutionResult {
+    let max_retries = step.retry_policy.max_retries.max(0) as usize;
+    let base_backoff_ms = if step.retry_policy.initial_backoff_ms > 0 {
+        step.retry_policy.initial_backoff_ms as u64
+    } else {
+        500
+    };
+
+    for attempt in 0..=max_retries {
+        let result = executor
+            .execute_step(step, input_data.clone(), step_outputs, event)
+            .await;
+
+        if result.status != "failed" {
+            return result;
+        }
+
+        if attempt == max_retries {
+            return result;
+        }
+
+        let sleep_ms = base_backoff_ms.saturating_mul(2u64.saturating_pow(attempt as u32));
+        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+    }
+
+    models::StepExecutionResult {
+        step_id: step.id.clone(),
+        status: "failed".to_string(),
+        output: serde_json::Value::Null,
+        error: Some("retry loop exhausted".to_string()),
+        duration_ms: 0,
+    }
+}
+
+async fn send_failure_email(
+    to_email: &str,
+    flow_name: &str,
+    trigger_event_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+) -> Result<(), String> {
+    let resend_api_key = match std::env::var("RESEND_API_KEY") {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+
+    let from_email = std::env::var("FLOW_FAILURE_FROM_EMAIL")
+        .unwrap_or_else(|_| "PulseGrid <onboarding@resend.dev>".to_string());
+
+    let subject = format!("PulseGrid flow failed: {}", flow_name);
+    let html = format!(
+        "<p>A flow execution failed.</p><ul><li><b>Flow:</b> {}</li><li><b>Workspace:</b> {}</li><li><b>Trigger Event:</b> {}</li></ul>",
+        flow_name, workspace_id, trigger_event_id
+    );
+
+    let payload = serde_json::json!({
+        "from": from_email,
+        "to": [to_email],
+        "subject": subject,
+        "html": html,
+    });
+
+    let client = Client::new();
+    let resp = client
+        .post("https://api.resend.com/emails")
+        .bearer_auth(resend_api_key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("resend email failed with status {}", resp.status()));
+    }
+
+    Ok(())
 }
 
 async fn create_flow(

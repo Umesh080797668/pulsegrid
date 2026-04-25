@@ -1,6 +1,10 @@
 use crate::models::{
     FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition,
 };
+use core_connectors::{
+    Connectors, DiscordConfig, GmailSendConfig, GithubIssueConfig, GoogleSheetsAppendConfig,
+    HttpConfig, NotionCreatePageConfig, TelegramConfig,
+};
 use rhai::{Dynamic, Engine};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -202,13 +206,36 @@ impl FlowExecutor {
         }
 
         let output = match step.r#type.as_str() {
-            "action" => json!({
-                "step_id": step.id,
-                "connector": step.connector,
-                "action": step.action,
-                "input": self.render_input_mapping(step, step_outputs, event),
-                "status": "executed"
-            }),
+            "action" => {
+                let connector_name = step.connector.clone().unwrap_or_default().to_lowercase();
+                let action_name = step.action.clone().unwrap_or_default().to_lowercase();
+                let input = self.render_input_mapping(step, step_outputs, event);
+
+                let connectors = Connectors::new();
+                let exec_result = self
+                    .dispatch_connector_action(&connectors, &connector_name, &action_name, &input)
+                    .await;
+
+                match exec_result {
+                    Ok(value) => json!({
+                        "step_id": step.id,
+                        "connector": step.connector,
+                        "action": step.action,
+                        "input": input,
+                        "output": value,
+                        "status": "executed"
+                    }),
+                    Err(err) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(err),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                }
+            }
             "condition" => json!({
                 "result": step.condition.as_deref().map(|condition| self.evaluate_condition(condition, step_outputs, event)).unwrap_or(false)
             }),
@@ -279,6 +306,183 @@ impl FlowExecutor {
         }
 
         self.engine.eval_with_scope::<bool>(&mut scope, condition).unwrap_or(false)
+    }
+
+    async fn dispatch_connector_action(
+        &self,
+        connectors: &Connectors,
+        connector: &str,
+        action: &str,
+        input: &Value,
+    ) -> Result<Value, String> {
+        let get_required = |key: &str| -> Result<String, String> {
+            input
+                .get(key)
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .ok_or_else(|| format!("missing required input field: {key}"))
+        };
+
+        match connector {
+            "http" => {
+                let method = input
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("POST")
+                    .to_string();
+                let url = get_required("url")?;
+                let json_body = input.get("json_body").cloned();
+                let headers = input
+                    .get("headers")
+                    .and_then(Value::as_object)
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect::<std::collections::HashMap<String, String>>()
+                    });
+
+                let cfg = HttpConfig {
+                    url,
+                    method,
+                    json_body,
+                    headers,
+                };
+                connectors
+                    .execute_http(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "slack" => {
+                let webhook_url = get_required("webhook_url")?;
+                let text = get_required("text")?;
+                connectors
+                    .execute_slack(&webhook_url, &text)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"success": true}))
+            }
+            "gmail" => {
+                let cfg = GmailSendConfig {
+                    access_token: get_required("access_token")?,
+                    from: get_required("from")?,
+                    to: get_required("to")?,
+                    subject: get_required("subject")?,
+                    body: get_required("body")?,
+                };
+                connectors
+                    .execute_gmail_send(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "github" => {
+                let cfg = GithubIssueConfig {
+                    access_token: get_required("access_token")?,
+                    owner: get_required("owner")?,
+                    repo: get_required("repo")?,
+                    title: get_required("title")?,
+                    body: input.get("body").and_then(Value::as_str).map(ToString::to_string),
+                };
+                connectors
+                    .execute_github_issue_create(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "telegram" => {
+                let cfg = TelegramConfig {
+                    bot_token: get_required("bot_token")?,
+                    chat_id: get_required("chat_id")?,
+                    text: get_required("text")?,
+                };
+                connectors
+                    .execute_telegram_send(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "googlesheets" | "google_sheets" => {
+                let values = input
+                    .get("values")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "missing required input field: values".to_string())?
+                    .iter()
+                    .map(|row| {
+                        row.as_array()
+                            .map(|cells| {
+                                cells
+                                    .iter()
+                                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                                    .collect::<Vec<String>>()
+                            })
+                            .ok_or_else(|| "values must be a 2D array".to_string())
+                    })
+                    .collect::<Result<Vec<Vec<String>>, String>>()?;
+
+                let cfg = GoogleSheetsAppendConfig {
+                    access_token: get_required("access_token")?,
+                    spreadsheet_id: get_required("spreadsheet_id")?,
+                    range: get_required("range")?,
+                    values,
+                };
+                connectors
+                    .execute_google_sheets_append(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "notion" => {
+                let cfg = NotionCreatePageConfig {
+                    access_token: get_required("access_token")?,
+                    database_id: get_required("database_id")?,
+                    properties: input
+                        .get("properties")
+                        .cloned()
+                        .ok_or_else(|| "missing required input field: properties".to_string())?,
+                };
+                connectors
+                    .execute_notion_create_page(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "discord" => {
+                let cfg = DiscordConfig {
+                    webhook_url: get_required("webhook_url")?,
+                    content: get_required("content")?,
+                };
+                connectors
+                    .execute_discord_send(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "webhook" => {
+                let signature_valid = connectors
+                    .verify_webhook_signature(&core_connectors::WebhookVerifyConfig {
+                        secret: get_required("secret")?,
+                        raw_payload: get_required("raw_payload")?,
+                        provided_signature: get_required("provided_signature")?,
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                Ok(json!({ "is_valid": signature_valid }))
+            }
+            "schedule" => {
+                let from = input
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(chrono::Utc::now);
+                let cron_expr = get_required("cron")?;
+                let next = connectors
+                    .schedule_next_run(&cron_expr, from)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "next_run_at": next.to_rfc3339() }))
+            }
+            _ => {
+                if action == "noop" {
+                    Ok(json!({"success": true}))
+                } else {
+                    Err(format!("unsupported connector: {connector}"))
+                }
+            }
+        }
     }
 }
 
