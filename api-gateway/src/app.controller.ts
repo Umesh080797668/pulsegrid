@@ -139,6 +139,21 @@ export class AppController implements OnModuleInit {
         'For bearer auth, set bearer_token.',
         'For API-key auth, set both api_key_header and api_key_value.',
       ],
+      supported_connector_aliases: [
+        'resend',
+        'openai',
+        'anthropic',
+        'airtable',
+        'hubspot',
+        'jira',
+        'linear',
+        'asana',
+        'clickup',
+        'trello',
+        'zendesk',
+        'pagerduty',
+        'stripe',
+      ],
     };
   }
 

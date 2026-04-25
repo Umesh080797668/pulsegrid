@@ -323,6 +323,21 @@ impl FlowExecutor {
                 .ok_or_else(|| format!("missing required input field: {key}"))
         };
 
+        let get_optional = |key: &str| -> Option<String> {
+            input
+                .get(key)
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        };
+
+        let to_headers = |headers_value: Option<&serde_json::Map<String, Value>>| {
+            headers_value.map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect::<std::collections::HashMap<String, String>>()
+            })
+        };
+
         match connector {
             "http" => {
                 let method = input
@@ -452,14 +467,7 @@ impl FlowExecutor {
                     .map_err(|e| e.to_string())
             }
             "custom" | "custom_app" => {
-                let headers = input
-                    .get("headers")
-                    .and_then(Value::as_object)
-                    .map(|obj| {
-                        obj.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                            .collect::<std::collections::HashMap<String, String>>()
-                    });
+                let headers = to_headers(input.get("headers").and_then(Value::as_object));
 
                 let cfg = CustomConnectorConfig {
                     endpoint_url: get_required("endpoint_url")?,
@@ -488,6 +496,238 @@ impl FlowExecutor {
                     .execute_custom_connector(&cfg)
                     .await
                     .map_err(|e| e.to_string())
+            }
+            "resend" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://api.resend.com/emails".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "from": get_required("from")?,
+                        "to": [get_required("to")?],
+                        "subject": get_required("subject")?,
+                        "html": get_required("html")?
+                    })),
+                    headers: None,
+                    bearer_token: get_required("api_key").ok(),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "openai" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: get_optional("endpoint_url")
+                        .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string()),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "model": input.get("model").cloned().unwrap_or(json!("gpt-4o-mini")),
+                        "messages": input.get("messages").cloned().unwrap_or(json!([])),
+                        "temperature": input.get("temperature").cloned().unwrap_or(json!(0.2))
+                    })),
+                    headers: None,
+                    bearer_token: get_required("api_key").ok(),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "anthropic" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: get_optional("endpoint_url")
+                        .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string()),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "model": input.get("model").cloned().unwrap_or(json!("claude-3-5-sonnet-latest")),
+                        "max_tokens": input.get("max_tokens").cloned().unwrap_or(json!(512)),
+                        "messages": input.get("messages").cloned().unwrap_or(json!([])),
+                    })),
+                    headers: Some(std::collections::HashMap::from([
+                        ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                    ])),
+                    bearer_token: None,
+                    api_key_header: Some("x-api-key".to_string()),
+                    api_key_value: get_optional("api_key"),
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "airtable" => {
+                let base_id = get_required("base_id")?;
+                let table = get_required("table")?;
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!("https://api.airtable.com/v0/{base_id}/{table}"),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "records": [
+                            {
+                                "fields": input.get("fields").cloned().unwrap_or(json!({}))
+                            }
+                        ]
+                    })),
+                    headers: None,
+                    bearer_token: get_required("api_key").ok(),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "hubspot" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://api.hubapi.com/crm/v3/objects/contacts".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "properties": input.get("properties").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: None,
+                    bearer_token: get_required("access_token").ok(),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "jira" => {
+                let domain = get_required("domain")?;
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!("https://{domain}/rest/api/3/issue"),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "fields": input.get("fields").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: Some(std::collections::HashMap::from([
+                        ("Accept".to_string(), "application/json".to_string()),
+                    ])),
+                    bearer_token: get_optional("access_token"),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "linear" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://api.linear.app/graphql".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "query": input.get("query").cloned().unwrap_or(json!("mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title } } }")),
+                        "variables": input.get("variables").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: None,
+                    bearer_token: get_required("api_key").ok(),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "asana" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://app.asana.com/api/1.0/tasks".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "data": input.get("data").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: None,
+                    bearer_token: get_required("access_token").ok(),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "clickup" => {
+                let list_id = get_required("list_id")?;
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!("https://api.clickup.com/api/v2/list/{list_id}/task"),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "name": get_required("name")?,
+                        "description": input.get("description").cloned().unwrap_or(json!("")),
+                        "assignees": input.get("assignees").cloned().unwrap_or(json!([])),
+                        "tags": input.get("tags").cloned().unwrap_or(json!([]))
+                    })),
+                    headers: None,
+                    bearer_token: None,
+                    api_key_header: Some("Authorization".to_string()),
+                    api_key_value: get_optional("api_key"),
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "trello" => {
+                let key = get_required("key")?;
+                let token = get_required("token")?;
+                let list_id = get_required("list_id")?;
+                let endpoint_url = format!(
+                    "https://api.trello.com/1/cards?idList={list_id}&key={key}&token={token}"
+                );
+                let cfg = CustomConnectorConfig {
+                    endpoint_url,
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "name": get_required("name")?,
+                        "desc": input.get("desc").cloned().unwrap_or(json!(""))
+                    })),
+                    headers: None,
+                    bearer_token: None,
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "zendesk" => {
+                let subdomain = get_required("subdomain")?;
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!("https://{subdomain}.zendesk.com/api/v2/tickets.json"),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "ticket": input.get("ticket").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: None,
+                    bearer_token: get_optional("access_token"),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "pagerduty" => {
+                let headers = std::collections::HashMap::from([
+                    ("Content-Type".to_string(), "application/json".to_string()),
+                ]);
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://events.pagerduty.com/v2/enqueue".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "routing_key": get_required("routing_key")?,
+                        "event_action": input.get("event_action").cloned().unwrap_or(json!("trigger")),
+                        "payload": input.get("payload").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: Some(headers),
+                    bearer_token: None,
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+            }
+            "stripe" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: get_optional("endpoint_url")
+                        .unwrap_or_else(|| "https://api.stripe.com/v1/customers".to_string()),
+                    method: get_optional("method").unwrap_or_else(|| "POST".to_string()),
+                    body: Some(input.get("body").cloned().unwrap_or(json!({}))),
+                    headers: to_headers(input.get("headers").and_then(Value::as_object)),
+                    bearer_token: None,
+                    api_key_header: Some("Authorization".to_string()),
+                    api_key_value: get_optional("api_key").map(|v| format!("Bearer {v}")),
+                };
+
+                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
             }
             "webhook" => {
                 let signature_valid = connectors
