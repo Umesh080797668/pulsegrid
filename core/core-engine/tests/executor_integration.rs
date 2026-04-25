@@ -187,3 +187,113 @@ async fn schedule_connector_step_returns_next_run() {
     assert_eq!(result.status, "success");
     assert!(result.output.get("output").is_some());
 }
+
+#[tokio::test]
+async fn resend_connector_requires_api_key() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "resend-step".into(),
+        r#type: "action".into(),
+        connector: Some("resend".into()),
+        action: Some("send_email".into()),
+        input_mapping: Some(HashMap::from([
+            ("from".to_string(), "noreply@pulsegrid.dev".to_string()),
+            ("to".to_string(), "user@example.com".to_string()),
+            ("subject".to_string(), "Hello".to_string()),
+            ("html".to_string(), "<b>Hi</b>".to_string()),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("missing required input field: api_key"));
+}
+
+#[tokio::test]
+async fn jira_connector_requires_access_token() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "jira-step".into(),
+        r#type: "action".into(),
+        connector: Some("jira".into()),
+        action: Some("create_issue".into()),
+        input_mapping: Some(HashMap::from([
+            ("domain".to_string(), "example.atlassian.net".to_string()),
+            (
+                "fields".to_string(),
+                "{\"project\":{\"key\":\"PG\"},\"summary\":\"Bug\",\"issuetype\":{\"name\":\"Task\"}}".to_string(),
+            ),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("missing required input field: access_token"));
+}
+
+#[tokio::test]
+async fn stripe_connector_requires_api_key() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "stripe-step".into(),
+        r#type: "action".into(),
+        connector: Some("stripe".into()),
+        action: Some("request".into()),
+        input_mapping: Some(HashMap::from([(
+            "endpoint_url".to_string(),
+            "https://api.stripe.com/v1/customers".to_string(),
+        )])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("missing required input field: api_key"));
+}

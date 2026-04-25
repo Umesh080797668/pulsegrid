@@ -508,7 +508,7 @@ impl FlowExecutor {
                         "html": get_required("html")?
                     })),
                     headers: None,
-                    bearer_token: get_required("api_key").ok(),
+                    bearer_token: Some(get_required("api_key")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -526,7 +526,7 @@ impl FlowExecutor {
                         "temperature": input.get("temperature").cloned().unwrap_or(json!(0.2))
                     })),
                     headers: None,
-                    bearer_token: get_required("api_key").ok(),
+                    bearer_token: Some(get_required("api_key")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -548,7 +548,7 @@ impl FlowExecutor {
                     ])),
                     bearer_token: None,
                     api_key_header: Some("x-api-key".to_string()),
-                    api_key_value: get_optional("api_key"),
+                    api_key_value: Some(get_required("api_key")?),
                 };
 
                 connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
@@ -567,7 +567,7 @@ impl FlowExecutor {
                         ]
                     })),
                     headers: None,
-                    bearer_token: get_required("api_key").ok(),
+                    bearer_token: Some(get_required("api_key")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -582,7 +582,7 @@ impl FlowExecutor {
                         "properties": input.get("properties").cloned().unwrap_or(json!({}))
                     })),
                     headers: None,
-                    bearer_token: get_required("access_token").ok(),
+                    bearer_token: Some(get_required("access_token")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -600,7 +600,7 @@ impl FlowExecutor {
                     headers: Some(std::collections::HashMap::from([
                         ("Accept".to_string(), "application/json".to_string()),
                     ])),
-                    bearer_token: get_optional("access_token"),
+                    bearer_token: Some(get_required("access_token")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -616,7 +616,7 @@ impl FlowExecutor {
                         "variables": input.get("variables").cloned().unwrap_or(json!({}))
                     })),
                     headers: None,
-                    bearer_token: get_required("api_key").ok(),
+                    bearer_token: Some(get_required("api_key")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -631,7 +631,7 @@ impl FlowExecutor {
                         "data": input.get("data").cloned().unwrap_or(json!({}))
                     })),
                     headers: None,
-                    bearer_token: get_required("access_token").ok(),
+                    bearer_token: Some(get_required("access_token")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -652,7 +652,7 @@ impl FlowExecutor {
                     headers: None,
                     bearer_token: None,
                     api_key_header: Some("Authorization".to_string()),
-                    api_key_value: get_optional("api_key"),
+                    api_key_value: Some(get_required("api_key")?),
                 };
 
                 connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
@@ -688,7 +688,7 @@ impl FlowExecutor {
                         "ticket": input.get("ticket").cloned().unwrap_or(json!({}))
                     })),
                     headers: None,
-                    bearer_token: get_optional("access_token"),
+                    bearer_token: Some(get_required("access_token")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
@@ -724,7 +724,7 @@ impl FlowExecutor {
                     headers: to_headers(input.get("headers").and_then(Value::as_object)),
                     bearer_token: None,
                     api_key_header: Some("Authorization".to_string()),
-                    api_key_value: get_optional("api_key").map(|v| format!("Bearer {v}")),
+                    api_key_value: Some(format!("Bearer {}", get_required("api_key")?)),
                 };
 
                 connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
