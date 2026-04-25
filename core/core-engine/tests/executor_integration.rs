@@ -1,5 +1,7 @@
+#[allow(dead_code)]
 #[path = "../src/models.rs"]
 mod models;
+#[allow(dead_code)]
 #[path = "../src/executor.rs"]
 mod executor;
 
@@ -46,7 +48,11 @@ fn multi_step_flow_execution_order_groups_parallel_steps() {
     ];
 
     let order = executor.resolve_execution_order(&steps).unwrap();
-    assert_eq!(order, vec![vec!["step1".to_string()], vec!["step2".to_string(), "step3".to_string()]]);
+    assert_eq!(order.len(), 2);
+    assert_eq!(order[0], vec!["step1".to_string()]);
+    assert_eq!(order[1].len(), 2);
+    assert!(order[1].contains(&"step2".to_string()));
+    assert!(order[1].contains(&"step3".to_string()));
 }
 
 #[test]

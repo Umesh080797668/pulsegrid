@@ -1,11 +1,12 @@
-import { Controller, Get, Inject, OnModuleInit, Post, Body, Param, Headers, Req, RawBodyRequest, UnauthorizedException, BadRequestException, ParseUUIDPipe, UseGuards, InternalServerErrorException } from '@nestjs/common';
+import { Controller, Get, Inject, OnModuleInit, Post, Body, Param, Headers, Req, RawBodyRequest, UnauthorizedException, BadRequestException, ParseUUIDPipe, UseGuards, InternalServerErrorException, Delete, Put, Query } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
 import { Redis } from 'ioredis';
 import { Request } from 'express';
 import * as crypto from 'crypto';
-import { TriggerFlowDto, SetSecretDto } from './dto';
+import { TriggerFlowDto, SetSecretDto, CreateFlowDto, UpdateFlowDto } from './dto';
 import { ManagementApiKeyGuard } from './management-api-key.guard';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 
 interface PulseCoreService {
   triggerFlow(data: { workspaceId: string; flowId: string; payloadJson: string }): Observable<any>;
@@ -16,6 +17,7 @@ interface PulseCoreService {
 @Controller()
 export class AppController implements OnModuleInit {
   private pulseCoreService!: PulseCoreService;
+  private readonly coreHttpBaseUrl = process.env.CORE_ENGINE_HTTP_URL || 'http://127.0.0.1:8000';
 
   constructor(
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
@@ -26,6 +28,7 @@ export class AppController implements OnModuleInit {
     this.pulseCoreService = this.client.getService<PulseCoreService>('PulseCoreService');
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('trigger')
   triggerFlow(@Body() body: TriggerFlowDto) {
     console.log('Sending trigger request to Core Engine over gRPC...', body);
@@ -36,7 +39,66 @@ export class AppController implements OnModuleInit {
     });
   }
 
-  @UseGuards(ManagementApiKeyGuard)
+  @UseGuards(JwtAuthGuard)
+  @Post('flows')
+  async createFlow(@Body() body: CreateFlowDto) {
+    return this.coreRequest('/api/v1/flows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspace_id: body.workspaceId,
+        name: body.name,
+        description: body.description ?? null,
+        definition: body.definition,
+      }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flows')
+  async listFlows(
+    @Query('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+  ) {
+    return this.coreRequest(`/api/v1/flows/${workspaceId}`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flows/:flowId')
+  async getFlow(@Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string) {
+    return this.coreRequest(`/api/v1/flow/${flowId}`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('flows/:flowId')
+  async updateFlow(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Body() body: UpdateFlowDto,
+  ) {
+    return this.coreRequest(`/api/v1/flow/${flowId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: body.name,
+        description: body.description,
+        definition: body.definition,
+        enabled: body.enabled,
+      }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('flows/:flowId')
+  async deleteFlow(@Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string) {
+    return this.coreRequest(`/api/v1/flow/${flowId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
   @Post('workspaces/:workspaceId/secrets')
   setSecret(
     @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
@@ -142,5 +204,27 @@ export class AppController implements OnModuleInit {
   @Get('health')
   health() {
     return 'API Gateway OK';
+  }
+
+  private async coreRequest(path: string, options: RequestInit) {
+    let response: Response;
+    try {
+      response = await fetch(`${this.coreHttpBaseUrl}${path}`, options);
+    } catch {
+      throw new InternalServerErrorException('Core engine is unreachable');
+    }
+
+    const text = await response.text();
+    const maybeJson = text ? (() => {
+      try { return JSON.parse(text); } catch { return text; }
+    })() : null;
+
+    if (!response.ok) {
+      if (response.status === 400) throw new BadRequestException(maybeJson || 'Invalid request');
+      if (response.status === 401) throw new UnauthorizedException(maybeJson || 'Unauthorized');
+      throw new InternalServerErrorException(typeof maybeJson === 'string' ? maybeJson : 'Core request failed');
+    }
+
+    return maybeJson;
   }
 }

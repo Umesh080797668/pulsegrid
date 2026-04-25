@@ -85,6 +85,14 @@ pub struct CreateFlowRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateFlowRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub definition: Option<Value>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FlowResponse {
     pub id: Uuid,
     pub workspace_id: Uuid,
@@ -93,19 +101,6 @@ pub struct FlowResponse {
     pub definition: Value,
     pub enabled: bool,
     pub run_count: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FlowRunLog {
-    pub run_id: Uuid,
-    pub flow_id: Uuid,
-    pub workspace_id: Uuid,
-    pub status: String, // "running", "success", "failed", "partial"
-    pub started_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub duration_ms: Option<i32>,
-    pub steps_log: Value, // JSON array of step execution details
-    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

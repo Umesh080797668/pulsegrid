@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 mod models;
 mod grpc;
-use models::{PulseEvent, CreateFlowRequest, FlowResponse, FlowDefinition};
+use models::{PulseEvent, CreateFlowRequest, FlowResponse, FlowDefinition, UpdateFlowRequest};
 mod executor;
 use executor::FlowExecutor;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
@@ -34,6 +34,7 @@ async fn main() {
         .route("/health", get(|| async { "OK" }))
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
+        .route("/api/v1/flow/{flow_id}", get(get_flow).put(update_flow).delete(delete_flow))
         .with_state(pool.clone());
 
     // Run the server on port 8000 to avoid Tomcat conflict
@@ -321,4 +322,109 @@ async fn list_flows(
     }).collect();
 
     Ok(Json(flows))
+}
+
+async fn get_flow(
+    State(pool): State<sqlx::PgPool>,
+    Path(flow_id): Path<uuid::Uuid>,
+) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id, workspace_id, name, description, definition, enabled, run_count
+        FROM flows
+        WHERE id = $1
+        "#,
+        flow_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    Ok(Json(FlowResponse {
+        id: row.id,
+        workspace_id: row.workspace_id.unwrap_or_default(),
+        name: row.name,
+        description: row.description,
+        definition: row.definition,
+        enabled: row.enabled.unwrap_or(true),
+        run_count: row.run_count.unwrap_or(0),
+    }))
+}
+
+async fn update_flow(
+    State(pool): State<sqlx::PgPool>,
+    Path(flow_id): Path<uuid::Uuid>,
+    Json(payload): Json<UpdateFlowRequest>,
+) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+    let existing = sqlx::query!(
+        r#"
+        SELECT id, workspace_id, name, description, definition, enabled, run_count
+        FROM flows
+        WHERE id = $1
+        "#,
+        flow_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    let updated_name = payload.name.unwrap_or(existing.name);
+    let updated_description = payload.description.or(existing.description);
+    let updated_definition = payload.definition.unwrap_or(existing.definition);
+    let updated_enabled = payload.enabled.unwrap_or(existing.enabled.unwrap_or(true));
+
+    let row = sqlx::query!(
+        r#"
+        UPDATE flows
+        SET name = $1,
+            description = $2,
+            definition = $3,
+            enabled = $4,
+            updated_at = NOW()
+        WHERE id = $5
+        RETURNING id, workspace_id, name, description, definition, enabled, run_count
+        "#,
+        updated_name,
+        updated_description,
+        updated_definition,
+        updated_enabled,
+        flow_id
+    )
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(FlowResponse {
+        id: row.id,
+        workspace_id: row.workspace_id.unwrap_or_default(),
+        name: row.name,
+        description: row.description,
+        definition: row.definition,
+        enabled: row.enabled.unwrap_or(true),
+        run_count: row.run_count.unwrap_or(0),
+    }))
+}
+
+async fn delete_flow(
+    State(pool): State<sqlx::PgPool>,
+    Path(flow_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let result = sqlx::query!(
+        r#"
+        DELETE FROM flows
+        WHERE id = $1
+        "#,
+        flow_id
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if result.rows_affected() == 0 {
+        return Err((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()));
+    }
+
+    Ok(Json(serde_json::json!({ "success": true, "flowId": flow_id })))
 }

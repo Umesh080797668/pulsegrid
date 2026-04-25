@@ -206,6 +206,7 @@ impl FlowExecutor {
                 "step_id": step.id,
                 "connector": step.connector,
                 "action": step.action,
+                "input": self.render_input_mapping(step, step_outputs, event),
                 "status": "executed"
             }),
             "condition" => json!({
@@ -230,6 +231,31 @@ impl FlowExecutor {
             error: None,
             duration_ms: started.elapsed().as_millis() as i32,
         }
+    }
+
+    fn render_input_mapping(
+        &self,
+        step: &FlowStep,
+        step_outputs: &HashMap<String, Value>,
+        event: &PulseEvent,
+    ) -> Value {
+        let Some(mapping) = &step.input_mapping else {
+            return Value::Null;
+        };
+
+        let mut rendered = serde_json::Map::new();
+        for (key, template) in mapping {
+            match self.transform_data(template, step_outputs, event) {
+                Ok(value) => {
+                    rendered.insert(key.clone(), value);
+                }
+                Err(err) => {
+                    rendered.insert(key.clone(), json!({"error": err}));
+                }
+            }
+        }
+
+        Value::Object(rendered)
     }
 
     fn evaluate_condition(
