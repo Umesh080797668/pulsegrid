@@ -80,8 +80,8 @@ impl PulseCoreService for MyPulseCoreService {
         let req = request.into_inner();
         let ws_id = Uuid::parse_str(&req.workspace_id)
             .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
-        let secret_name = req.secret_name.trim().to_uppercase();
-        if secret_name.is_empty() {
+        let connector_id = req.secret_name.trim().to_uppercase();
+        if connector_id.is_empty() {
             return Err(Status::invalid_argument("Secret name is required"));
         }
 
@@ -97,21 +97,26 @@ impl PulseCoreService for MyPulseCoreService {
             return Err(Status::not_found("Workspace not found"));
         }
 
-        let encrypted_secret = self
+        let _encrypted_blob = self
             .vault
             .encrypt(&req.secret_value)
             .map_err(|_| Status::internal("Encryption failed"))?;
 
         // Upsert the secret
+        let (encrypted_blob, nonce) = self.vault.encrypt(&req.secret_value).map_err(|e| {
+            Status::internal(format!("Encryption error: {:?}", e))
+        })?;
+
         let res = sqlx::query!(
             r#"
-            INSERT INTO workspace_secrets (workspace_id, secret_name, encrypted_secret)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (workspace_id, secret_name) DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret, updated_at = NOW()
+            INSERT INTO credentials (workspace_id, connector_id, encrypted_blob, nonce)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (workspace_id, connector_id) DO UPDATE SET encrypted_blob = EXCLUDED.encrypted_blob, nonce = EXCLUDED.nonce, updated_at = NOW()
             "#,
             ws_id,
-            secret_name,
-            encrypted_secret
+            connector_id,
+            encrypted_blob,
+            nonce
         )
         .execute(&self.pg_pool)
         .await;
@@ -119,7 +124,7 @@ impl PulseCoreService for MyPulseCoreService {
         match res {
             Ok(_) => Ok(Response::new(SetWorkspaceSecretResponse {
                 success: true,
-                message: format!("Secret {} configured successfully", secret_name),
+                message: format!("Secret {} configured successfully", connector_id),
             })),
             Err(e) => {
                 println!("DB ERROR: {:?}", e);
@@ -139,19 +144,19 @@ impl PulseCoreService for MyPulseCoreService {
 
         // Fetch encrypted secret, assuming WEBHOOK_SECRET is the name
         let row = sqlx::query_as::<_, WorkspaceSecret>(
-            "SELECT id, workspace_id, secret_name, encrypted_secret, created_at, updated_at FROM workspace_secrets WHERE workspace_id = $1 AND secret_name = 'WEBHOOK_SECRET'"
+            "SELECT id, workspace_id, connector_id, encrypted_blob, nonce, created_at, updated_at FROM credentials WHERE workspace_id = $1 AND connector_id = 'WEBHOOK_SECRET'"
         )
         .bind(ws_id)
         .fetch_optional(&self.pg_pool)
         .await;
 
-        let secret = match row {
-            Ok(Some(r)) => r.encrypted_secret,
+        let row = match row {
+            Ok(Some(r)) => r,
             Ok(None) => return Ok(Response::new(VerifyWebhookResponse { is_valid: false })),
             Err(_) => return Err(Status::internal("DB error")),
         };
 
-        let plain_secret = match self.vault.decrypt(&secret) {
+        let plain_secret = match self.vault.decrypt(&row.encrypted_blob, &row.nonce) {
             Ok(s) => s,
             Err(_) => return Err(Status::internal("Decryption error")),
         };

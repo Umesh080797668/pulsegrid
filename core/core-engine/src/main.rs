@@ -73,10 +73,10 @@ async fn main() {
         )
         .route(
             "/api/v1/workspaces/{workspace_id}/secrets",
-            post(upsert_workspace_secret).get(list_workspace_secrets),
+            post(upsert_credential).get(list_credentials),
         )
         .route(
-            "/api/v1/workspaces/{workspace_id}/secrets/{secret_name}",
+            "/api/v1/workspaces/{workspace_id}/secrets/{connector_id}",
             delete(delete_workspace_secret),
         )
         .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
@@ -800,13 +800,13 @@ async fn delete_flow(
     ))
 }
 
-async fn upsert_workspace_secret(
+async fn upsert_credential(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
     Json(payload): Json<UpsertWorkspaceSecretRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let secret_name = payload.name.trim().to_uppercase();
-    if secret_name.is_empty() {
+    let connector_id = payload.name.trim().to_uppercase();
+    if connector_id.is_empty() {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             "Secret name is required".to_string(),
@@ -820,7 +820,7 @@ async fn upsert_workspace_secret(
         ));
     }
 
-    let encrypted_secret = state.vault.encrypt(&payload.value).map_err(|e| {
+    let (encrypted_blob, nonce) = state.vault.encrypt(&payload.value).map_err(|e| {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("{e:?}"),
@@ -829,14 +829,15 @@ async fn upsert_workspace_secret(
 
     sqlx::query!(
         r#"
-        INSERT INTO workspace_secrets (workspace_id, secret_name, encrypted_secret)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (workspace_id, secret_name)
-        DO UPDATE SET encrypted_secret = EXCLUDED.encrypted_secret, updated_at = NOW()
+        INSERT INTO credentials (workspace_id, connector_id, encrypted_blob, nonce)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (workspace_id, connector_id)
+        DO UPDATE SET encrypted_blob = EXCLUDED.encrypted_blob, nonce = EXCLUDED.nonce, updated_at = NOW()
         "#,
         workspace_id,
-        secret_name,
-        encrypted_secret
+        connector_id,
+        encrypted_blob,
+        nonce
     )
     .execute(&state.pool)
     .await
@@ -845,20 +846,20 @@ async fn upsert_workspace_secret(
     Ok(Json(serde_json::json!({
         "success": true,
         "workspaceId": workspace_id,
-        "name": secret_name,
+        "name": connector_id,
     })))
 }
 
-async fn list_workspace_secrets(
+async fn list_credentials(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
 ) -> Result<Json<Vec<WorkspaceSecretSummary>>, (axum::http::StatusCode, String)> {
     let rows = sqlx::query!(
         r#"
-        SELECT secret_name, updated_at
-        FROM workspace_secrets
+        SELECT connector_id, updated_at
+        FROM credentials
         WHERE workspace_id = $1
-        ORDER BY secret_name ASC
+        ORDER BY connector_id ASC
         "#,
         workspace_id
     )
@@ -869,7 +870,7 @@ async fn list_workspace_secrets(
     Ok(Json(
         rows.into_iter()
             .map(|row| WorkspaceSecretSummary {
-                name: row.secret_name,
+                name: row.connector_id,
                 updated_at: row.updated_at,
             })
             .collect(),
@@ -878,9 +879,9 @@ async fn list_workspace_secrets(
 
 async fn delete_workspace_secret(
     State(state): State<AppState>,
-    Path((workspace_id, secret_name)): Path<(uuid::Uuid, String)>,
+    Path((workspace_id, connector_id)): Path<(uuid::Uuid, String)>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let normalized = secret_name.trim().to_uppercase();
+    let normalized = connector_id.trim().to_uppercase();
     if normalized.is_empty() {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
@@ -890,8 +891,8 @@ async fn delete_workspace_secret(
 
     let result = sqlx::query!(
         r#"
-        DELETE FROM workspace_secrets
-        WHERE workspace_id = $1 AND secret_name = $2
+        DELETE FROM credentials
+        WHERE workspace_id = $1 AND connector_id = $2
         "#,
         workspace_id,
         normalized

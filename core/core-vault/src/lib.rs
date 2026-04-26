@@ -35,43 +35,35 @@ impl Vault {
         }
     }
 
-    pub fn encrypt(&self, plain_text: &str) -> Result<String, VaultError> {
+    pub fn encrypt(&self, plain_text: &str) -> Result<(Vec<u8>, Vec<u8>), VaultError> {
         let rng = rand::SystemRandom::new();
         let mut nonce_bytes = [0u8; 12];
         rand::SecureRandom::fill(&rng, &mut nonce_bytes)
             .map_err(|_| VaultError::EncryptionFailed)?;
-        let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
-
         let mut in_out = plain_text.as_bytes().to_vec();
+        
+        let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
         self.key
             .seal_in_place_append_tag(nonce, aead::Aad::empty(), &mut in_out)
             .map_err(|_| VaultError::EncryptionFailed)?;
-
-        let mut output = nonce_bytes.to_vec();
-        output.extend_from_slice(&in_out);
-
-        Ok(general_purpose::STANDARD.encode(output))
+        
+        Ok((in_out, nonce_bytes.to_vec()))
     }
 
-    pub fn decrypt(&self, cipher_text: &str) -> Result<String, VaultError> {
-        let mut decoded = general_purpose::STANDARD
-            .decode(cipher_text)
-            .map_err(|_| VaultError::DecryptionFailed)?;
-
-        if decoded.len() < 12 {
+    pub fn decrypt(&self, encrypted_blob: &[u8], nonce_bytes: &[u8]) -> Result<String, VaultError> {
+        if nonce_bytes.len() != 12 {
             return Err(VaultError::DecryptionFailed);
         }
-
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes.copy_from_slice(&decoded[..12]);
-        let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
-
-        let in_out = &mut decoded[12..];
+        let mut nonce_arr = [0u8; 12];
+        nonce_arr.copy_from_slice(nonce_bytes);
+        let nonce = aead::Nonce::assume_unique_for_key(nonce_arr);
+        
+        let mut in_out = encrypted_blob.to_vec();
         let decrypted_data = self
             .key
-            .open_in_place(nonce, aead::Aad::empty(), in_out)
+            .open_in_place(nonce, aead::Aad::empty(), &mut in_out)
             .map_err(|_| VaultError::DecryptionFailed)?;
-
+            
         String::from_utf8(decrypted_data.to_vec()).map_err(|_| VaultError::DecryptionFailed)
     }
 
@@ -87,7 +79,6 @@ impl Vault {
         };
         mac.update(payload.as_bytes());
 
-        // Support both raw hex and "sha256=<hex>" formats.
         let provided = signature
             .trim()
             .strip_prefix("sha256=")

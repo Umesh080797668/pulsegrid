@@ -10,8 +10,9 @@ use chrono::{DateTime, Utc};
 pub struct WorkspaceSecret {
     pub id: Uuid,
     pub workspace_id: Uuid,
-    pub secret_name: String,
-    pub encrypted_secret: String,
+    pub connector_id: String,
+    pub encrypted_blob: Vec<u8>,
+    pub nonce: Vec<u8>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }

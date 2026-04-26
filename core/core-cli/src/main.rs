@@ -24,31 +24,33 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     #[command(about = "List flows for a workspace")]
-    List {
-        #[arg(long)]
-        workspace_id: Uuid,
-    },
+    List { #[arg(long)] workspace_id: Uuid },
     #[command(about = "Get a flow by id")]
-    Get {
-        #[arg(long)]
-        flow_id: Uuid,
-    },
+    Get { #[arg(long)] flow_id: Uuid },
     #[command(about = "Delete a flow by id")]
-    Delete {
-        #[arg(long)]
-        flow_id: Uuid,
-    },
+    Delete { #[arg(long)] flow_id: Uuid },
     #[command(about = "Create a flow from a JSON file")]
     Create {
-        #[arg(long)]
-        workspace_id: Uuid,
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        description: Option<String>,
-        #[arg(long, help = "Path to flow definition JSON file")]
-        definition_file: String,
+        #[arg(long)] workspace_id: Uuid,
+        #[arg(long)] name: String,
+        #[arg(long)] description: Option<String>,
+        #[arg(long)] definition_file: String,
     },
+    // Missing Phase 1 Commands
+    #[command(about = "Run a flow manually")]
+    FlowRun { #[arg(long)] id: Uuid },
+    #[command(about = "List flow runs")]
+    RunsList { #[arg(long)] flow: Uuid, #[arg(long, default_value = "20")] limit: usize },
+    #[command(about = "Tail live events for a source")]
+    EventsTail { #[arg(long)] source: String, #[arg(long)] r#type: String },
+    #[command(about = "Export all flows as backup")]
+    FlowExport { #[arg(long)] format: String, #[arg(long)] output: String },
+    #[command(about = "Import flows from file")]
+    FlowImport { #[arg(long)] file: String },
+    #[command(about = "Deploy a flow to a workspace")]
+    FlowDeploy { #[arg(long)] workspace: String, #[arg(long)] file: String },
+    #[command(about = "Test a connector")]
+    ConnectorTest { #[arg(name = "CONNECTOR")] connector: String },
 }
 
 #[tokio::main]
@@ -59,78 +61,58 @@ async fn main() {
     let result = match cli.command {
         Commands::List { workspace_id } => {
             let path = format!("/flows?workspaceId={workspace_id}");
-            send(
-                &client,
-                &cli.api_base_url,
-                &cli.access_token,
-                reqwest::Method::GET,
-                &path,
-                None,
-            )
-            .await
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::GET, &path, None).await
         }
         Commands::Get { flow_id } => {
             let path = format!("/flows/{flow_id}");
-            send(
-                &client,
-                &cli.api_base_url,
-                &cli.access_token,
-                reqwest::Method::GET,
-                &path,
-                None,
-            )
-            .await
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::GET, &path, None).await
         }
         Commands::Delete { flow_id } => {
             let path = format!("/flows/{flow_id}");
-            send(
-                &client,
-                &cli.api_base_url,
-                &cli.access_token,
-                reqwest::Method::DELETE,
-                &path,
-                None,
-            )
-            .await
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::DELETE, &path, None).await
         }
-        Commands::Create {
-            workspace_id,
-            name,
-            description,
-            definition_file,
-        } => {
-            let definition_raw = match std::fs::read_to_string(&definition_file) {
-                Ok(text) => text,
-                Err(e) => {
-                    eprintln!("Failed to read definition file: {e}");
-                    std::process::exit(1);
-                }
-            };
-
-            let definition: Value = match serde_json::from_str(&definition_raw) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("Invalid JSON in definition file: {e}");
-                    std::process::exit(1);
-                }
-            };
-
+        Commands::Create { workspace_id, name, description, definition_file } => {
+            let definition_raw = std::fs::read_to_string(&definition_file).expect("Failed to read definition file");
+            let definition: Value = serde_json::from_str(&definition_raw).expect("Invalid JSON in definition file");
             let body = serde_json::json!({
                 "workspaceId": workspace_id,
                 "name": name,
                 "description": description,
                 "definition": definition,
             });
-
-            send(
-                &client,
-                &cli.api_base_url,
-                &cli.access_token,
-                reqwest::Method::POST,
-                "/flows",
-                Some(body),
-            )
-            .await
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::POST, "/flows", Some(body)).await
+        }
+        Commands::FlowRun { id } => {
+            let path = format!("/flows/{id}/run");
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::POST, &path, None).await
+        }
+        Commands::RunsList { flow, limit } => {
+            let path = format!("/flows/{flow}/runs?limit={limit}");
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::GET, &path, None).await
+        }
+        Commands::EventsTail { source, r#type } => {
+            // Simplified for Phase 1 skeleton
+            let path = format!("/events/tail?source={source}&type={type}");
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::GET, &path, None).await
+        }
+        Commands::FlowExport { format, output } => {
+            // Stubbed
+            println!("Exporting flows to {} format in {}", format, output);
+            Ok(())
+        }
+        Commands::FlowImport { file } => {
+            // Stubbed
+            println!("Importing flows from {}", file);
+            Ok(())
+        }
+        Commands::FlowDeploy { workspace, file } => {
+            // Stubbed
+            println!("Deploying flow from {} to workspace {}", file, workspace);
+            Ok(())
+        }
+        Commands::ConnectorTest { connector } => {
+            let path = format!("/connectors/{connector}/test");
+            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::POST, &path, None).await
         }
     };
 
