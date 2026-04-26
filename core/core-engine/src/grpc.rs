@@ -40,8 +40,8 @@ impl PulseCoreService for MyPulseCoreService {
         let run_id = Uuid::new_v4().to_string();
 
         // Push event to Redis (assuming we want to simulate the gateway passing the flow trigger down)
-        let redis_url = "redis://127.0.0.1:6379/";
-        let client = redis::Client::open(redis_url)
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+        let client = redis::Client::open(redis_url.clone())
             .map_err(|_| Status::internal("Failed to create Redis client"))?;
         let mut con = client
             .get_multiplexed_async_connection()

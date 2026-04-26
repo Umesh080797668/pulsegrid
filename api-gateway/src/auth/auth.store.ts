@@ -123,8 +123,9 @@ export class AuthStore implements OnModuleDestroy {
       `SELECT EXISTS (
          SELECT 1
          FROM workspaces w
+         LEFT JOIN workspace_members wm ON w.id = wm.workspace_id
          WHERE w.id = $1::uuid
-           AND w.owner_user_id = $2::uuid
+           AND (w.owner_user_id = $2::uuid OR wm.user_id = $2::uuid)
        ) AS allowed`,
       [workspaceId, userId],
     );

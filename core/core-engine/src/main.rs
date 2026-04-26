@@ -162,25 +162,6 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                 Ok(event) => {
                                     println!("🔥 Received PulseEvent (ID: {})", last_id);
 
-                                    // Send to Postgres to track event/log run details properly
-                                    let insert_result = sqlx::query!(
-                                        r#"
-                                        INSERT INTO flow_runs (workspace_id, status, trigger_event_id, started_at) 
-                                        VALUES ($1, $2, $3, NOW())
-                                        "#,
-                                        event.tenant_id as _,
-                                        "running",
-                                        event.id as _
-                                    )
-                                    .execute(&pg_pool)
-                                    .await;
-
-                                    match insert_result {
-                                        Ok(_) => println!("   ✅ Logged flow_run in Postgres!"),
-                                        Err(e) => {
-                                            eprintln!("   ❌ Error saving to Postgres: {}", e)
-                                        }
-                                    }
 
                                     // Fetch active flows for this workspace
                                     let active_flows = sqlx::query!(
@@ -227,6 +208,31 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         }
 
                                         println!("   ⚡ Executing flow: {}", flow.name);
+
+                                        let insert_result = sqlx::query!(
+                                            r#"
+                                            INSERT INTO flow_runs (workspace_id, flow_id, status, trigger_event_id, started_at) 
+                                            VALUES ($1, $2, $3, $4, NOW())
+                                            RETURNING id
+                                            "#,
+                                            event.tenant_id as _,
+                                            flow.id as _,
+                                            "running",
+                                            event.id as _
+                                        )
+                                        .fetch_one(&pg_pool)
+                                        .await;
+
+                                        let flow_run_id = match insert_result {
+                                            Ok(rec) => {
+                                                println!("   ✅ Logged flow_run {} in Postgres!", rec.id);
+                                                rec.id
+                                            },
+                                            Err(e) => {
+                                                eprintln!("   ❌ Error saving to Postgres: {}", e);
+                                                continue;
+                                            }
+                                        };
 
                                         // Resolve execution order (dependency graph)
                                         let execution_order = match executor
@@ -347,10 +353,10 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                             "failed"
                                         };
                                         let _ = sqlx::query!(
-                                            r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE trigger_event_id = $3"#,
+                                            r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE id = $3"#,
                                             final_status,
                                             steps_log,
-                                            event.id as _
+                                            flow_run_id as _
                                         ).execute(&pg_pool).await;
 
                                         if final_status == "failed" {
