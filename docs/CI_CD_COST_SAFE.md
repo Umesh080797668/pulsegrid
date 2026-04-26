@@ -44,3 +44,17 @@ This is a template. Replace placeholder comments with your real deploy commands 
 - No `push`/`pull_request` auto-triggered hosted jobs
 - No `runs-on: ubuntu-latest` in committed workflows
 - Manual + self-hosted only
+
+## 5) Optional: pre-push local CI hook
+
+To ensure quality before every push (with zero GitHub minutes), enable the git hook:
+
+- `scripts/setup_git_hooks.sh`
+
+This configures:
+
+- `.githooks/pre-push` → runs `scripts/ci_local.sh`
+
+Bypass once if needed:
+
+- `SKIP_LOCAL_CI=1 git push`

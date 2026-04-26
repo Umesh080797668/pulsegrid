@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+
+if [[ "${SKIP_LOCAL_CI:-0}" == "1" ]]; then
+  echo "[pre-push] SKIP_LOCAL_CI=1 set. Skipping local CI checks."
+  exit 0
+fi
+
+echo "[pre-push] Running local CI checks before push..."
+"$ROOT_DIR/scripts/ci_local.sh"
+
+echo "[pre-push] All checks passed. Proceeding with push."
