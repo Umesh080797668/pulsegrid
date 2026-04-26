@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { FlowCanvas } from '../components/flow-canvas';
+import { motion } from 'framer-motion';
 
 /* ─── Types ─── */
 type Flow = { id: string; name: string; description?: string; enabled: boolean; run_count: number; definition?: unknown; };
@@ -888,7 +889,7 @@ export default function HomePage() {
           )}
 
         </div>{/* /content */}
-      </div></motion.div>{/* /main-area */}
-    </div>
+      </div>{/* /main-area */}
+    </motion.div>
   );
 }
