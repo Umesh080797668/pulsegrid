@@ -1,11 +1,12 @@
 use rhai::{Dynamic, Map, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wasmtime::{Engine as WasmEngine, Instance, Linker, Module, Store, TypedFunc};
+use wasmtime::{Config as WasmConfig, Engine as WasmEngine, Instance, Linker, Module, Store, TypedFunc};
 
 const MAX_WASM_MODULE_BYTES: usize = 1_048_576;
 const MAX_SCRIPT_INPUT_BYTES: usize = 65_536;
 const MAX_SCRIPT_OUTPUT_BYTES: usize = 262_144;
+const MAX_SCRIPT_FUEL: u64 = 2_000_000;
 
 #[derive(Debug, Clone, Default)]
 struct SandboxState {
@@ -39,8 +40,13 @@ pub struct CoreVm {
 
 impl CoreVm {
     pub fn new() -> Self {
+        let mut config = WasmConfig::default();
+        config.consume_fuel(true);
+
+        let wasm_engine = WasmEngine::new(&config).unwrap_or_else(|_| WasmEngine::default());
+
         Self {
-            wasm_engine: WasmEngine::default(),
+            wasm_engine,
         }
     }
 
@@ -57,6 +63,9 @@ impl CoreVm {
             .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
 
         let mut store = Store::new(&self.wasm_engine, SandboxState::default());
+        store
+            .set_fuel(MAX_SCRIPT_FUEL)
+            .map_err(|e| ExecutionError::SandboxError(e.to_string()))?;
         let linker = Linker::new(&self.wasm_engine);
         let instance: Instance = linker
             .instantiate(&mut store, &module)
@@ -201,4 +210,47 @@ mod tests {
 
         assert_eq!(output, serde_json::json!(42));
     }
+
+        #[test]
+        fn wat_sandbox_blocks_oversized_output_len() {
+                let vm = CoreVm::new();
+
+                let result = vm.execute_wat_script(
+                        r#"
+                        (module
+                            (memory (export "memory") 1)
+                            (func (export "alloc") (param $size i32) (result i32)
+                                i32.const 0)
+                            (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                                i64.const 262145))
+                        "#,
+                        &serde_json::json!({"hello": "sandbox"}),
+                );
+
+                assert!(matches!(
+                        result,
+                        Err(ExecutionError::SandboxError(msg)) if msg.contains("sandbox output exceeds max size")
+                ));
+        }
+
+        #[test]
+        fn wat_sandbox_interrupts_runaway_loop_by_fuel() {
+                let vm = CoreVm::new();
+
+                let result = vm.execute_wat_script(
+                        r#"
+                        (module
+                            (memory (export "memory") 1)
+                            (func (export "alloc") (param $size i32) (result i32)
+                                i32.const 0)
+                            (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                                (loop
+                                    br 0)
+                                i64.const 0))
+                        "#,
+                        &serde_json::json!({"hello": "sandbox"}),
+                );
+
+                assert!(matches!(result, Err(ExecutionError::SandboxError(_))));
+        }
 }
