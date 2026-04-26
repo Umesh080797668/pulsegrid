@@ -1,0 +1,48 @@
+name: PulseGrid Deploy (Manual, Self-Hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment target"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      deploy_dashboard:
+        description: "Deploy dashboard"
+        required: false
+        type: boolean
+        default: true
+      deploy_api_gateway:
+        description: "Deploy api-gateway"
+        required: false
+        type: boolean
+        default: true
+      deploy_core_engine:
+        description: "Deploy core-engine"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare deployment script
+        run: chmod +x scripts/deploy.sh
+
+      - name: Deploy selected services
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOY_DASHBOARD: ${{ inputs.deploy_dashboard }}
+          DEPLOY_API_GATEWAY: ${{ inputs.deploy_api_gateway }}
+          DEPLOY_CORE_ENGINE: ${{ inputs.deploy_core_engine }}
+        run: ./scripts/deploy.sh

@@ -1,0 +1,56 @@
+name: PulseGrid CI (Manual, Self-Hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_dashboard_build:
+        description: "Run dashboard production build"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: pulsegrid-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    # Cost-safe default: this uses your own machine runner, not GitHub-hosted minutes.
+    runs-on: self-hosted
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: API Gateway - install + typecheck + tests
+        working-directory: api-gateway
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
+
+      - name: Core - rust checks/tests
+        working-directory: core
+        run: |
+          cargo check -p core-engine -p core-cli
+          cargo test -p core-engine --test executor_integration
+
+      - name: Dashboard - install + typecheck
+        working-directory: dashboard
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+      - name: Dashboard - build
+        if: ${{ inputs.run_dashboard_build == true }}
+        working-directory: dashboard
+        run: npm run build
