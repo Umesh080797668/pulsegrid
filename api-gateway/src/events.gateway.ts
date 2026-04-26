@@ -69,7 +69,9 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     this.streamReader = this.redis.duplicate();
-    await this.streamReader.connect();
+    if (this.streamReader.status === 'wait') {
+      await this.streamReader.connect();
+    }
     void this.startRelayLoop();
   }
 

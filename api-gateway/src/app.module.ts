@@ -38,6 +38,6 @@ import { EventsGateway } from './events.gateway';
       },
     },
   ],
-  exports: ['REDIS_CLIENT'],
+  exports: ['REDIS_CLIENT', RateLimitService],
 })
 export class AppModule {}
