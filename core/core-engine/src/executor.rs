@@ -2,23 +2,26 @@ use crate::models::{
     FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition,
 };
 use core_connectors::{
-    Connectors, CustomConnectorConfig, DiscordConfig, GmailSendConfig, GithubIssueConfig,
+    Connectors, CustomConnectorConfig, DiscordConfig, GithubIssueConfig, GmailSendConfig,
     GoogleSheetsAppendConfig, HttpConfig, NotionCreatePageConfig, TelegramConfig,
 };
+use core_vm::CoreVm;
 use rhai::{Dynamic, Engine};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct FlowExecutor {
     engine: Arc<Engine>,
+    sandbox: Arc<CoreVm>,
 }
 
 impl FlowExecutor {
     pub fn new() -> Self {
         Self {
             engine: Arc::new(Engine::new()),
+            sandbox: Arc::new(CoreVm::new()),
         }
     }
 
@@ -46,10 +49,22 @@ impl FlowExecutor {
         match filter.op.as_str() {
             "eq" => current == filter.value,
             "neq" => current != filter.value,
-            "gt" => current.as_f64().zip(filter.value.as_f64()).is_some_and(|(a, b)| a > b),
-            "gte" => current.as_f64().zip(filter.value.as_f64()).is_some_and(|(a, b)| a >= b),
-            "lt" => current.as_f64().zip(filter.value.as_f64()).is_some_and(|(a, b)| a < b),
-            "lte" => current.as_f64().zip(filter.value.as_f64()).is_some_and(|(a, b)| a <= b),
+            "gt" => current
+                .as_f64()
+                .zip(filter.value.as_f64())
+                .is_some_and(|(a, b)| a > b),
+            "gte" => current
+                .as_f64()
+                .zip(filter.value.as_f64())
+                .is_some_and(|(a, b)| a >= b),
+            "lt" => current
+                .as_f64()
+                .zip(filter.value.as_f64())
+                .is_some_and(|(a, b)| a < b),
+            "lte" => current
+                .as_f64()
+                .zip(filter.value.as_f64())
+                .is_some_and(|(a, b)| a <= b),
             "contains" => current
                 .as_str()
                 .zip(filter.value.as_str())
@@ -76,7 +91,8 @@ impl FlowExecutor {
     }
 
     pub fn resolve_execution_order(&self, steps: &[FlowStep]) -> Result<Vec<Vec<String>>, String> {
-        let step_map: HashMap<&str, &FlowStep> = steps.iter().map(|step| (step.id.as_str(), step)).collect();
+        let step_map: HashMap<&str, &FlowStep> =
+            steps.iter().map(|step| (step.id.as_str(), step)).collect();
         let mut remaining: HashSet<String> = steps.iter().map(|step| step.id.clone()).collect();
         let mut completed: HashSet<String> = HashSet::new();
         let mut groups: Vec<Vec<String>> = Vec::new();
@@ -117,8 +133,12 @@ impl FlowExecutor {
         let mut rendered = template.to_string();
 
         loop {
-            let Some(start) = rendered.find("{{") else { break; };
-            let Some(end_rel) = rendered[start + 2..].find("}}") else { break; };
+            let Some(start) = rendered.find("{{") else {
+                break;
+            };
+            let Some(end_rel) = rendered[start + 2..].find("}}") else {
+                break;
+            };
             let end = start + 2 + end_rel;
             let expr = rendered[start + 2..end].trim();
             let value = self.evaluate_expression(expr, step_outputs, event)?;
@@ -169,9 +189,15 @@ impl FlowExecutor {
 
     fn apply_filter(&self, filter: &str, value: Value) -> Result<Value, String> {
         match filter {
-            "lowercase" => Ok(Value::String(value.as_str().unwrap_or_default().to_lowercase())),
-            "uppercase" => Ok(Value::String(value.as_str().unwrap_or_default().to_uppercase())),
-            "trim" => Ok(Value::String(value.as_str().unwrap_or_default().trim().to_string())),
+            "lowercase" => Ok(Value::String(
+                value.as_str().unwrap_or_default().to_lowercase(),
+            )),
+            "uppercase" => Ok(Value::String(
+                value.as_str().unwrap_or_default().to_uppercase(),
+            )),
+            "trim" => Ok(Value::String(
+                value.as_str().unwrap_or_default().trim().to_string(),
+            )),
             "json" => {
                 if let Some(text) = value.as_str() {
                     serde_json::from_str::<Value>(text).map_err(|e| e.to_string())
@@ -239,7 +265,57 @@ impl FlowExecutor {
             "condition" => json!({
                 "result": step.condition.as_deref().map(|condition| self.evaluate_condition(condition, step_outputs, event)).unwrap_or(false)
             }),
-            "script" => json!({"status": "script_executed"}),
+            "script" => {
+                let script_language = step.script_language.as_deref().unwrap_or("wat");
+                let Some(code) = step.code.as_deref() else {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("script step is missing code".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                };
+
+                if !matches!(script_language, "wat" | "wasm") {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some(format!("unsupported script language: {script_language}")),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
+
+                let script_input = json!({
+                    "step_id": step.id,
+                    "script_language": script_language,
+                    "input": _input_data,
+                    "event": event,
+                    "step_outputs": step_outputs,
+                });
+
+                match self.sandbox.execute_wat_script(code, &script_input) {
+                    Ok(output) => json!({
+                        "status": "script_executed",
+                        "language": script_language,
+                        "output": output,
+                    }),
+                    Err(err) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(match err {
+                                core_vm::ExecutionError::ScriptError(message) => message,
+                                core_vm::ExecutionError::SandboxError(message) => message,
+                                core_vm::ExecutionError::UnknownKind(message) => message,
+                            }),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                }
+            }
             other => {
                 return StepExecutionResult {
                     step_id: step.id.clone(),
@@ -305,7 +381,9 @@ impl FlowExecutor {
             scope.push_dynamic(key.as_str(), dynamic);
         }
 
-        self.engine.eval_with_scope::<bool>(&mut scope, condition).unwrap_or(false)
+        self.engine
+            .eval_with_scope::<bool>(&mut scope, condition)
+            .unwrap_or(false)
     }
 
     async fn dispatch_connector_action(
@@ -347,14 +425,11 @@ impl FlowExecutor {
                     .to_string();
                 let url = get_required("url")?;
                 let json_body = input.get("json_body").cloned();
-                let headers = input
-                    .get("headers")
-                    .and_then(Value::as_object)
-                    .map(|obj| {
-                        obj.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                            .collect::<std::collections::HashMap<String, String>>()
-                    });
+                let headers = input.get("headers").and_then(Value::as_object).map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect::<std::collections::HashMap<String, String>>()
+                });
 
                 let cfg = HttpConfig {
                     url,
@@ -395,7 +470,10 @@ impl FlowExecutor {
                     owner: get_required("owner")?,
                     repo: get_required("repo")?,
                     title: get_required("title")?,
-                    body: input.get("body").and_then(Value::as_str).map(ToString::to_string),
+                    body: input
+                        .get("body")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
                 };
                 connectors
                     .execute_github_issue_create(&cfg)
@@ -513,12 +591,16 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "openai" => {
                 let cfg = CustomConnectorConfig {
-                    endpoint_url: get_optional("endpoint_url")
-                        .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string()),
+                    endpoint_url: get_optional("endpoint_url").unwrap_or_else(|| {
+                        "https://api.openai.com/v1/chat/completions".to_string()
+                    }),
                     method: "POST".to_string(),
                     body: Some(json!({
                         "model": input.get("model").cloned().unwrap_or(json!("gpt-4o-mini")),
@@ -531,7 +613,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "anthropic" => {
                 let cfg = CustomConnectorConfig {
@@ -543,15 +628,19 @@ impl FlowExecutor {
                         "max_tokens": input.get("max_tokens").cloned().unwrap_or(json!(512)),
                         "messages": input.get("messages").cloned().unwrap_or(json!([])),
                     })),
-                    headers: Some(std::collections::HashMap::from([
-                        ("anthropic-version".to_string(), "2023-06-01".to_string()),
-                    ])),
+                    headers: Some(std::collections::HashMap::from([(
+                        "anthropic-version".to_string(),
+                        "2023-06-01".to_string(),
+                    )])),
                     bearer_token: None,
                     api_key_header: Some("x-api-key".to_string()),
                     api_key_value: Some(get_required("api_key")?),
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "airtable" => {
                 let base_id = get_required("base_id")?;
@@ -572,7 +661,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "hubspot" => {
                 let cfg = CustomConnectorConfig {
@@ -587,7 +679,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "jira" => {
                 let domain = get_required("domain")?;
@@ -597,15 +692,19 @@ impl FlowExecutor {
                     body: Some(json!({
                         "fields": input.get("fields").cloned().unwrap_or(json!({}))
                     })),
-                    headers: Some(std::collections::HashMap::from([
-                        ("Accept".to_string(), "application/json".to_string()),
-                    ])),
+                    headers: Some(std::collections::HashMap::from([(
+                        "Accept".to_string(),
+                        "application/json".to_string(),
+                    )])),
                     bearer_token: Some(get_required("access_token")?),
                     api_key_header: None,
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "linear" => {
                 let cfg = CustomConnectorConfig {
@@ -621,7 +720,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "asana" => {
                 let cfg = CustomConnectorConfig {
@@ -636,7 +738,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "clickup" => {
                 let list_id = get_required("list_id")?;
@@ -655,7 +760,10 @@ impl FlowExecutor {
                     api_key_value: Some(get_required("api_key")?),
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "trello" => {
                 let key = get_required("key")?;
@@ -677,7 +785,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "zendesk" => {
                 let subdomain = get_required("subdomain")?;
@@ -693,12 +804,16 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "pagerduty" => {
-                let headers = std::collections::HashMap::from([
-                    ("Content-Type".to_string(), "application/json".to_string()),
-                ]);
+                let headers = std::collections::HashMap::from([(
+                    "Content-Type".to_string(),
+                    "application/json".to_string(),
+                )]);
                 let cfg = CustomConnectorConfig {
                     endpoint_url: "https://events.pagerduty.com/v2/enqueue".to_string(),
                     method: "POST".to_string(),
@@ -713,7 +828,10 @@ impl FlowExecutor {
                     api_key_value: None,
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "stripe" => {
                 let cfg = CustomConnectorConfig {
@@ -727,7 +845,10 @@ impl FlowExecutor {
                     api_key_value: Some(format!("Bearer {}", get_required("api_key")?)),
                 };
 
-                connectors.execute_custom_connector(&cfg).await.map_err(|e| e.to_string())
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
             }
             "webhook" => {
                 let signature_valid = connectors
@@ -851,12 +972,20 @@ mod tests {
             event_type: "push".into(),
             data: json!({"user": {"email": "TEST@EXAMPLE.COM"}}),
         };
-        let outputs = HashMap::from([("step1".to_string(), json!({"profile": {"name": "Imantha"}}))]);
+        let outputs =
+            HashMap::from([("step1".to_string(), json!({"profile": {"name": "Imantha"}}))]);
 
         let result = executor
-            .transform_data("{{trigger.user.email | lowercase}}/{{step1.profile.name}}", &outputs, &event)
+            .transform_data(
+                "{{trigger.user.email | lowercase}}/{{step1.profile.name}}",
+                &outputs,
+                &event,
+            )
             .unwrap();
 
-        assert_eq!(result, Value::String("test@example.com/Imantha".to_string()));
+        assert_eq!(
+            result,
+            Value::String("test@example.com/Imantha".to_string())
+        );
     }
 }

@@ -1,9 +1,9 @@
 #[allow(dead_code)]
-#[path = "../src/models.rs"]
-mod models;
-#[allow(dead_code)]
 #[path = "../src/executor.rs"]
 mod executor;
+#[allow(dead_code)]
+#[path = "../src/models.rs"]
+mod models;
 
 use executor::FlowExecutor;
 use models::{FilterCondition, FlowStep, PulseEvent, TriggerDefinition};
@@ -109,7 +109,9 @@ async fn step_condition_can_skip_execution() {
         data: json!({}),
     };
 
-    let result = executor.execute_step(&step, json!({}), &HashMap::new(), &event).await;
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
     assert_eq!(result.status, "skipped");
 }
 
@@ -124,13 +126,14 @@ fn data_transformation_resolves_templates() {
         data: json!({"user": {"email": "TEST@EXAMPLE.COM"}}),
     };
 
-    let outputs = HashMap::from([(
-        "step1".to_string(),
-        json!({"profile": {"name": "Imantha"}}),
-    )]);
+    let outputs = HashMap::from([("step1".to_string(), json!({"profile": {"name": "Imantha"}}))]);
 
     let result = executor
-        .transform_data("{{trigger.user.email | lowercase}}/{{step1.profile.name}}", &outputs, &event)
+        .transform_data(
+            "{{trigger.user.email | lowercase}}/{{step1.profile.name}}",
+            &outputs,
+            &event,
+        )
         .unwrap();
 
     assert_eq!(result, json!("test@example.com/Imantha"));
@@ -197,7 +200,9 @@ async fn schedule_connector_step_returns_next_run() {
         data: json!({}),
     };
 
-    let result = executor.execute_step(&step, json!({}), &HashMap::new(), &event).await;
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
     assert_eq!(result.status, "success");
     assert!(result.output.get("output").is_some());
 }
@@ -235,10 +240,12 @@ async fn resend_connector_requires_api_key() {
         .execute_step(&step, json!({}), &HashMap::new(), &event)
         .await;
     assert_eq!(result.status, "failed");
-    assert!(result
-        .error
-        .unwrap_or_default()
-        .contains("missing required input field: api_key"));
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: api_key")
+    );
 }
 
 #[tokio::test]
@@ -275,10 +282,12 @@ async fn jira_connector_requires_access_token() {
         .execute_step(&step, json!({}), &HashMap::new(), &event)
         .await;
     assert_eq!(result.status, "failed");
-    assert!(result
-        .error
-        .unwrap_or_default()
-        .contains("missing required input field: access_token"));
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: access_token")
+    );
 }
 
 #[tokio::test]
@@ -312,8 +321,65 @@ async fn stripe_connector_requires_api_key() {
         .execute_step(&step, json!({}), &HashMap::new(), &event)
         .await;
     assert_eq!(result.status, "failed");
-    assert!(result
-        .error
-        .unwrap_or_default()
-        .contains("missing required input field: api_key"));
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: api_key")
+    );
+}
+
+#[tokio::test]
+async fn wat_script_step_executes_in_sandbox() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "sandbox-step".into(),
+        r#type: "script".into(),
+        connector: None,
+        action: None,
+        input_mapping: None,
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: Some("wat".into()),
+                code: Some(
+                        r#"
+                        (module
+                            (memory (export "memory") 1)
+                            (global $heap (mut i32) (i32.const 1024))
+                            (func (export "alloc") (param $size i32) (result i32)
+                                (local $ptr i32)
+                                global.get $heap
+                                local.set $ptr
+                                local.get $ptr
+                                local.get $size
+                                i32.add
+                                global.set $heap
+                                local.get $ptr)
+                            (data (i32.const 4096) "42")
+                            (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                                i64.const 4096
+                                i64.const 32
+                                i64.shl
+                                i64.const 2
+                                i64.or))
+                        "#
+                        .trim()
+                        .into()),
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({"payload": "hello"}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({"value": 1}), &HashMap::new(), &event)
+        .await;
+
+    assert_eq!(result.status, "success");
+    assert_eq!(result.output["output"], json!(42));
 }

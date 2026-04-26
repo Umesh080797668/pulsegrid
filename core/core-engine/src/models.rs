@@ -1,8 +1,8 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::FromRow;
-use uuid::Uuid;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 use chrono::{DateTime, Utc};
 
@@ -92,7 +92,7 @@ pub struct FlowStep {
     pub connector: Option<String>,
     pub action: Option<String>,
     pub input_mapping: Option<HashMap<String, String>>, // Template expressions like "{{trigger.data.email}}"
-    pub depends_on: Vec<String>, // Step IDs this depends on
+    pub depends_on: Vec<String>,                        // Step IDs this depends on
     #[serde(default)]
     pub retry_policy: RetryPolicy,
     pub condition: Option<String>, // Rhai expression for conditional execution

@@ -1,6 +1,6 @@
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -112,7 +112,10 @@ impl Connectors {
         }
     }
 
-    pub async fn execute_http(&self, config: &HttpConfig) -> Result<serde_json::Value, ConnectorError> {
+    pub async fn execute_http(
+        &self,
+        config: &HttpConfig,
+    ) -> Result<serde_json::Value, ConnectorError> {
         let method = match config.method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
@@ -133,17 +136,27 @@ impl Connectors {
             req = req.json(body);
         }
 
-        let resp = req.send().await.map_err(|e| ConnectorError::HttpError(e.to_string()))?;
-        
-        let json_resp = resp.json::<serde_json::Value>().await
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+
+        let json_resp = resp
+            .json::<serde_json::Value>()
+            .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
 
         Ok(json_resp)
     }
 
-    pub async fn execute_gmail_send(&self, config: &GmailSendConfig) -> Result<serde_json::Value, ConnectorError> {
+    pub async fn execute_gmail_send(
+        &self,
+        config: &GmailSendConfig,
+    ) -> Result<serde_json::Value, ConnectorError> {
         if config.access_token.is_empty() {
-            return Err(ConnectorError::InvalidConfig("gmail access token is required".into()));
+            return Err(ConnectorError::InvalidConfig(
+                "gmail access token is required".into(),
+            ));
         }
 
         // RFC 2822 email payload for Gmail API
@@ -180,7 +193,9 @@ impl Connectors {
         config: &GithubIssueConfig,
     ) -> Result<serde_json::Value, ConnectorError> {
         if config.access_token.is_empty() {
-            return Err(ConnectorError::InvalidConfig("github access token is required".into()));
+            return Err(ConnectorError::InvalidConfig(
+                "github access token is required".into(),
+            ));
         }
 
         let url = format!(
@@ -221,10 +236,15 @@ impl Connectors {
         config: &TelegramConfig,
     ) -> Result<serde_json::Value, ConnectorError> {
         if config.bot_token.is_empty() {
-            return Err(ConnectorError::InvalidConfig("telegram bot token is required".into()));
+            return Err(ConnectorError::InvalidConfig(
+                "telegram bot token is required".into(),
+            ));
         }
 
-        let url = format!("https://api.telegram.org/bot{}/sendMessage", config.bot_token);
+        let url = format!(
+            "https://api.telegram.org/bot{}/sendMessage",
+            config.bot_token
+        );
         let body = serde_json::json!({
             "chat_id": config.chat_id,
             "text": config.text
@@ -255,7 +275,9 @@ impl Connectors {
         config: &GoogleSheetsAppendConfig,
     ) -> Result<serde_json::Value, ConnectorError> {
         if config.access_token.is_empty() {
-            return Err(ConnectorError::InvalidConfig("google sheets access token is required".into()));
+            return Err(ConnectorError::InvalidConfig(
+                "google sheets access token is required".into(),
+            ));
         }
 
         let url = format!(
@@ -296,7 +318,9 @@ impl Connectors {
         config: &NotionCreatePageConfig,
     ) -> Result<serde_json::Value, ConnectorError> {
         if config.access_token.is_empty() {
-            return Err(ConnectorError::InvalidConfig("notion access token is required".into()));
+            return Err(ConnectorError::InvalidConfig(
+                "notion access token is required".into(),
+            ));
         }
 
         let body = serde_json::json!({
@@ -381,7 +405,8 @@ impl Connectors {
             req = req.bearer_auth(token);
         }
 
-        if let (Some(key_header), Some(key_value)) = (&config.api_key_header, &config.api_key_value) {
+        if let (Some(key_header), Some(key_value)) = (&config.api_key_header, &config.api_key_value)
+        {
             req = req.header(key_header, key_value);
         }
 
@@ -430,8 +455,8 @@ impl Connectors {
             .strip_prefix("sha256=")
             .unwrap_or(config.provided_signature.trim());
 
-        let provided_bytes = hex::decode(provided)
-            .map_err(|e| ConnectorError::SignatureError(e.to_string()))?;
+        let provided_bytes =
+            hex::decode(provided).map_err(|e| ConnectorError::SignatureError(e.to_string()))?;
 
         Ok(mac.verify_slice(&provided_bytes).is_ok())
     }
@@ -455,7 +480,9 @@ impl Connectors {
             "text": text
         });
 
-        let resp = self.http_client.post(webhook_url)
+        let resp = self
+            .http_client
+            .post(webhook_url)
             .json(&body)
             .send()
             .await
@@ -500,7 +527,9 @@ mod tests {
     fn computes_next_schedule() {
         let connectors = Connectors::new();
         let from = DateTime::from_str("2026-01-01T00:00:00Z").unwrap();
-        let next = connectors.schedule_next_run("0/5 * * * * * *", from).unwrap();
+        let next = connectors
+            .schedule_next_run("0/5 * * * * * *", from)
+            .unwrap();
         assert!(next > from);
     }
 

@@ -1,5 +1,12 @@
-use rhai::{Engine, Dynamic, Map, Scope};
+use rhai::{Dynamic, Map, Scope};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use wasmtime::{Engine as WasmEngine, Instance, Linker, Module, Store, TypedFunc};
+
+#[derive(Debug, Clone, Default)]
+struct SandboxState {
+    _reserved: (),
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Pipeline {
@@ -18,21 +25,89 @@ pub struct Step {
 #[derive(Debug)]
 pub enum ExecutionError {
     ScriptError(String),
+    SandboxError(String),
     UnknownKind(String),
 }
 
 pub struct CoreVm {
-    engine: Engine,
+    wasm_engine: WasmEngine,
 }
 
 impl CoreVm {
     pub fn new() -> Self {
         Self {
-            engine: Engine::new(),
+            wasm_engine: WasmEngine::default(),
         }
     }
 
-    pub fn execute_pipeline(&self, pipeline: &Pipeline, initial_context: Map) -> Result<Map, ExecutionError> {
+    pub fn execute_wat_script(&self, code: &str, input: &Value) -> Result<Value, ExecutionError> {
+        let wasm_bytes: Vec<u8> = wat::parse_str(code)
+            .map_err(|e: wat::Error| ExecutionError::SandboxError(e.to_string()))?;
+        let module = Module::new(&self.wasm_engine, wasm_bytes)
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+
+        let mut store = Store::new(&self.wasm_engine, SandboxState::default());
+        let linker = Linker::new(&self.wasm_engine);
+        let instance: Instance = linker
+            .instantiate(&mut store, &module)
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+
+        let memory = instance.get_memory(&mut store, "memory").ok_or_else(|| {
+            ExecutionError::SandboxError("sandbox module must export memory".to_string())
+        })?;
+
+        let alloc: TypedFunc<i32, i32> = instance
+            .get_typed_func(&mut store, "alloc")
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+        let run: TypedFunc<(i32, i32), i64> = instance
+            .get_typed_func(&mut store, "run")
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+
+        let input_bytes =
+            serde_json::to_vec(input).map_err(|e| ExecutionError::SandboxError(e.to_string()))?;
+        let input_len = i32::try_from(input_bytes.len())
+            .map_err(|_| ExecutionError::SandboxError("input payload too large".to_string()))?;
+
+        let input_ptr = alloc
+            .call(&mut store, input_len)
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+        memory
+            .write(&mut store, input_ptr as usize, &input_bytes)
+            .map_err(|e: wasmtime::MemoryAccessError| {
+                ExecutionError::SandboxError(e.to_string())
+            })?;
+
+        let packed_output = run
+            .call(&mut store, (input_ptr, input_len))
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+        let output_ptr = (packed_output >> 32) as u32 as usize;
+        let output_len = (packed_output & 0xffff_ffff) as u32 as usize;
+
+        if output_len == 0 {
+            return Ok(Value::Null);
+        }
+
+        let mut output_bytes = vec![0u8; output_len];
+        memory
+            .read(&mut store, output_ptr, &mut output_bytes)
+            .map_err(|e: wasmtime::MemoryAccessError| {
+                ExecutionError::SandboxError(e.to_string())
+            })?;
+
+        let output_text = String::from_utf8(output_bytes)
+            .map_err(|e| ExecutionError::SandboxError(e.to_string()))?;
+
+        match serde_json::from_str::<Value>(&output_text) {
+            Ok(value) => Ok(value),
+            Err(_) => Ok(Value::String(output_text)),
+        }
+    }
+
+    pub fn execute_pipeline(
+        &self,
+        pipeline: &Pipeline,
+        initial_context: Map,
+    ) -> Result<Map, ExecutionError> {
         let mut scope = Scope::new();
         // Insert initial context as "ctx" into Rhai scope
         let ctx_dyn: Dynamic = initial_context.clone().into();
@@ -42,11 +117,12 @@ impl CoreVm {
             match step.kind.as_str() {
                 "script" => {
                     if let Some(ref code) = step.code {
-                        let ast = self.engine.compile(code).map_err(|e| ExecutionError::ScriptError(e.to_string()))?;
-                        
-                        // We run the script. It can mutate `ctx`
-                        self.engine.run_ast_with_scope(&mut scope, &ast)
-                            .map_err(|e| ExecutionError::ScriptError(e.to_string()))?;
+                        let input = serde_json::json!({
+                            "pipeline_id": pipeline.id,
+                            "pipeline_name": pipeline.name,
+                            "step_count": pipeline.steps.len(),
+                        });
+                        let _ = self.execute_wat_script(code, &input)?;
                     }
                 }
                 "http" | "slack" => {
@@ -57,12 +133,50 @@ impl CoreVm {
                 _ => return Err(ExecutionError::UnknownKind(step.kind.clone())),
             }
         }
-        
+
         // Return accumulated context by extracting "ctx" from scope
         if let Some(final_ctx) = scope.get_value::<Map>("ctx") {
             Ok(final_ctx)
         } else {
             Ok(initial_context) // fallback
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wat_sandbox_round_trips_json_output() {
+        let vm = CoreVm::new();
+        let output = vm
+            .execute_wat_script(
+                r#"
+            (module
+              (memory (export "memory") 1)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $size i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.set $ptr
+                local.get $ptr
+                local.get $size
+                i32.add
+                global.set $heap
+                local.get $ptr)
+                            (data (i32.const 4096) "42")
+              (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                                i64.const 4096
+                i64.const 32
+                i64.shl
+                i64.const 2
+                i64.or))
+            "#,
+                &serde_json::json!({"hello": "sandbox"}),
+            )
+            .expect("sandbox execution");
+
+        assert_eq!(output, serde_json::json!(42));
     }
 }

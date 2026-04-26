@@ -1,29 +1,32 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     routing::{delete, get, post},
-    Json, Router,
 };
-use redis::{streams::{StreamReadOptions, StreamReadReply}, AsyncCommands};
+use core_vault::Vault;
+use redis::{
+    AsyncCommands,
+    streams::{StreamReadOptions, StreamReadReply},
+};
+use reqwest::Client;
+use serde::Deserialize;
+use sqlx::FromRow;
+use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::FromRow;
-use std::sync::Arc;
-use reqwest::Client;
-use core_vault::Vault;
-use serde::Deserialize;
 
-mod models;
 mod grpc;
+mod models;
 use models::{
     CreateFlowRequest, CreateWorkspaceRequest, FlowDefinition, FlowResponse, FlowRunResponse,
     PulseEvent, UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceResponse,
     WorkspaceSecretSummary,
 };
 mod executor;
-use executor::FlowExecutor;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
+use executor::FlowExecutor;
 use grpc::MyPulseCoreService;
 
 #[derive(Clone)]
@@ -57,11 +60,17 @@ async fn main() {
     // Build the Axum application
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
-        .route("/api/v1/workspaces", post(create_workspace).get(list_workspaces))
+        .route(
+            "/api/v1/workspaces",
+            post(create_workspace).get(list_workspaces),
+        )
         .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
-        .route("/api/v1/flow/{flow_id}", get(get_flow).put(update_flow).delete(delete_flow))
+        .route(
+            "/api/v1/flow/{flow_id}",
+            get(get_flow).put(update_flow).delete(delete_flow),
+        )
         .route(
             "/api/v1/workspaces/{workspace_id}/secrets",
             post(upsert_workspace_secret).get(list_workspace_secrets),
@@ -122,13 +131,13 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
     };
 
     println!("Connected to Redis. Listening for inbound PulseEvents...");
-    
+
     // We start listening from the latest message ('$')
     let mut last_id = String::from("$");
-    
+
     let opts = StreamReadOptions::default()
         .block(5000) // Block for 5 seconds waiting for events
-        .count(10);  // Read up to 10 events per batch
+        .count(10); // Read up to 10 events per batch
 
     let executor = Arc::new(FlowExecutor::new());
 
@@ -143,16 +152,16 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                 for key in reply.keys {
                     for node in key.ids {
                         last_id = node.id.clone();
-                        
+
                         // Grab the actual event payload (we assume it's stored under a 'payload' field)
                         if let Some(redis::Value::BulkString(data)) = node.map.get("payload") {
                             let payload_str = String::from_utf8_lossy(data);
-                            
+
                             // Try parsing into our structural PulseEvent model
                             match serde_json::from_str::<PulseEvent>(&payload_str) {
                                 Ok(event) => {
                                     println!("🔥 Received PulseEvent (ID: {})", last_id);
-                                    
+
                                     // Send to Postgres to track event/log run details properly
                                     let insert_result = sqlx::query!(
                                         r#"
@@ -168,7 +177,9 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
 
                                     match insert_result {
                                         Ok(_) => println!("   ✅ Logged flow_run in Postgres!"),
-                                        Err(e) => eprintln!("   ❌ Error saving to Postgres: {}", e),
+                                        Err(e) => {
+                                            eprintln!("   ❌ Error saving to Postgres: {}", e)
+                                        }
                                     }
 
                                     // Fetch active flows for this workspace
@@ -180,36 +191,53 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         event.tenant_id as _
                                     )
                                     .fetch_all(&pg_pool)
-                                    .await.unwrap_or_else(|_| vec![]);
-                                    
+                                    .await
+                                    .unwrap_or_else(|_| vec![]);
+
                                     if active_flows.is_empty() {
-                                        println!("   ⚠️ No active flows found for workspace {}", event.tenant_id);
+                                        println!(
+                                            "   ⚠️ No active flows found for workspace {}",
+                                            event.tenant_id
+                                        );
                                     }
 
                                     // Process each flow
                                     for flow in active_flows {
                                         // Parse FlowDefinition
-                                        let flow_def: FlowDefinition = match serde_json::from_value(flow.definition.clone()) {
+                                        let flow_def: FlowDefinition = match serde_json::from_value(
+                                            flow.definition.clone(),
+                                        ) {
                                             Ok(def) => def,
                                             Err(e) => {
-                                                eprintln!("   ❌ Invalid flow definition for flow {}: {}", flow.id, e);
+                                                eprintln!(
+                                                    "   ❌ Invalid flow definition for flow {}: {}",
+                                                    flow.id, e
+                                                );
                                                 continue;
                                             }
                                         };
 
                                         // Check if trigger matches event
                                         if !executor.matches_trigger(&flow_def.trigger, &event) {
-                                            println!("   ⏭️  Flow {} trigger did not match event", flow.name);
+                                            println!(
+                                                "   ⏭️  Flow {} trigger did not match event",
+                                                flow.name
+                                            );
                                             continue;
                                         }
 
                                         println!("   ⚡ Executing flow: {}", flow.name);
-                                        
+
                                         // Resolve execution order (dependency graph)
-                                        let execution_order = match executor.resolve_execution_order(&flow_def.steps) {
+                                        let execution_order = match executor
+                                            .resolve_execution_order(&flow_def.steps)
+                                        {
                                             Ok(order) => order,
                                             Err(e) => {
-                                                eprintln!("   ❌ Failed to resolve execution order: {}", e);
+                                                eprintln!(
+                                                    "   ❌ Failed to resolve execution order: {}",
+                                                    e
+                                                );
                                                 continue;
                                             }
                                         };
@@ -222,9 +250,11 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         for group in execution_order {
                                             // Spawn tasks for parallel execution
                                             let mut tasks = vec![];
-                                            
+
                                             for step_id in &group {
-                                                if let Some(step) = flow_def.steps.iter().find(|s| &s.id == step_id) {
+                                                if let Some(step) =
+                                                    flow_def.steps.iter().find(|s| &s.id == step_id)
+                                                {
                                                     let step_clone = step.clone();
                                                     let executor_clone = Arc::clone(&executor);
                                                     let event_clone = event.clone();
@@ -237,7 +267,8 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                             serde_json::json!({}),
                                                             &outputs_snapshot,
                                                             &event_clone,
-                                                        ).await
+                                                        )
+                                                        .await
                                                     });
                                                     tasks.push(task);
                                                 }
@@ -249,9 +280,15 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                     Ok(result) => {
                                                         if result.status == "failed" {
                                                             all_steps_succeeded = false;
-                                                            println!("      ❌ Step {} failed: {:?}", result.step_id, result.error);
+                                                            println!(
+                                                                "      ❌ Step {} failed: {:?}",
+                                                                result.step_id, result.error
+                                                            );
 
-                                                            let dlq_key = format!("dlq:failed:{}", event.tenant_id);
+                                                            let dlq_key = format!(
+                                                                "dlq:failed:{}",
+                                                                event.tenant_id
+                                                            );
                                                             let dlq_payload = serde_json::json!({
                                                                 "workspace_id": event.tenant_id,
                                                                 "flow_id": flow.id,
@@ -262,24 +299,41 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                                 "failed_at": chrono::Utc::now().to_rfc3339(),
                                                             });
                                                             let _ = con
-                                                                .rpush::<_, _, usize>(dlq_key, dlq_payload.to_string())
+                                                                .rpush::<_, _, usize>(
+                                                                    dlq_key,
+                                                                    dlq_payload.to_string(),
+                                                                )
                                                                 .await;
                                                         } else if result.status == "success" {
-                                                            println!("      ✅ Step {} completed in {}ms", result.step_id, result.duration_ms);
+                                                            println!(
+                                                                "      ✅ Step {} completed in {}ms",
+                                                                result.step_id, result.duration_ms
+                                                            );
                                                         } else if result.status == "skipped" {
-                                                            println!("      ⏭️  Step {} skipped (condition not met)", result.step_id);
+                                                            println!(
+                                                                "      ⏭️  Step {} skipped (condition not met)",
+                                                                result.step_id
+                                                            );
                                                         }
-                                                        
-                                                        step_outputs.insert(result.step_id.clone(), result.output.clone());
-                                                        steps_log.as_array_mut().unwrap().push(serde_json::json!({
-                                                            "step_id": result.step_id,
-                                                            "status": result.status,
-                                                            "duration_ms": result.duration_ms,
-                                                            "error": result.error
-                                                        }));
+
+                                                        step_outputs.insert(
+                                                            result.step_id.clone(),
+                                                            result.output.clone(),
+                                                        );
+                                                        steps_log.as_array_mut().unwrap().push(
+                                                            serde_json::json!({
+                                                                "step_id": result.step_id,
+                                                                "status": result.status,
+                                                                "duration_ms": result.duration_ms,
+                                                                "error": result.error
+                                                            }),
+                                                        );
                                                     }
                                                     Err(e) => {
-                                                        eprintln!("      ❌ Task join error: {}", e);
+                                                        eprintln!(
+                                                            "      ❌ Task join error: {}",
+                                                            e
+                                                        );
                                                         all_steps_succeeded = false;
                                                     }
                                                 }
@@ -287,7 +341,11 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                         }
 
                                         // Update flow run status
-                                        let final_status = if all_steps_succeeded { "success" } else { "failed" };
+                                        let final_status = if all_steps_succeeded {
+                                            "success"
+                                        } else {
+                                            "failed"
+                                        };
                                         let _ = sqlx::query!(
                                             r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE trigger_event_id = $3"#,
                                             final_status,
@@ -300,7 +358,9 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                 .error_policy
                                                 .notify_email
                                                 .clone()
-                                                .or_else(|| std::env::var("FLOW_FAILURE_NOTIFY_EMAIL").ok());
+                                                .or_else(|| {
+                                                    std::env::var("FLOW_FAILURE_NOTIFY_EMAIL").ok()
+                                                });
 
                                             if let Some(email) = notify_email {
                                                 let _ = send_failure_email(
@@ -308,15 +368,22 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                                     &flow.name,
                                                     event.id,
                                                     event.tenant_id,
-                                                ).await;
+                                                )
+                                                .await;
                                             }
                                         }
 
-                                        println!("   🏁 Flow execution completed with status: {}", final_status);
+                                        println!(
+                                            "   🏁 Flow execution completed with status: {}",
+                                            final_status
+                                        );
                                     }
                                 }
                                 Err(err) => {
-                                    println!("⚠️ Raw message received (ID: {}). Parsing to PulseEvent failed: {}", last_id, err);
+                                    println!(
+                                        "⚠️ Raw message received (ID: {}). Parsing to PulseEvent failed: {}",
+                                        last_id, err
+                                    );
                                     println!("   Raw Data: {}", payload_str);
                                 }
                             }
@@ -468,7 +535,10 @@ async fn create_workspace(
 ) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
     let name = payload.name.trim();
     if name.is_empty() {
-        return Err((axum::http::StatusCode::BAD_REQUEST, "Workspace name is required".to_string()));
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Workspace name is required".to_string(),
+        ));
     }
 
     let raw_slug = payload
@@ -565,7 +635,10 @@ async fn get_workspace(
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or((axum::http::StatusCode::NOT_FOUND, "Workspace not found".to_string()))?;
+    .ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Workspace not found".to_string(),
+    ))?;
 
     Ok(Json(WorkspaceResponse {
         id: row.id,
@@ -595,15 +668,18 @@ async fn list_flows(
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let flows = rows.into_iter().map(|row| FlowResponse {
-        id: row.id,
-        workspace_id: row.workspace_id.unwrap_or_default(),
-        name: row.name,
-        description: row.description,
-        definition: row.definition,
-        enabled: row.enabled.unwrap_or(true),
-        run_count: row.run_count.unwrap_or(0),
-    }).collect();
+    let flows = rows
+        .into_iter()
+        .map(|row| FlowResponse {
+            id: row.id,
+            workspace_id: row.workspace_id.unwrap_or_default(),
+            name: row.name,
+            description: row.description,
+            definition: row.definition,
+            enabled: row.enabled.unwrap_or(true),
+            run_count: row.run_count.unwrap_or(0),
+        })
+        .collect();
 
     Ok(Json(flows))
 }
@@ -623,7 +699,10 @@ async fn get_flow(
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+    .ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Flow not found".to_string(),
+    ))?;
 
     Ok(Json(FlowResponse {
         id: row.id,
@@ -652,7 +731,10 @@ async fn update_flow(
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+    .ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Flow not found".to_string(),
+    ))?;
 
     let updated_name = payload.name.unwrap_or(existing.name);
     let updated_description = payload.description.or(existing.description);
@@ -707,10 +789,15 @@ async fn delete_flow(
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if result.rows_affected() == 0 {
-        return Err((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()));
+        return Err((
+            axum::http::StatusCode::NOT_FOUND,
+            "Flow not found".to_string(),
+        ));
     }
 
-    Ok(Json(serde_json::json!({ "success": true, "flowId": flow_id })))
+    Ok(Json(
+        serde_json::json!({ "success": true, "flowId": flow_id }),
+    ))
 }
 
 async fn upsert_workspace_secret(
@@ -733,10 +820,12 @@ async fn upsert_workspace_secret(
         ));
     }
 
-    let encrypted_secret = state
-        .vault
-        .encrypt(&payload.value)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("{e:?}")))?;
+    let encrypted_secret = state.vault.encrypt(&payload.value).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{e:?}"),
+        )
+    })?;
 
     sqlx::query!(
         r#"
@@ -893,12 +982,21 @@ fn normalize_slug(slug: &str) -> Result<String, (axum::http::StatusCode, String)
         .trim()
         .to_lowercase()
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' { ch } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
         .collect();
 
     let trimmed = normalized.trim_matches('-').to_string();
     if trimmed.is_empty() {
-        return Err((axum::http::StatusCode::BAD_REQUEST, "Workspace slug is required".to_string()));
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Workspace slug is required".to_string(),
+        ));
     }
 
     Ok(trimmed)

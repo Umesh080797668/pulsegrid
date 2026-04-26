@@ -7,7 +7,11 @@ use uuid::Uuid;
 #[command(name = "pulse")]
 #[command(about = "PulseGrid CLI - Phase 1 flow management")]
 struct Cli {
-    #[arg(long, env = "PULSE_API_BASE_URL", default_value = "http://127.0.0.1:3000")]
+    #[arg(
+        long,
+        env = "PULSE_API_BASE_URL",
+        default_value = "http://127.0.0.1:3000"
+    )]
     api_base_url: String,
 
     #[arg(long, env = "PULSE_ACCESS_TOKEN")]
@@ -55,15 +59,39 @@ async fn main() {
     let result = match cli.command {
         Commands::List { workspace_id } => {
             let path = format!("/flows?workspaceId={workspace_id}");
-            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::GET, &path, None).await
+            send(
+                &client,
+                &cli.api_base_url,
+                &cli.access_token,
+                reqwest::Method::GET,
+                &path,
+                None,
+            )
+            .await
         }
         Commands::Get { flow_id } => {
             let path = format!("/flows/{flow_id}");
-            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::GET, &path, None).await
+            send(
+                &client,
+                &cli.api_base_url,
+                &cli.access_token,
+                reqwest::Method::GET,
+                &path,
+                None,
+            )
+            .await
         }
         Commands::Delete { flow_id } => {
             let path = format!("/flows/{flow_id}");
-            send(&client, &cli.api_base_url, &cli.access_token, reqwest::Method::DELETE, &path, None).await
+            send(
+                &client,
+                &cli.api_base_url,
+                &cli.access_token,
+                reqwest::Method::DELETE,
+                &path,
+                None,
+            )
+            .await
         }
         Commands::Create {
             workspace_id,
@@ -126,7 +154,9 @@ async fn send(
         .header(AUTHORIZATION, format!("Bearer {access_token}"));
 
     if let Some(json_body) = body {
-        req = req.header(CONTENT_TYPE, "application/json").json(&json_body);
+        req = req
+            .header(CONTENT_TYPE, "application/json")
+            .json(&json_body);
     }
 
     let response = req.send().await.map_err(|e| e.to_string())?;

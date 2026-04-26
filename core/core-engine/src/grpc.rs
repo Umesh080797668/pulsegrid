@@ -1,11 +1,14 @@
-use core_proto::pulsecore::pulse_core_service_server::PulseCoreService;
-use core_proto::pulsecore::{TriggerFlowRequest, TriggerFlowResponse, SetWorkspaceSecretRequest, SetWorkspaceSecretResponse, VerifyWebhookRequest, VerifyWebhookResponse};
-use tonic::{Request, Response, Status};
-use redis::AsyncCommands;
-use uuid::Uuid;
-use sqlx::PgPool;
-use core_vault::Vault;
 use crate::models::WorkspaceSecret;
+use core_proto::pulsecore::pulse_core_service_server::PulseCoreService;
+use core_proto::pulsecore::{
+    SetWorkspaceSecretRequest, SetWorkspaceSecretResponse, TriggerFlowRequest, TriggerFlowResponse,
+    VerifyWebhookRequest, VerifyWebhookResponse,
+};
+use core_vault::Vault;
+use redis::AsyncCommands;
+use sqlx::PgPool;
+use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct MyPulseCoreService {
@@ -29,10 +32,13 @@ impl PulseCoreService for MyPulseCoreService {
         request: Request<TriggerFlowRequest>,
     ) -> Result<Response<TriggerFlowResponse>, Status> {
         let req = request.into_inner();
-        println!("📩 gRPC TriggerFlow called for workspace: {}, flow: {}", req.workspace_id, req.flow_id);
-        
+        println!(
+            "📩 gRPC TriggerFlow called for workspace: {}, flow: {}",
+            req.workspace_id, req.flow_id
+        );
+
         let run_id = Uuid::new_v4().to_string();
-        
+
         // Push event to Redis (assuming we want to simulate the gateway passing the flow trigger down)
         let redis_url = "redis://127.0.0.1:6379/";
         let client = redis::Client::open(redis_url)
@@ -41,7 +47,7 @@ impl PulseCoreService for MyPulseCoreService {
             .get_multiplexed_async_connection()
             .await
             .map_err(|_| Status::internal("Failed to connect Redis"))?;
-        
+
         let payload = serde_json::json!({
             "id": run_id,
             "tenant_id": req.workspace_id,
@@ -50,12 +56,15 @@ impl PulseCoreService for MyPulseCoreService {
             "schema_version": "1.0",
             "data": req.payload_json
         });
-        
-        let _: () = con.xadd(
-            "stream:events:global",
-            "*",
-            &[("payload", payload.to_string())]
-        ).await.map_err(|_| Status::internal("Failed to publish event"))?;
+
+        let _: () = con
+            .xadd(
+                "stream:events:global",
+                "*",
+                &[("payload", payload.to_string())],
+            )
+            .await
+            .map_err(|_| Status::internal("Failed to publish event"))?;
 
         Ok(Response::new(TriggerFlowResponse {
             success: true,
@@ -69,7 +78,8 @@ impl PulseCoreService for MyPulseCoreService {
         request: Request<SetWorkspaceSecretRequest>,
     ) -> Result<Response<SetWorkspaceSecretResponse>, Status> {
         let req = request.into_inner();
-        let ws_id = Uuid::parse_str(&req.workspace_id).map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
         let secret_name = req.secret_name.trim().to_uppercase();
         if secret_name.is_empty() {
             return Err(Status::invalid_argument("Secret name is required"));
@@ -86,9 +96,12 @@ impl PulseCoreService for MyPulseCoreService {
         if !workspace_exists {
             return Err(Status::not_found("Workspace not found"));
         }
-        
-        let encrypted_secret = self.vault.encrypt(&req.secret_value).map_err(|_| Status::internal("Encryption failed"))?;
-        
+
+        let encrypted_secret = self
+            .vault
+            .encrypt(&req.secret_value)
+            .map_err(|_| Status::internal("Encryption failed"))?;
+
         // Upsert the secret
         let res = sqlx::query!(
             r#"
@@ -120,9 +133,10 @@ impl PulseCoreService for MyPulseCoreService {
         request: Request<VerifyWebhookRequest>,
     ) -> Result<Response<VerifyWebhookResponse>, Status> {
         let req = request.into_inner();
-        
-        let ws_id = Uuid::parse_str(&req.workspace_id).map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
-        
+
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+
         // Fetch encrypted secret, assuming WEBHOOK_SECRET is the name
         let row = sqlx::query_as::<_, WorkspaceSecret>(
             "SELECT id, workspace_id, secret_name, encrypted_secret, created_at, updated_at FROM workspace_secrets WHERE workspace_id = $1 AND secret_name = 'WEBHOOK_SECRET'"
@@ -130,20 +144,24 @@ impl PulseCoreService for MyPulseCoreService {
         .bind(ws_id)
         .fetch_optional(&self.pg_pool)
         .await;
-        
+
         let secret = match row {
             Ok(Some(r)) => r.encrypted_secret,
             Ok(None) => return Ok(Response::new(VerifyWebhookResponse { is_valid: false })),
             Err(_) => return Err(Status::internal("DB error")),
         };
-        
+
         let plain_secret = match self.vault.decrypt(&secret) {
             Ok(s) => s,
             Err(_) => return Err(Status::internal("Decryption error")),
         };
-        
-        let is_valid = self.vault.verify_webhook_signature(&req.raw_payload, &req.provided_signature, &plain_secret);
-        
+
+        let is_valid = self.vault.verify_webhook_signature(
+            &req.raw_payload,
+            &req.provided_signature,
+            &plain_secret,
+        );
+
         Ok(Response::new(VerifyWebhookResponse { is_valid }))
     }
 }
