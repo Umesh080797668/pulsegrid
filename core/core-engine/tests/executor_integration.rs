@@ -515,3 +515,122 @@ async fn shopify_connector_requires_access_token() {
             .contains("missing required input field: access_token")
     );
 }
+
+#[tokio::test]
+async fn gitlab_connector_requires_access_token() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "gitlab-step".into(),
+        r#type: "action".into(),
+        connector: Some("gitlab".into()),
+        action: Some("create_issue".into()),
+        input_mapping: Some(HashMap::from([
+            ("project_id".to_string(), "pulsegrid/project".to_string()),
+            ("title".to_string(), "Issue from PulseGrid".to_string()),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: None,
+        code: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: access_token")
+    );
+}
+
+#[tokio::test]
+async fn monday_connector_requires_api_key() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "monday-step".into(),
+        r#type: "action".into(),
+        connector: Some("monday".into()),
+        action: Some("graphql".into()),
+        input_mapping: Some(HashMap::from([(
+            "query".to_string(),
+            "query { me { id name } }".to_string(),
+        )])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: None,
+        code: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: api_key")
+    );
+}
+
+#[tokio::test]
+async fn brevo_connector_requires_api_key() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "brevo-step".into(),
+        r#type: "action".into(),
+        connector: Some("brevo".into()),
+        action: Some("send_email".into()),
+        input_mapping: Some(HashMap::from([
+            ("from".to_string(), "noreply@pulsegrid.dev".to_string()),
+            ("to".to_string(), "user@example.com".to_string()),
+            ("subject".to_string(), "Welcome".to_string()),
+            ("html_content".to_string(), "<b>Hello</b>".to_string()),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: None,
+        code: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: api_key")
+    );
+}

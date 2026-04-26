@@ -1,7 +1,9 @@
 use rhai::{Dynamic, Map, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wasmtime::{Config as WasmConfig, Engine as WasmEngine, Instance, Linker, Module, Store, TypedFunc};
+use wasmtime::{
+    Config as WasmConfig, Engine as WasmEngine, Instance, Linker, Module, Store, TypedFunc,
+};
 
 const MAX_WASM_MODULE_BYTES: usize = 1_048_576;
 const MAX_SCRIPT_INPUT_BYTES: usize = 65_536;
@@ -45,9 +47,7 @@ impl CoreVm {
 
         let wasm_engine = WasmEngine::new(&config).unwrap_or_else(|_| WasmEngine::default());
 
-        Self {
-            wasm_engine,
-        }
+        Self { wasm_engine }
     }
 
     pub fn execute_wat_script(&self, code: &str, input: &Value) -> Result<Value, ExecutionError> {
@@ -211,11 +211,11 @@ mod tests {
         assert_eq!(output, serde_json::json!(42));
     }
 
-        #[test]
-        fn wat_sandbox_blocks_oversized_output_len() {
-                let vm = CoreVm::new();
+    #[test]
+    fn wat_sandbox_blocks_oversized_output_len() {
+        let vm = CoreVm::new();
 
-                let result = vm.execute_wat_script(
+        let result = vm.execute_wat_script(
                         r#"
                         (module
                             (memory (export "memory") 1)
@@ -227,17 +227,17 @@ mod tests {
                         &serde_json::json!({"hello": "sandbox"}),
                 );
 
-                assert!(matches!(
-                        result,
-                        Err(ExecutionError::SandboxError(msg)) if msg.contains("sandbox output exceeds max size")
-                ));
-        }
+        assert!(matches!(
+                result,
+                Err(ExecutionError::SandboxError(msg)) if msg.contains("sandbox output exceeds max size")
+        ));
+    }
 
-        #[test]
-        fn wat_sandbox_interrupts_runaway_loop_by_fuel() {
-                let vm = CoreVm::new();
+    #[test]
+    fn wat_sandbox_interrupts_runaway_loop_by_fuel() {
+        let vm = CoreVm::new();
 
-                let result = vm.execute_wat_script(
+        let result = vm.execute_wat_script(
                         r#"
                         (module
                             (memory (export "memory") 1)
@@ -251,6 +251,6 @@ mod tests {
                         &serde_json::json!({"hello": "sandbox"}),
                 );
 
-                assert!(matches!(result, Err(ExecutionError::SandboxError(_))));
-        }
+        assert!(matches!(result, Err(ExecutionError::SandboxError(_))));
+    }
 }

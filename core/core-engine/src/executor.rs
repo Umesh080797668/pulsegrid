@@ -932,6 +932,75 @@ impl FlowExecutor {
                     .await
                     .map_err(|e| e.to_string())
             }
+            "gitlab" => {
+                let project_id = get_required("project_id")?;
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!("https://gitlab.com/api/v4/projects/{project_id}/issues"),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "title": get_required("title")?,
+                        "description": get_optional("description").unwrap_or_default(),
+                        "labels": get_optional("labels").unwrap_or_default(),
+                        "assignee_ids": input.get("assignee_ids").cloned().unwrap_or(json!([]))
+                    })),
+                    headers: None,
+                    bearer_token: Some(get_required("access_token")?),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "monday" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://api.monday.com/v2".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "query": get_required("query")?,
+                        "variables": input.get("variables").cloned().unwrap_or(json!({}))
+                    })),
+                    headers: Some(std::collections::HashMap::from([(
+                        "Content-Type".to_string(),
+                        "application/json".to_string(),
+                    )])),
+                    bearer_token: None,
+                    api_key_header: Some("Authorization".to_string()),
+                    api_key_value: Some(get_required("api_key")?),
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "brevo" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://api.brevo.com/v3/smtp/email".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "sender": { "email": get_required("from")? },
+                        "to": [{ "email": get_required("to")? }],
+                        "subject": get_required("subject")?,
+                        "htmlContent": get_required("html_content")?,
+                        "replyTo": get_optional("reply_to").map(|email| json!({"email": email})).unwrap_or(json!(null))
+                    })),
+                    headers: Some(std::collections::HashMap::from([(
+                        "accept".to_string(),
+                        "application/json".to_string(),
+                    )])),
+                    bearer_token: None,
+                    api_key_header: Some("api-key".to_string()),
+                    api_key_value: Some(get_required("api_key")?),
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
             "webhook" => {
                 let signature_valid = connectors
                     .verify_webhook_signature(&core_connectors::WebhookVerifyConfig {

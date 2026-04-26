@@ -261,6 +261,30 @@ const CONNECTOR_CATALOG: ConnectorCatalogItem[] = [
     required_input_fields: ['store_domain', 'access_token'],
     optional_input_fields: ['endpoint_path', 'method', 'body', 'headers'],
   },
+  {
+    connector: 'gitlab',
+    action: 'create_issue',
+    category: 'developer',
+    auth: 'bearer',
+    required_input_fields: ['access_token', 'project_id', 'title'],
+    optional_input_fields: ['description', 'labels', 'assignee_ids'],
+  },
+  {
+    connector: 'monday',
+    action: 'graphql',
+    category: 'productivity',
+    auth: 'api_key',
+    required_input_fields: ['api_key', 'query'],
+    optional_input_fields: ['variables'],
+  },
+  {
+    connector: 'brevo',
+    action: 'send_email',
+    category: 'communication',
+    auth: 'api_key',
+    required_input_fields: ['api_key', 'from', 'to', 'subject', 'html_content'],
+    optional_input_fields: ['reply_to'],
+  },
 ];
 
 @Controller()

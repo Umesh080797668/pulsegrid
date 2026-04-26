@@ -1829,7 +1829,7 @@ To keep dashboard and API behavior aligned, Phase 1 uses a **live connector cata
 
 ```json
 {
-  "count": 24,
+  "count": 30,
   "generatedAt": "2026-04-25T00:00:00.000Z",
   "items": [
     {
@@ -1872,6 +1872,12 @@ To keep dashboard and API behavior aligned, Phase 1 uses a **live connector cata
 | `zendesk` | `create_ticket` | business | bearer |
 | `pagerduty` | `enqueue_event` | developer | api_key |
 | `stripe` | `request` | finance | api_key |
+| `sendgrid` | `send_email` | communication | api_key |
+| `salesforce` | `create_record` | business | bearer |
+| `shopify` | `request` | commerce | api_key |
+| `gitlab` | `create_issue` | developer | bearer |
+| `monday` | `graphql` | productivity | api_key |
+| `brevo` | `send_email` | communication | api_key |
 
 ### 23.3 Dashboard Consumption Rule
 
