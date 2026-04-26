@@ -1,4 +1,3 @@
-use base64::{Engine as _, engine::general_purpose};
 use hmac::{Hmac, KeyInit, Mac};
 use ring::{aead, pbkdf2, rand};
 use sha2::Sha256;
