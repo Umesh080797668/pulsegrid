@@ -42,6 +42,25 @@ pub struct FlowRunResponse {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateWorkspaceRequest {
+    pub name: String,
+    pub slug: Option<String>,
+    pub owner_user_id: Uuid,
+    pub settings: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkspaceResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub plan: String,
+    pub owner_user_id: Uuid,
+    pub settings: Value,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PulseEvent {
     pub id: Uuid,
@@ -77,6 +96,8 @@ pub struct FlowStep {
     #[serde(default)]
     pub retry_policy: RetryPolicy,
     pub condition: Option<String>, // Rhai expression for conditional execution
+    pub script_language: Option<String>,
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

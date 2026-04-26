@@ -8,6 +8,7 @@ import {
   TriggerFlowDto,
   SetSecretDto,
   UpsertWorkspaceCredentialDto,
+  CreateWorkspaceDto,
   CreateFlowDto,
   UpdateFlowDto,
   CustomConnectorContractDto,
@@ -20,6 +21,16 @@ interface PulseCoreService {
   triggerFlow(data: { workspaceId: string; flowId: string; payloadJson: string }): Observable<any>;
   setWorkspaceSecret(data: { workspaceId: string; secretName: string; secretValue: string }): Observable<any>;
   verifyWebhookSignature(data: { workspaceId: string; rawPayload: string; providedSignature: string }): Observable<{ isValid: boolean }>;
+}
+
+interface WorkspaceResponse {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  owner_user_id: string;
+  settings: Record<string, unknown>;
+  created_at?: string | null;
 }
 
 interface ConnectorCatalogItem {
@@ -241,6 +252,39 @@ export class AppController implements OnModuleInit {
 
   onModuleInit() {
     this.pulseCoreService = this.client.getService<PulseCoreService>('PulseCoreService');
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('workspaces')
+  async createWorkspace(@Body() body: CreateWorkspaceDto, @Req() req: Request) {
+    const userId = this.getJwtUserId(req);
+    return this.coreRequest('/api/v1/workspaces', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: body.name,
+        slug: body.slug,
+        owner_user_id: userId,
+        settings: body.settings ?? {},
+      }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('workspaces')
+  async listWorkspaces(@Req() req: Request) {
+    const userId = this.getJwtUserId(req);
+    return this.coreRequest(`/api/v1/workspaces?owner_user_id=${encodeURIComponent(userId)}`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('workspaces/:workspaceId')
+  async getWorkspace(@Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}`, {
+      method: 'GET',
+    });
   }
 
   @UseGuards(JwtAuthGuard)
@@ -580,5 +624,13 @@ export class AppController implements OnModuleInit {
     }
 
     return req.ip || 'unknown';
+  }
+
+  private getJwtUserId(req: Request): string {
+    const user = (req as Request & { user?: { sub?: string } }).user;
+    if (!user?.sub) {
+      throw new UnauthorizedException('Missing authenticated user');
+    }
+    return user.sub;
   }
 }

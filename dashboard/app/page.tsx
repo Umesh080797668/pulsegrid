@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { FlowCanvas } from '../components/flow-canvas';
 
 type Flow = {
   id: string;
@@ -48,6 +49,16 @@ type WorkspaceCredential = {
   updated_at?: string | null;
 };
 
+type WorkspaceItem = {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  owner_user_id: string;
+  settings?: Record<string, unknown>;
+  created_at?: string | null;
+};
+
 export default function HomePage() {
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [email, setEmail] = useState('');
@@ -56,6 +67,7 @@ export default function HomePage() {
   const [token, setToken] = useState('');
   const [refreshToken, setRefreshToken] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
+  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
   const [flows, setFlows] = useState<Flow[]>([]);
   const [runs, setRuns] = useState<FlowRun[]>([]);
   const [connectors, setConnectors] = useState<ConnectorCatalogItem[]>([]);
@@ -76,6 +88,10 @@ export default function HomePage() {
   const [actionInputJson, setActionInputJson] = useState('{\n  "endpoint_url": "https://httpbin.org/post",\n  "method": "POST",\n  "body": {"hello": "world"}\n}');
   const [definitionJson, setDefinitionJson] = useState('');
   const [formMsg, setFormMsg] = useState('');
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [workspaceSlug, setWorkspaceSlug] = useState('');
+  const [workspaceSettingsJson, setWorkspaceSettingsJson] = useState('{\n  "region": "local"\n}');
+  const [workspaceMsg, setWorkspaceMsg] = useState('');
 
   const [credentialName, setCredentialName] = useState('');
   const [credentialValue, setCredentialValue] = useState('');
@@ -132,6 +148,7 @@ export default function HomePage() {
   useEffect(() => {
     if (token && refreshToken) {
       void loadConnectors();
+      void loadWorkspaces();
     }
   }, [token, refreshToken]);
 
@@ -257,6 +274,61 @@ export default function HomePage() {
 
     await loadConnectors();
     await loadCredentials();
+  }
+
+  async function loadWorkspaces() {
+    if (!token || !refreshToken) {
+      return;
+    }
+
+    const res = await authenticatedFetch(`${apiBase}/workspaces`);
+    if (!res.ok) {
+      return;
+    }
+
+    const data = (await res.json()) as WorkspaceItem[];
+    setWorkspaces(data);
+    if (!workspaceId && data.length > 0) {
+      setWorkspaceId(data[0].id);
+    }
+  }
+
+  async function createWorkspace() {
+    setWorkspaceMsg('');
+    if (!workspaceName.trim()) {
+      setWorkspaceMsg('Workspace name is required');
+      return;
+    }
+
+    let settings: Record<string, unknown> = {};
+    try {
+      settings = workspaceSettingsJson.trim() ? JSON.parse(workspaceSettingsJson) : {};
+    } catch {
+      setWorkspaceMsg('Workspace settings JSON is invalid');
+      return;
+    }
+
+    const res = await authenticatedFetch(`${apiBase}/workspaces`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: workspaceName.trim(),
+        slug: workspaceSlug.trim() || undefined,
+        settings,
+      }),
+    });
+
+    if (!res.ok) {
+      setWorkspaceMsg(`Failed to create workspace (${res.status})`);
+      return;
+    }
+
+    const created = await res.json() as WorkspaceItem;
+    setWorkspaceMsg('Workspace created');
+    setWorkspaceId(created.id);
+    setWorkspaceName('');
+    setWorkspaceSlug('');
+    await loadWorkspaces();
   }
 
   async function loadConnectors() {
@@ -509,6 +581,40 @@ export default function HomePage() {
       </div>
 
       <div className="panel" style={{ marginBottom: 16 }}>
+        <h2 style={{ marginBottom: 8 }}>Workspaces</h2>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <input
+            style={{ minWidth: 240 }}
+            placeholder="Workspace name"
+            value={workspaceName}
+            onChange={(e) => setWorkspaceName(e.target.value)}
+          />
+          <input
+            style={{ minWidth: 220 }}
+            placeholder="Slug (optional)"
+            value={workspaceSlug}
+            onChange={(e) => setWorkspaceSlug(e.target.value)}
+          />
+          <button onClick={createWorkspace}>Create Workspace</button>
+          <button onClick={loadWorkspaces}>Refresh Workspaces</button>
+        </div>
+        <textarea
+          value={workspaceSettingsJson}
+          onChange={(e) => setWorkspaceSettingsJson(e.target.value)}
+          rows={4}
+          style={{ width: '100%', marginBottom: 8 }}
+        />
+        {workspaceMsg ? <p className="muted">{workspaceMsg}</p> : null}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          {workspaces.map((item) => (
+            <button key={item.id} onClick={() => setWorkspaceId(item.id)} style={{ fontWeight: item.id === workspaceId ? 'bold' : 'normal' }}>
+              {item.name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input
             style={{ minWidth: 360 }}
@@ -558,6 +664,11 @@ export default function HomePage() {
           placeholder="Action input JSON"
           rows={6}
           style={{ width: '100%', marginBottom: 8 }}
+        />
+        <FlowCanvas
+          definitionJson={definitionJson}
+          onDefinitionJsonChange={setDefinitionJson}
+          connectors={connectors}
         />
         <textarea
           value={definitionJson}

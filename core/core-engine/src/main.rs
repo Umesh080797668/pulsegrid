@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -8,15 +8,18 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::FromRow;
 use std::sync::Arc;
 use reqwest::Client;
 use core_vault::Vault;
+use serde::Deserialize;
 
 mod models;
 mod grpc;
 use models::{
-    CreateFlowRequest, FlowDefinition, FlowResponse, FlowRunResponse, PulseEvent,
-    UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceSecretSummary,
+    CreateFlowRequest, CreateWorkspaceRequest, FlowDefinition, FlowResponse, FlowRunResponse,
+    PulseEvent, UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceResponse,
+    WorkspaceSecretSummary,
 };
 mod executor;
 use executor::FlowExecutor;
@@ -54,6 +57,8 @@ async fn main() {
     // Build the Axum application
     let app = Router::new()
         .route("/health", get(|| async { "OK" }))
+        .route("/api/v1/workspaces", post(create_workspace).get(list_workspaces))
+        .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
         .route("/api/v1/flow/{flow_id}", get(get_flow).put(update_flow).delete(delete_flow))
@@ -441,6 +446,138 @@ async fn create_flow(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct WorkspaceListQuery {
+    owner_user_id: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, FromRow)]
+struct WorkspaceRow {
+    id: uuid::Uuid,
+    name: String,
+    slug: String,
+    plan: String,
+    owner_user_id: uuid::Uuid,
+    settings: Option<serde_json::Value>,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn create_workspace(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateWorkspaceRequest>,
+) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "Workspace name is required".to_string()));
+    }
+
+    let raw_slug = payload
+        .slug
+        .unwrap_or_else(|| name.to_lowercase().replace(' ', "-"));
+    let slug = normalize_slug(&raw_slug)?;
+
+    let settings = payload.settings.unwrap_or_else(|| serde_json::json!({}));
+
+    let row = sqlx::query!(
+        r#"
+        INSERT INTO workspaces (name, slug, owner_user_id, settings)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, name, slug, plan, owner_user_id, settings, created_at
+        "#,
+        name,
+        slug,
+        payload.owner_user_id,
+        settings
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    Ok(Json(WorkspaceResponse {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        plan: row.plan,
+        owner_user_id: row.owner_user_id,
+        settings: row.settings.unwrap_or_else(|| serde_json::json!({})),
+        created_at: row.created_at,
+    }))
+}
+
+async fn list_workspaces(
+    State(state): State<AppState>,
+    Query(query): Query<WorkspaceListQuery>,
+) -> Result<Json<Vec<WorkspaceResponse>>, (axum::http::StatusCode, String)> {
+    let rows: Vec<WorkspaceRow> = if let Some(owner_user_id) = query.owner_user_id {
+        sqlx::query_as::<_, WorkspaceRow>(
+            r#"
+            SELECT id, name, slug, plan, owner_user_id, settings, created_at
+            FROM workspaces
+            WHERE owner_user_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(owner_user_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    } else {
+        sqlx::query_as::<_, WorkspaceRow>(
+            r#"
+            SELECT id, name, slug, plan, owner_user_id, settings, created_at
+            FROM workspaces
+            ORDER BY created_at DESC
+            LIMIT 50
+            "#,
+        )
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| WorkspaceResponse {
+                id: row.id,
+                name: row.name,
+                slug: row.slug,
+                plan: row.plan,
+                owner_user_id: row.owner_user_id,
+                settings: row.settings.unwrap_or_else(|| serde_json::json!({})),
+                created_at: row.created_at,
+            })
+            .collect(),
+    ))
+}
+
+async fn get_workspace(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id, name, slug, plan, owner_user_id, settings, created_at
+        FROM workspaces
+        WHERE id = $1
+        "#,
+        workspace_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Workspace not found".to_string()))?;
+
+    Ok(Json(WorkspaceResponse {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        plan: row.plan,
+        owner_user_id: row.owner_user_id,
+        settings: row.settings.unwrap_or_else(|| serde_json::json!({})),
+        created_at: row.created_at,
+    }))
+}
+
 async fn list_flows(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
@@ -749,4 +886,20 @@ async fn get_flow_run(
         steps_log: row.steps_log,
         error_message: row.error_message,
     }))
+}
+
+fn normalize_slug(slug: &str) -> Result<String, (axum::http::StatusCode, String)> {
+    let normalized: String = slug
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' { ch } else { '-' })
+        .collect();
+
+    let trimmed = normalized.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "Workspace slug is required".to_string()));
+    }
+
+    Ok(trimmed)
 }

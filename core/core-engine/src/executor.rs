@@ -806,6 +806,8 @@ mod tests {
                 depends_on: vec![],
                 retry_policy: Default::default(),
                 condition: None,
+                script_language: None,
+                code: None,
             },
             FlowStep {
                 id: "step2".into(),
@@ -816,6 +818,8 @@ mod tests {
                 depends_on: vec!["step1".into()],
                 retry_policy: Default::default(),
                 condition: None,
+                script_language: None,
+                code: None,
             },
             FlowStep {
                 id: "step3".into(),
@@ -826,6 +830,8 @@ mod tests {
                 depends_on: vec!["step1".into()],
                 retry_policy: Default::default(),
                 condition: None,
+                script_language: None,
+                code: None,
             },
         ];
 

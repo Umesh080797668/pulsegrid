@@ -24,6 +24,8 @@ fn multi_step_flow_execution_order_groups_parallel_steps() {
             depends_on: vec![],
             retry_policy: Default::default(),
             condition: None,
+            script_language: None,
+            code: None,
         },
         FlowStep {
             id: "step2".into(),
@@ -34,6 +36,8 @@ fn multi_step_flow_execution_order_groups_parallel_steps() {
             depends_on: vec!["step1".into()],
             retry_policy: Default::default(),
             condition: None,
+            script_language: None,
+            code: None,
         },
         FlowStep {
             id: "step3".into(),
@@ -44,6 +48,8 @@ fn multi_step_flow_execution_order_groups_parallel_steps() {
             depends_on: vec!["step1".into()],
             retry_policy: Default::default(),
             condition: None,
+            script_language: None,
+            code: None,
         },
     ];
 
@@ -91,6 +97,8 @@ async fn step_condition_can_skip_execution() {
         depends_on: vec![],
         retry_policy: Default::default(),
         condition: Some("event_type == \"something_else\"".into()),
+        script_language: None,
+        code: None,
     };
 
     let event = PulseEvent {
@@ -141,6 +149,8 @@ fn cyclic_dependencies_return_error() {
             depends_on: vec!["b".into()],
             retry_policy: Default::default(),
             condition: None,
+            script_language: None,
+            code: None,
         },
         FlowStep {
             id: "b".into(),
@@ -151,6 +161,8 @@ fn cyclic_dependencies_return_error() {
             depends_on: vec!["a".into()],
             retry_policy: Default::default(),
             condition: None,
+            script_language: None,
+            code: None,
         },
     ];
 
@@ -173,6 +185,8 @@ async fn schedule_connector_step_returns_next_run() {
         depends_on: vec![],
         retry_policy: Default::default(),
         condition: None,
+        script_language: None,
+        code: None,
     };
 
     let event = PulseEvent {
@@ -205,6 +219,8 @@ async fn resend_connector_requires_api_key() {
         depends_on: vec![],
         retry_policy: Default::default(),
         condition: None,
+        script_language: None,
+        code: None,
     };
 
     let event = PulseEvent {
@@ -243,6 +259,8 @@ async fn jira_connector_requires_access_token() {
         depends_on: vec![],
         retry_policy: Default::default(),
         condition: None,
+        script_language: None,
+        code: None,
     };
 
     let event = PulseEvent {
@@ -278,6 +296,8 @@ async fn stripe_connector_requires_api_key() {
         depends_on: vec![],
         retry_policy: Default::default(),
         condition: None,
+        script_language: None,
+        code: None,
     };
 
     let event = PulseEvent {

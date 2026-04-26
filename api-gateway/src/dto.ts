@@ -48,6 +48,21 @@ export class UpsertWorkspaceCredentialDto {
   value!: string;
 }
 
+export class CreateWorkspaceDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  slug?: string;
+
+  @IsOptional()
+  settings?: Record<string, unknown>;
+}
+
 export class FilterConditionDto {
   @IsString()
   @IsNotEmpty()
