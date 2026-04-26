@@ -237,6 +237,30 @@ const CONNECTOR_CATALOG: ConnectorCatalogItem[] = [
     required_input_fields: ['api_key'],
     optional_input_fields: ['endpoint_url', 'method', 'body', 'headers'],
   },
+  {
+    connector: 'sendgrid',
+    action: 'send_email',
+    category: 'communication',
+    auth: 'api_key',
+    required_input_fields: ['api_key', 'from', 'to', 'subject', 'content'],
+    optional_input_fields: ['content_type'],
+  },
+  {
+    connector: 'salesforce',
+    action: 'create_record',
+    category: 'business',
+    auth: 'bearer',
+    required_input_fields: ['access_token', 'instance_url', 'object_api_name', 'fields'],
+    optional_input_fields: ['api_version'],
+  },
+  {
+    connector: 'shopify',
+    action: 'request',
+    category: 'commerce',
+    auth: 'api_key',
+    required_input_fields: ['store_domain', 'access_token'],
+    optional_input_fields: ['endpoint_path', 'method', 'body', 'headers'],
+  },
 ];
 
 @Controller()

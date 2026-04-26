@@ -4,7 +4,9 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
+use std::time::Duration;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -105,10 +107,92 @@ pub struct Connectors {
     http_client: Client,
 }
 
+fn is_private_ipv4(ip: Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.octets()[0] == 0
+        || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+}
+
+fn is_private_ipv6(ip: Ipv6Addr) -> bool {
+    ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_unicast_link_local()
+}
+
+fn validate_outbound_url(url: &str) -> Result<(), ConnectorError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| ConnectorError::InvalidConfig(format!("invalid outbound url: {e}")))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ConnectorError::InvalidConfig(
+            "only http/https outbound URLs are allowed".into(),
+        ));
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ConnectorError::InvalidConfig("missing outbound URL host".into()))?
+        .to_lowercase();
+
+    if host == "localhost" || host.ends_with(".local") || host.ends_with(".internal") {
+        return Err(ConnectorError::InvalidConfig(
+            "outbound URL host is blocked".into(),
+        ));
+    }
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let blocked = match ip {
+            IpAddr::V4(v4) => is_private_ipv4(v4),
+            IpAddr::V6(v6) => is_private_ipv6(v6),
+        };
+        if blocked {
+            return Err(ConnectorError::InvalidConfig(
+                "private or local outbound IPs are blocked".into(),
+            ));
+        }
+    }
+
+    if let Ok(raw_allowlist) = std::env::var("CONNECTOR_HTTP_ALLOWLIST") {
+        let allowlist: Vec<String> = raw_allowlist
+            .split(',')
+            .map(|item| item.trim().to_lowercase())
+            .filter(|item| !item.is_empty())
+            .collect();
+
+        if !allowlist.is_empty() {
+            let allowed = allowlist
+                .iter()
+                .any(|entry| host == *entry || host.ends_with(&format!(".{entry}")));
+            if !allowed {
+                return Err(ConnectorError::InvalidConfig(format!(
+                    "host '{host}' is not in CONNECTOR_HTTP_ALLOWLIST"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 impl Connectors {
     pub fn new() -> Self {
+        let timeout_secs = std::env::var("CONNECTOR_HTTP_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(20);
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .connect_timeout(Duration::from_secs(timeout_secs.min(10)))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+
         Self {
-            http_client: Client::new(),
+            http_client: client,
         }
     }
 
@@ -116,6 +200,8 @@ impl Connectors {
         &self,
         config: &HttpConfig,
     ) -> Result<serde_json::Value, ConnectorError> {
+        validate_outbound_url(&config.url)?;
+
         let method = match config.method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
@@ -354,6 +440,8 @@ impl Connectors {
         &self,
         config: &DiscordConfig,
     ) -> Result<serde_json::Value, ConnectorError> {
+        validate_outbound_url(&config.webhook_url)?;
+
         let body = serde_json::json!({ "content": config.content });
         let resp = self
             .http_client
@@ -389,6 +477,8 @@ impl Connectors {
                 "custom connector endpoint_url is required".into(),
             ));
         }
+
+        validate_outbound_url(&config.endpoint_url)?;
 
         let method = match config.method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
@@ -476,6 +566,8 @@ impl Connectors {
     }
 
     pub async fn execute_slack(&self, webhook_url: &str, text: &str) -> Result<(), ConnectorError> {
+        validate_outbound_url(webhook_url)?;
+
         let body = serde_json::json!({
             "text": text
         });
@@ -558,5 +650,17 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(ConnectorError::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn blocks_local_outbound_url() {
+        let result = validate_outbound_url("http://127.0.0.1:8080/test");
+        assert!(matches!(result, Err(ConnectorError::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn allows_public_outbound_url() {
+        let result = validate_outbound_url("https://api.example.com/v1/resource");
+        assert!(result.is_ok());
     }
 }

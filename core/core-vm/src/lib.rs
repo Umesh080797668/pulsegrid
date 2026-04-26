@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasmtime::{Engine as WasmEngine, Instance, Linker, Module, Store, TypedFunc};
 
+const MAX_WASM_MODULE_BYTES: usize = 1_048_576;
+const MAX_SCRIPT_INPUT_BYTES: usize = 65_536;
+const MAX_SCRIPT_OUTPUT_BYTES: usize = 262_144;
+
 #[derive(Debug, Clone, Default)]
 struct SandboxState {
     _reserved: (),
@@ -43,6 +47,12 @@ impl CoreVm {
     pub fn execute_wat_script(&self, code: &str, input: &Value) -> Result<Value, ExecutionError> {
         let wasm_bytes: Vec<u8> = wat::parse_str(code)
             .map_err(|e: wat::Error| ExecutionError::SandboxError(e.to_string()))?;
+        if wasm_bytes.len() > MAX_WASM_MODULE_BYTES {
+            return Err(ExecutionError::SandboxError(
+                "WASM module is larger than allowed limit".to_string(),
+            ));
+        }
+
         let module = Module::new(&self.wasm_engine, wasm_bytes)
             .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
 
@@ -65,6 +75,12 @@ impl CoreVm {
 
         let input_bytes =
             serde_json::to_vec(input).map_err(|e| ExecutionError::SandboxError(e.to_string()))?;
+        if input_bytes.len() > MAX_SCRIPT_INPUT_BYTES {
+            return Err(ExecutionError::SandboxError(
+                "sandbox input exceeds max size".to_string(),
+            ));
+        }
+
         let input_len = i32::try_from(input_bytes.len())
             .map_err(|_| ExecutionError::SandboxError("input payload too large".to_string()))?;
 
@@ -82,6 +98,12 @@ impl CoreVm {
             .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
         let output_ptr = (packed_output >> 32) as u32 as usize;
         let output_len = (packed_output & 0xffff_ffff) as u32 as usize;
+
+        if output_len > MAX_SCRIPT_OUTPUT_BYTES {
+            return Err(ExecutionError::SandboxError(
+                "sandbox output exceeds max size".to_string(),
+            ));
+        }
 
         if output_len == 0 {
             return Ok(Value::Null);

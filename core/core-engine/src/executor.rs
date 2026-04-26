@@ -850,6 +850,88 @@ impl FlowExecutor {
                     .await
                     .map_err(|e| e.to_string())
             }
+            "sendgrid" => {
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: "https://api.sendgrid.com/v3/mail/send".to_string(),
+                    method: "POST".to_string(),
+                    body: Some(json!({
+                        "from": { "email": get_required("from")? },
+                        "personalizations": [{
+                            "to": [{ "email": get_required("to")? }],
+                            "subject": get_required("subject")?
+                        }],
+                        "content": [{
+                            "type": input.get("content_type").cloned().unwrap_or(json!("text/plain")),
+                            "value": get_required("content")?
+                        }]
+                    })),
+                    headers: None,
+                    bearer_token: Some(get_required("api_key")?),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "salesforce" => {
+                let instance_url = get_required("instance_url")?;
+                let object_api_name = get_required("object_api_name")?;
+                let api_version =
+                    get_optional("api_version").unwrap_or_else(|| "v61.0".to_string());
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!(
+                        "{}/services/data/{}/sobjects/{}/",
+                        instance_url.trim_end_matches('/'),
+                        api_version,
+                        object_api_name,
+                    ),
+                    method: "POST".to_string(),
+                    body: Some(input.get("fields").cloned().unwrap_or(json!({}))),
+                    headers: Some(std::collections::HashMap::from([(
+                        "Content-Type".to_string(),
+                        "application/json".to_string(),
+                    )])),
+                    bearer_token: Some(get_required("access_token")?),
+                    api_key_header: None,
+                    api_key_value: None,
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            "shopify" => {
+                let store_domain = get_required("store_domain")?;
+                let endpoint_path = get_optional("endpoint_path")
+                    .unwrap_or_else(|| "/admin/api/2024-10/customers.json".to_string());
+                let normalized_path = if endpoint_path.starts_with('/') {
+                    endpoint_path
+                } else {
+                    format!("/{endpoint_path}")
+                };
+                let cfg = CustomConnectorConfig {
+                    endpoint_url: format!(
+                        "https://{}{}",
+                        store_domain.trim_end_matches('/'),
+                        normalized_path
+                    ),
+                    method: get_optional("method").unwrap_or_else(|| "POST".to_string()),
+                    body: Some(input.get("body").cloned().unwrap_or(json!({}))),
+                    headers: to_headers(input.get("headers").and_then(Value::as_object)),
+                    bearer_token: None,
+                    api_key_header: Some("X-Shopify-Access-Token".to_string()),
+                    api_key_value: Some(get_required("access_token")?),
+                };
+
+                connectors
+                    .execute_custom_connector(&cfg)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
             "webhook" => {
                 let signature_valid = connectors
                     .verify_webhook_signature(&core_connectors::WebhookVerifyConfig {

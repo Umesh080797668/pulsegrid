@@ -383,3 +383,135 @@ async fn wat_script_step_executes_in_sandbox() {
     assert_eq!(result.status, "success");
     assert_eq!(result.output["output"], json!(42));
 }
+
+#[tokio::test]
+async fn sendgrid_connector_requires_api_key() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "sendgrid-step".into(),
+        r#type: "action".into(),
+        connector: Some("sendgrid".into()),
+        action: Some("send_email".into()),
+        input_mapping: Some(HashMap::from([
+            ("from".to_string(), "noreply@pulsegrid.dev".to_string()),
+            ("to".to_string(), "user@example.com".to_string()),
+            ("subject".to_string(), "Hello".to_string()),
+            ("content".to_string(), "Welcome".to_string()),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: None,
+        code: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: api_key")
+    );
+}
+
+#[tokio::test]
+async fn salesforce_connector_requires_access_token() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "salesforce-step".into(),
+        r#type: "action".into(),
+        connector: Some("salesforce".into()),
+        action: Some("create_record".into()),
+        input_mapping: Some(HashMap::from([
+            (
+                "instance_url".to_string(),
+                "https://example.my.salesforce.com".to_string(),
+            ),
+            ("object_api_name".to_string(), "Lead".to_string()),
+            (
+                "fields".to_string(),
+                "{\"Company\":\"PulseGrid\"}".to_string(),
+            ),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: None,
+        code: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: access_token")
+    );
+}
+
+#[tokio::test]
+async fn shopify_connector_requires_access_token() {
+    let executor = FlowExecutor::new();
+    let step = FlowStep {
+        id: "shopify-step".into(),
+        r#type: "action".into(),
+        connector: Some("shopify".into()),
+        action: Some("request".into()),
+        input_mapping: Some(HashMap::from([
+            (
+                "store_domain".to_string(),
+                "store.myshopify.com".to_string(),
+            ),
+            (
+                "endpoint_path".to_string(),
+                "/admin/api/2024-10/customers.json".to_string(),
+            ),
+        ])),
+        depends_on: vec![],
+        retry_policy: Default::default(),
+        condition: None,
+        script_language: None,
+        code: None,
+    };
+
+    let event = PulseEvent {
+        id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
+        source: Some("manual".into()),
+        event_type: "trigger".into(),
+        data: json!({}),
+    };
+
+    let result = executor
+        .execute_step(&step, json!({}), &HashMap::new(), &event)
+        .await;
+    assert_eq!(result.status, "failed");
+    assert!(
+        result
+            .error
+            .unwrap_or_default()
+            .contains("missing required input field: access_token")
+    );
+}
