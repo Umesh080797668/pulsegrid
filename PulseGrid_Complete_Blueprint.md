@@ -1515,6 +1515,54 @@ Every developer who builds with the PulseGrid API or embeds the Vue SDK is a dis
 
 ---
 
+### Phase 2 Quick Wins — Before Phase 2 Core Launch (Month 8–9)
+
+These are low-effort, high-impact features that build immediate developer love and competitive advantage. Each can be built in 1–2 days and deployed independently:
+
+#### 2.A — Event Replay Ring Buffer
+**What:** Store last 500 webhook/event payloads per flow in Redis. When a user updates their flow, they click "Replay" on any past event and see exactly what the new flow would do with real historical data — without waiting for the event to happen again.
+
+**Why:** Debugging superhero moment. Debugging is the #1 pain point across all automation platforms. Zero competitors have this.
+
+**Implementation:** 
+- Redis sorted set: `flow:{id}:events` with 24h TTL
+- Add to event dispatcher in PulseCore
+- Replay endpoint in API Gateway that re-queues event with the current flow definition
+- Frontend: "Replay" button on past events in execution history
+
+**Effort:** 1 day  
+**Moat:** Developer retention — converts developers immediately
+
+#### 2.B — Webhook Deduplication via Idempotency Key
+**What:** Accept idempotency keys in webhook payloads (configurable JSONPath, e.g., `$.id` or `$.event.uuid`). Store seen keys in Redis with 24h TTL. If the same key hits twice, silently drop the duplicate. Prevents duplicate orders, duplicate Slack messages, duplicate Jira tickets.
+
+**Why:** Every webhook service (Stripe, GitHub, Shopify) retries on failure. Users have complained about duplicate runs forever. No competitor handles this automatically.
+
+**Implementation:**
+- Webhook controller in API Gateway: extract idempotency key from request
+- Redis SET: `idempotency:{workspace}:{key}` with 24h TTL
+- Return 200 immediately if key exists (idempotent response)
+- Add UI field in webhook trigger config: "Idempotency Key Path" with JSONPath picker
+
+**Effort:** 3 hours  
+**Moat:** Reliability — prevents the #1 production embarrassment (duplicate runs)
+
+#### 2.C — Dependency Impact Analysis
+**What:** Query UI: "Which flows use this credential?" / "If I rotate this API key, what breaks?" Show a dependency graph: credentials → connectors → flows. Pre-calculate and cache this graph (rebuild on flow save).
+
+**Why:** Table stakes for teams with 20+ flows. Implemented as a JSONB query on `flows.definition` — almost free to build. Zero competitors have it.
+
+**Implementation:**
+- New endpoint: `GET /credentials/{id}/dependents` 
+- Query: `SELECT id, name FROM flows WHERE definition @> jsonb_build_object('action', jsonb_build_object('connector', 'slack'))` (pattern for each connector type)
+- Cache in Redis with 1h TTL, invalidate on flow save
+- Add "Impact Preview" modal when rotating a credential
+
+**Effort:** 4 hours  
+**Moat:** Growth — enterprise teams will specifically ask for this
+
+---
+
 ### Phase 3 — Enterprise & Scale (Month 11–18)
 
 **Milestone 3.1 — Enterprise Services (Month 11–13)**
@@ -1552,13 +1600,165 @@ Every developer who builds with the PulseGrid API or embeds the Vue SDK is a dis
 - Blue-green deployments
 - 99.9% uptime SLA enforcement
 
+**Phase 3 Core Developer & Reliability Features**
+
+#### 3.A — Live Execution Debugger with Per-Step I/O Viewer
+**What:** Show every step's exact input and output in real-time as the flow runs. Expandable JSON, diff highlighting when data changes between steps, and a replay button to rerun any single step with frozen inputs from a past run.
+
+**Why:** The #1 complaint across every automation platform — "I can't see what's happening inside my flow." This is n8n's main developer advantage. PulseGrid should destroy it.
+
+**Implementation:**
+- Stream step outputs via WebSocket to dashboard during execution
+- Store step I/O in Redis: `flow_run:{id}:step_outputs` (TTL: 24h)
+- Step replay endpoint: re-execute a single step with frozen input
+- Dashboard: Execution view with step-by-step timeline, JSON viewer with diff highlighting
+
+**Effort:** 2 weeks  
+**Moat:** Developer moat — converts developers immediately
+
+#### 3.B — Flow Versioning with Visual Diff
+**What:** Every save creates a snapshot. Users can browse version history, see a visual diff between two versions (nodes added/removed highlighted in green/red), and one-click roll back. Store the full definition JSONB in a `flow_versions` table.
+
+**Why:** Zapier has this behind a paywall. n8n doesn't have it in cloud. It's the bridge to marketplace templates: "this template was updated, here's what changed."
+
+**Implementation:**
+- New table: `flow_versions(id, flow_id, definition, created_at, created_by, note)`
+- Create version on every flow save (in transaction)
+- Diff algorithm: compare JSONB, highlight added/removed nodes and step changes
+- Rollback endpoint: revert to previous version
+- Dashboard: Version history sidebar with visual diff
+
+**Effort:** 2 weeks  
+**Moat:** Growth — power users will trust versioning for production changes
+
+#### 3.C — Human-in-the-Loop Approval Steps
+**What:** A new `wait_for_approval` step type that pauses flow execution and sends an approval request (Slack message with buttons, email with links, or mobile push). The flow resumes only when approved, or aborts on rejection. Multi-approver support with routing rules ("amount > $10k requires CFO").
+
+**Why:** Zapier charges extra for "Interfaces." n8n doesn't have it. Make doesn't have it. This unlocks finance, HR, and ops automation use cases that currently can't use any of these tools.
+
+**Implementation:**
+- New step type in executor: `wait_for_approval`
+- Flow state: pause execution, store pending approval record
+- Approval request template: render in Slack/email/push
+- Approval token endpoint: resume execution on approve/reject
+- Routing rules: conditional approver selection via JavaScript expression
+
+**Effort:** 2 weeks  
+**Moat:** Growth — unlocks enterprise and SMB automations that competitors can't do
+
+#### 3.D — Connector Circuit Breaker + Health Monitoring
+**What:** Automatically detect when a connector API starts failing (error rate > threshold over a time window). Open the circuit: pause all flows using that connector, alert the workspace, show which flows are affected. Resume when the connector recovers. Live dashboard: uptime, p95 latency, error rate per connector.
+
+**Why:** Kills the "silent failure" problem every Zapier user complains about. No automation platform does this.
+
+**Implementation:**
+- Error rate tracker: Redis counter per connector (5min window)
+- Circuit breaker: if error_rate > 50% for 5min, mark connector unhealthy
+- Flow pause: query for flows using unhealthy connector, mark as paused
+- Alert dispatcher: Slack/email alert to workspace admins
+- Health dashboard: per-connector uptime %, p95 latency from ClickHouse
+
+**Effort:** 1.5 weeks  
+**Moat:** Reliability — enterprises will specifically ask for this
+
 **Phase 3 deliverables:**
 - Enterprise-ready (SSO, audit, compliance)
+- Live debugger with per-step I/O viewer live
+- Flow versioning + visual diff live
+- Human-in-the-loop approval steps live
+- Connector circuit breaker + health dashboard live
 - Vue SDK live with Shopify integration
 - Kubernetes infrastructure
 - Business + Enterprise plans live
 - 500+ connectors
 - 20+ enterprise pilots
+
+**Phase 4 Enterprise & Advanced Operations Features**
+
+#### 4.A — Saga Pattern & Compensation Rollback
+**What:** For flows with multiple steps across different systems, implement automatic compensation. If step 3 fails, automatically execute predefined compensation steps to undo step 1 and step 2. Example: "Create invoice → Create payment → Create fulfillment" fails → automatically cancel payment, delete invoice.
+
+**Why:** Enterprises running mission-critical automations need data consistency guarantees. This is what expensive enterprise platforms charge $100k/year for.
+
+**Implementation:**
+- Schema: Add `compensation_steps` array to flow definition (list of steps to run on failure)
+- Executor: Track successful steps, on failure execute compensation in reverse order
+- Compensation steps: support conditionals ("only compensate if original step succeeded")
+- Dashboard: Visual builder for compensation chains
+- Webhooks: Send compensation event to external systems on trigger
+
+**Effort:** 3 weeks  
+**Moat:** Enterprise — Stops financial/data integrity chaos
+
+#### 4.B — SLA Enforcement with Latency Budgets
+**What:** Define SLA per flow: "must complete in <5min or alert." PulseGrid enforces this: if a step runs past its latency budget, abort and execute fallback. Dashboard shows actual vs. budgeted time per step, SLA breach rate per flow, and historical trends.
+
+**Why:** Enterprises have SLAs to their customers. This makes flows trustworthy for customer-facing automations.
+
+**Implementation:**
+- Schema: Add `sla_max_duration_ms`, `fallback_steps` to flow definition
+- Executor: Track elapsed time per step, abort if exceeds budget
+- Metrics: Store latency per step in ClickHouse
+- Dashboard: SLA tracking, breach rate, trend analysis, alerts for repeated breaches
+- Integrations: PagerDuty/Opsgenie alert on SLA breach
+
+**Effort:** 2 weeks  
+**Moat:** Reliability/Enterprise — Only platform with enforceable SLAs
+
+#### 4.C — Per-Step Latency Analytics & Cost Attribution
+**What:** Drill-down view: "Show me the latency breakdown for all runs of Flow X." See p50, p95, p99 latency per step, identify bottlenecks, and see which step consumes the most compute resources. Cost attribution: show which steps are expensive (external API calls, compute-heavy transformations).
+
+**Why:** Enterprise customers need cost accountability and performance optimization tools.
+
+**Implementation:**
+- Metrics: Store step duration + resource usage in ClickHouse (per step, per flow)
+- API: Endpoint for percentile latency, cost breakdown per step
+- Dashboard: "Flamegraph" view of per-step latency, drill-down to individual runs
+- Cost calculator: multiply step count × cost_per_api_call for budget forecasting
+- Alerts: alert if p95 latency > SLA threshold or cost > budget
+
+**Effort:** 1.5 weeks  
+**Moat:** Observability — Competitors don't have this
+
+#### 4.D — OpenTelemetry Export & Native Observability
+**What:** PulseGrid becomes a native citizen in the enterprise observability ecosystem. Export traces to any vendor (Datadog, New Relic, Honeycomb, Jaeger): every flow run is a trace, every step is a span. Includes custom attributes (workspace_id, connector_type, error_code).
+
+**Why:** Enterprises already have observability infrastructure. This integration makes PulseGrid invisible in their existing tools.
+
+**Implementation:**
+- OpenTelemetry SDK: Instrument executor with `tracing_opentelemetry` crate
+- Exporter configuration: Jaeger OTLP or Datadog agent endpoint
+- Attributes: workspace_id, flow_id, step_id, connector_type, duration, error_code
+- Sampling: Configurable sampling rate for high-volume flows
+- Dashboard: Link to external traces (if Datadog/Honeycomb installed)
+
+**Effort:** 1 week  
+**Moat:** Enterprise/Observability — Seamless vendor integration
+
+#### 4.E — Zero-Downtime Updates & Canary Deployments
+**What:** Deploy new PulseGrid versions without stopping active flows. In-flight flow runs continue with the old engine, new runs use the new version. Canary deployment: roll out to 10% of traffic first, monitor errors, roll back automatically if error rate spikes.
+
+**Why:** Enterprise production requirements: "we can't have downtime."
+
+**Implementation:**
+- Versioned executor: Deploy new executor as new pod, old pods drain gracefully
+- Kubernetes StatefulSet: Rolling update with grace period
+- Canary traffic split: 10% of new flows to new version, monitor error rate
+- Auto-rollback: If error rate > baseline + 10%, rollback deployment
+- Metrics: Error rate, latency, throughput per version
+
+**Effort:** 2 weeks  
+**Moat:** Enterprise/Reliability — Only platform with true zero-downtime updates
+
+**Phase 4 deliverables:**
+- Saga pattern with automatic rollback live
+- SLA enforcement + latency budgets live
+- Per-step latency analytics + cost tracking live
+- OpenTelemetry export live
+- Zero-downtime canary deployments live
+- 1000+ connectors
+- 500+ customers
+- Enterprise NPS > 60
 
 ---
 
