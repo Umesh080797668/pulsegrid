@@ -36,7 +36,7 @@ type FlowDefinition = {
   };
   steps: Array<{
     id: string;
-    type: 'action';
+    type: 'action' | 'parallel' | 'loop' | 'sub_flow';
     connector: string;
     action: string;
     input_mapping: Record<string, string>;
@@ -67,6 +67,7 @@ export function FlowCanvas({
   const [selectedStepId, setSelectedStepId] = useState('');
   const [newConnector, setNewConnector] = useState(() => connectors[0]?.connector || 'custom');
   const [newAction, setNewAction] = useState(() => connectors[0]?.action || 'call_api');
+  const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'loop' | 'sub_flow'>('action');
   const [newInputJson, setNewInputJson] = useState('{\n  "endpoint_url": "https://httpbin.org/post",\n  "method": "POST"\n}');
 
   const parsed = useMemo(() => {
@@ -106,7 +107,7 @@ export function FlowCanvas({
         ...parsed.steps,
         {
           id: makeStepId(),
-          type: 'action',
+          type: newStepType,
           connector: newConnector,
           action: newAction,
           input_mapping: inputMapping,
@@ -197,7 +198,7 @@ export function FlowCanvas({
     newNodes.push({
       id: 'trigger',
       position: { x: 50, y: 150 },
-      data: { kind: 'Trigger', title: parsed.trigger.connector, subtitle: parsed.trigger.event },
+      data: { kind: 'Trigger', title: parsed.trigger.connector, subtitle: parsed.trigger.event, stepType: 'trigger' },
       type: 'customNode',
       draggable: true,
     });
@@ -212,9 +213,10 @@ export function FlowCanvas({
         id: step.id,
         position: { x: 50 + (level * 320), y: 50 + (count * 150) },
         data: { 
-          kind: `Step ${index + 1}`, 
+          kind: step.type === 'action' ? `Step ${index + 1}` : `${step.type.toUpperCase()} ${index + 1}`,
           title: `${step.connector}.${step.action}`, 
           subtitle: step.id,
+          stepType: step.type,
         },
         type: 'customNode',
         draggable: true,
@@ -289,6 +291,12 @@ export function FlowCanvas({
         ) : null}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <select value={newStepType} onChange={(e) => setNewStepType(e.target.value as 'action' | 'parallel' | 'loop' | 'sub_flow')} style={{ padding: '8px' }}>
+            <option value="action">action</option>
+            <option value="parallel">parallel</option>
+            <option value="loop">loop</option>
+            <option value="sub_flow">sub-flow</option>
+          </select>
           <select value={newConnector} onChange={(e) => setNewConnector(e.target.value)} style={{ padding: '8px' }}>
             {connectors.length === 0 ? <option value="custom">custom</option> : null}
             {connectors.map((item) => (
@@ -321,24 +329,41 @@ export function FlowCanvas({
 }
 
 function CustomNode({ data, selected }: NodeProps) {
+  const stepType = typeof data.stepType === 'string' ? data.stepType : 'action';
+  const borderColor = stepType === 'parallel' ? '#22d674' : stepType === 'loop' ? '#f59e0b' : stepType === 'sub_flow' ? '#8b5cf6' : '#7c9cff';
   return (
     <div
       style={{
         minWidth: 220,
         padding: 14,
         borderRadius: 14,
-        border: selected ? '1px solid #7c9cff' : '1px solid rgba(255,255,255,0.12)',
-        background: selected ? 'rgba(124,156,255,0.12)' : 'rgba(255,255,255,0.04)',
-        boxShadow: selected ? '0 0 0 1px rgba(124,156,255,0.3)' : 'none',
+        border: selected ? `1px solid ${borderColor}` : '1px solid rgba(255,255,255,0.12)',
+        background: selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)',
+        boxShadow: selected ? `0 0 0 1px ${borderColor}3d` : 'none',
         backgroundColor: '#1a1a1a', 
         color: '#fff',
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: '#7c9cff' }} />
-      <div className="muted" style={{ fontSize: 12, marginBottom: 6, opacity: 0.7 }}>{typeof data.kind === "string" ? data.kind : "Step"}</div>
+      <Handle type="target" position={Position.Left} style={{ background: borderColor }} />
+      <div className="muted" style={{ fontSize: 12, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{typeof data.kind === "string" ? data.kind : "Step"}</div>
       <div style={{ fontWeight: 700, marginBottom: 4 }}>{typeof data.title === "string" ? data.title : "Title"}</div>
       <div className="muted" style={{ wordBreak: 'break-all', opacity: 0.7, fontSize: 12 }}>{typeof data.subtitle === "string" ? data.subtitle : "Subtitle"}</div>
-      <Handle type="source" position={Position.Right} style={{ background: '#7c9cff' }} />
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+        <span className="badge b-neutral" style={{ fontSize: 10, borderColor: borderColor, color: borderColor }}>{stepType}</span>
+      </div>
+      {stepType === 'parallel' ? (
+        <>
+          <Handle type="source" position={Position.Right} id="parallel-a" style={{ top: 30, background: borderColor }} />
+          <Handle type="source" position={Position.Right} id="parallel-b" style={{ top: 58, background: borderColor }} />
+        </>
+      ) : stepType === 'loop' ? (
+        <>
+          <Handle type="source" position={Position.Right} style={{ background: borderColor }} />
+          <Handle type="source" position={Position.Bottom} style={{ background: borderColor }} />
+        </>
+      ) : (
+        <Handle type="source" position={Position.Right} style={{ background: borderColor }} />
+      )}
     </div>
   );
 }

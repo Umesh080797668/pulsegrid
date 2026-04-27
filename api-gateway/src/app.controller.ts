@@ -1,9 +1,10 @@
-import { Controller, Get, Inject, OnModuleInit, Post, Body, Param, Headers, Req, RawBodyRequest, UnauthorizedException, BadRequestException, ParseUUIDPipe, UseGuards, InternalServerErrorException, Delete, Put, Query } from '@nestjs/common';
+import { Controller, Get, Inject, OnModuleInit, Post, Body, Param, Headers, Req, RawBodyRequest, UnauthorizedException, BadRequestException, ParseUUIDPipe, UseGuards, InternalServerErrorException, Delete, Put, Query, Res } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Observable, firstValueFrom } from 'rxjs';
 import { Redis } from 'ioredis';
-import { Request } from 'express';
+import { Request, Response as ExpressResponse } from 'express';
 import * as crypto from 'crypto';
+import { Pool } from 'pg';
 import {
   TriggerFlowDto,
   SetSecretDto,
@@ -41,6 +42,25 @@ interface ConnectorCatalogItem {
   required_input_fields: string[];
   optional_input_fields: string[];
   notes?: string[];
+}
+
+interface OAuthProviderConfig {
+  provider: 'google' | 'github' | 'notion';
+  authorizeUrl: string;
+  tokenUrl: string;
+  scope: string;
+  clientIdEnv: string;
+  clientSecretEnv: string;
+}
+
+interface ConnectorOAuthInstallationRow {
+  workspace_id: string;
+  connector: string;
+  provider: string;
+  scope: string | null;
+  expires_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 const CONNECTOR_CATALOG: ConnectorCatalogItem[] = [
@@ -287,16 +307,66 @@ const CONNECTOR_CATALOG: ConnectorCatalogItem[] = [
   },
 ];
 
+const OAUTH_CONNECTOR_CONFIGS: Record<string, OAuthProviderConfig> = {
+  gmail: {
+    provider: 'google',
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scope: 'openid email profile https://www.googleapis.com/auth/gmail.send',
+    clientIdEnv: 'GOOGLE_CONNECTOR_CLIENT_ID',
+    clientSecretEnv: 'GOOGLE_CONNECTOR_CLIENT_SECRET',
+  },
+  google_sheets: {
+    provider: 'google',
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scope: 'openid email profile https://www.googleapis.com/auth/spreadsheets',
+    clientIdEnv: 'GOOGLE_CONNECTOR_CLIENT_ID',
+    clientSecretEnv: 'GOOGLE_CONNECTOR_CLIENT_SECRET',
+  },
+  github: {
+    provider: 'github',
+    authorizeUrl: 'https://github.com/login/oauth/authorize',
+    tokenUrl: 'https://github.com/login/oauth/access_token',
+    scope: 'read:user repo workflow',
+    clientIdEnv: 'GITHUB_CONNECTOR_CLIENT_ID',
+    clientSecretEnv: 'GITHUB_CONNECTOR_CLIENT_SECRET',
+  },
+  notion: {
+    provider: 'notion',
+    authorizeUrl: 'https://api.notion.com/v1/oauth/authorize',
+    tokenUrl: 'https://api.notion.com/v1/oauth/token',
+    scope: '',
+    clientIdEnv: 'NOTION_CONNECTOR_CLIENT_ID',
+    clientSecretEnv: 'NOTION_CONNECTOR_CLIENT_SECRET',
+  },
+};
+
+type OAuthStatePayload = {
+  connector: string;
+  workspaceId: string;
+  userId: string;
+  nonce: string;
+  ts: number;
+};
+
 @Controller()
 export class AppController implements OnModuleInit {
   private pulseCoreService!: PulseCoreService;
   private readonly coreHttpBaseUrl = process.env.CORE_ENGINE_HTTP_URL || 'http://127.0.0.1:8000';
+  private readonly oauthPool: Pool | null;
 
   constructor(
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
     @Inject('REDIS_CLIENT') private redis: Redis,
     private readonly rateLimitService: RateLimitService,
-  ) {}
+  ) {
+    const connectionString = process.env.DATABASE_URL;
+    this.oauthPool = connectionString ? new Pool({ connectionString }) : null;
+    if (this.oauthPool) {
+      void this.ensureConnectorOAuthSchema();
+    }
+  }
 
   onModuleInit() {
     this.pulseCoreService = this.client.getService<PulseCoreService>('PulseCoreService');
@@ -468,6 +538,214 @@ export class AppController implements OnModuleInit {
       generatedAt: new Date().toISOString(),
       items: CONNECTOR_CATALOG,
     };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('connectors/oauth/:connector/start')
+  async startConnectorOAuth(
+    @Param('connector') connector: string,
+    @Query('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Req() req: Request,
+  ) {
+    const config = this.getOAuthConfig(connector);
+    if (!config) {
+      throw new BadRequestException(`Connector ${connector} does not support OAuth installation`);
+    }
+
+    const clientId = process.env[config.clientIdEnv] || '';
+    if (!clientId) {
+      throw new BadRequestException(`Missing OAuth client ID for ${connector}`);
+    }
+
+    const userId = this.getJwtUserId(req);
+    await this.assertWorkspaceOwnership(userId, workspaceId);
+
+    const redirectUri = this.getConnectorOAuthCallbackUrl(connector);
+    const statePayload: OAuthStatePayload = {
+      connector,
+      workspaceId,
+      userId,
+      nonce: crypto.randomUUID(),
+      ts: Date.now(),
+    };
+    const state = this.signOAuthState(statePayload);
+
+    const authorizeUrl = new URL(config.authorizeUrl);
+    authorizeUrl.searchParams.set('client_id', clientId);
+    authorizeUrl.searchParams.set('redirect_uri', redirectUri);
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', state);
+    if (config.scope) {
+      authorizeUrl.searchParams.set('scope', config.scope);
+    }
+    if (config.provider === 'notion') {
+      authorizeUrl.searchParams.set('owner', 'user');
+    }
+
+    return {
+      connector,
+      provider: config.provider,
+      workspaceId,
+      authorizeUrl: authorizeUrl.toString(),
+      callbackUrl: redirectUri,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('connectors/oauth/installations')
+  async listConnectorOAuthInstallations(
+    @Query('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Req() req: Request,
+  ) {
+    if (!this.oauthPool) {
+      return { items: [] };
+    }
+
+    const userId = this.getJwtUserId(req);
+    await this.assertWorkspaceOwnership(userId, workspaceId);
+
+    const result = await this.oauthPool.query<ConnectorOAuthInstallationRow>(
+      `SELECT workspace_id, connector, provider, scope, expires_at, created_at, updated_at
+       FROM connector_oauth_installations
+       WHERE workspace_id = $1
+       ORDER BY updated_at DESC`,
+      [workspaceId],
+    );
+
+    return {
+      items: result.rows.map((row) => ({
+        workspaceId: row.workspace_id,
+        connector: row.connector,
+        provider: row.provider,
+        scope: row.scope,
+        expiresAt: row.expires_at ? row.expires_at.toISOString() : null,
+        connectedAt: row.updated_at.toISOString(),
+      })),
+    };
+  }
+
+  @Get('connectors/oauth/:connector/callback')
+  async handleConnectorOAuthCallback(
+    @Param('connector') connector: string,
+    @Query('code') code: string | undefined,
+    @Query('state') state: string | undefined,
+    @Query('error') oauthError: string | undefined,
+    @Res() res: ExpressResponse,
+  ) {
+    const config = this.getOAuthConfig(connector);
+    if (!config) {
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: '',
+        message: 'Unsupported connector',
+      }));
+    }
+
+    if (oauthError) {
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: '',
+        message: oauthError,
+      }));
+    }
+
+    if (!code || !state) {
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: '',
+        message: 'Missing code or state',
+      }));
+    }
+
+    let payload: OAuthStatePayload;
+    try {
+      payload = this.verifyOAuthState(state);
+    } catch {
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: '',
+        message: 'Invalid OAuth state',
+      }));
+    }
+
+    if (payload.connector !== connector) {
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: payload.workspaceId,
+        message: 'Connector mismatch',
+      }));
+    }
+
+    if (!this.oauthPool) {
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: payload.workspaceId,
+        message: 'OAuth storage is unavailable',
+      }));
+    }
+
+    try {
+      const tokenData = await this.exchangeConnectorOAuthCode(connector, code);
+      await this.oauthPool.query(
+        `INSERT INTO connector_oauth_installations (
+          workspace_id,
+          connector,
+          provider,
+          access_token,
+          refresh_token,
+          token_type,
+          scope,
+          expires_at,
+          metadata,
+          created_by_user_id,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, NOW())
+        ON CONFLICT (workspace_id, connector)
+        DO UPDATE SET
+          provider = EXCLUDED.provider,
+          access_token = EXCLUDED.access_token,
+          refresh_token = EXCLUDED.refresh_token,
+          token_type = EXCLUDED.token_type,
+          scope = EXCLUDED.scope,
+          expires_at = EXCLUDED.expires_at,
+          metadata = EXCLUDED.metadata,
+          created_by_user_id = EXCLUDED.created_by_user_id,
+          updated_at = NOW()`,
+        [
+          payload.workspaceId,
+          connector,
+          config.provider,
+          tokenData.accessToken,
+          tokenData.refreshToken,
+          tokenData.tokenType,
+          tokenData.scope,
+          tokenData.expiresAt,
+          JSON.stringify({ raw: tokenData.raw }),
+          payload.userId,
+        ],
+      );
+
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'success',
+        connector,
+        workspaceId: payload.workspaceId,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'OAuth token exchange failed';
+      return res.redirect(this.buildDashboardOAuthCallbackUrl({
+        status: 'error',
+        connector,
+        workspaceId: payload.workspaceId,
+        message,
+      }));
+    }
   }
 
   @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
@@ -650,6 +928,191 @@ export class AppController implements OnModuleInit {
   @Get('health')
   health() {
     return 'API Gateway OK';
+  }
+
+  private getOAuthConfig(connector: string): OAuthProviderConfig | null {
+    return OAUTH_CONNECTOR_CONFIGS[connector] ?? null;
+  }
+
+  private getConnectorOAuthCallbackUrl(connector: string): string {
+    const base = process.env.API_PUBLIC_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:3000';
+    return `${base.replace(/\/$/, '')}/connectors/oauth/${encodeURIComponent(connector)}/callback`;
+  }
+
+  private buildDashboardOAuthCallbackUrl(params: {
+    status: 'success' | 'error';
+    connector: string;
+    workspaceId: string;
+    message?: string;
+  }): string {
+    const dashboardBase = process.env.DASHBOARD_PUBLIC_BASE_URL || process.env.FRONTEND_URL || 'http://127.0.0.1:3001';
+    const url = new URL(`${dashboardBase.replace(/\/$/, '')}/oauth/callback`);
+    url.searchParams.set('status', params.status);
+    url.searchParams.set('connector', params.connector);
+    if (params.workspaceId) {
+      url.searchParams.set('workspaceId', params.workspaceId);
+    }
+    if (params.message) {
+      url.searchParams.set('message', params.message);
+    }
+    return url.toString();
+  }
+
+  private signOAuthState(payload: OAuthStatePayload): string {
+    const secret = process.env.CONNECTOR_OAUTH_STATE_SECRET || process.env.JWT_SECRET || 'pulsegrid-dev-oauth-state';
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signature = crypto.createHmac('sha256', secret).update(encodedPayload).digest('base64url');
+    return `${encodedPayload}.${signature}`;
+  }
+
+  private verifyOAuthState(state: string): OAuthStatePayload {
+    const secret = process.env.CONNECTOR_OAUTH_STATE_SECRET || process.env.JWT_SECRET || 'pulsegrid-dev-oauth-state';
+    const [encodedPayload, providedSignature] = state.split('.');
+    if (!encodedPayload || !providedSignature) {
+      throw new BadRequestException('Invalid OAuth state format');
+    }
+
+    const expectedSignature = crypto.createHmac('sha256', secret).update(encodedPayload).digest('base64url');
+    if (expectedSignature !== providedSignature) {
+      throw new UnauthorizedException('Invalid OAuth state signature');
+    }
+
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as OAuthStatePayload;
+    const maxAgeMs = Number(process.env.CONNECTOR_OAUTH_STATE_MAX_AGE_MS || 10 * 60 * 1000);
+    if (Date.now() - payload.ts > maxAgeMs) {
+      throw new UnauthorizedException('Expired OAuth state');
+    }
+
+    return payload;
+  }
+
+  private async exchangeConnectorOAuthCode(connector: string, code: string): Promise<{
+    accessToken: string;
+    refreshToken: string | null;
+    tokenType: string | null;
+    scope: string | null;
+    expiresAt: Date | null;
+    raw: unknown;
+  }> {
+    const config = this.getOAuthConfig(connector);
+    if (!config) {
+      throw new BadRequestException(`Unsupported OAuth connector: ${connector}`);
+    }
+
+    const clientId = process.env[config.clientIdEnv] || '';
+    const clientSecret = process.env[config.clientSecretEnv] || '';
+    if (!clientId || !clientSecret) {
+      throw new InternalServerErrorException(`Missing OAuth credentials for connector ${connector}`);
+    }
+
+    const redirectUri = this.getConnectorOAuthCallbackUrl(connector);
+    let response: globalThis.Response;
+
+    if (config.provider === 'google') {
+      response = await fetch(config.tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+        }),
+      });
+    } else if (config.provider === 'github') {
+      response = await fetch(config.tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+        }),
+      });
+    } else {
+      const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      response = await fetch(config.tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Basic ${basic}`,
+        },
+        body: JSON.stringify({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: redirectUri,
+        }),
+      });
+    }
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new BadRequestException(`OAuth token exchange failed for ${connector}`);
+    }
+
+    const parsed = payload as {
+      access_token?: string;
+      refresh_token?: string;
+      token_type?: string;
+      scope?: string;
+      expires_in?: number;
+    };
+
+    if (!parsed.access_token) {
+      throw new BadRequestException(`OAuth provider did not return access token for ${connector}`);
+    }
+
+    const expiresAt = parsed.expires_in ? new Date(Date.now() + parsed.expires_in * 1000) : null;
+    return {
+      accessToken: parsed.access_token,
+      refreshToken: parsed.refresh_token ?? null,
+      tokenType: parsed.token_type ?? null,
+      scope: parsed.scope ?? null,
+      expiresAt,
+      raw: payload,
+    };
+  }
+
+  private async ensureConnectorOAuthSchema(): Promise<void> {
+    if (!this.oauthPool) {
+      return;
+    }
+
+    await this.oauthPool.query(`
+      CREATE TABLE IF NOT EXISTS connector_oauth_installations (
+        workspace_id UUID NOT NULL,
+        connector VARCHAR(128) NOT NULL,
+        provider VARCHAR(64) NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        token_type VARCHAR(64),
+        scope TEXT,
+        expires_at TIMESTAMPTZ,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by_user_id UUID NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (workspace_id, connector)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_connector_oauth_installations_workspace_updated
+      ON connector_oauth_installations(workspace_id, updated_at DESC);
+    `);
+  }
+
+  private async assertWorkspaceOwnership(userId: string, workspaceId: string): Promise<void> {
+    const workspace = await this.coreRequest(`/api/v1/workspaces/${workspaceId}`, {
+      method: 'GET',
+    }) as WorkspaceResponse;
+
+    if (!workspace || workspace.owner_user_id !== userId) {
+      throw new UnauthorizedException('You do not have access to this workspace');
+    }
   }
 
   private async coreRequest(path: string, options: RequestInit) {

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { FlowCanvas } from '../components/flow-canvas';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { buildOAuthAuthorizeUrl, getOAuthInstallConfig, isOAuthConnector, readOAuthConnections, writeOAuthConnections, type OAuthConnectorKey } from '../lib/oauth-connectors';
 
 /* ─── Types ─── */
 type Flow = { id: string; name: string; description?: string; enabled: boolean; run_count: number; definition?: unknown; };
@@ -15,6 +17,8 @@ type WorkspaceItem = { id: string; name: string; slug: string; plan: string; own
 type MarketTemplate = { id: string; title: string; description: string; price_cents: number; };
 type AuthMode = 'login' | 'register';
 type Tab = 'overview' | 'flows' | 'builder' | 'credentials' | 'connectors' | 'events' | 'marketplace';
+type OAuthConnection = { provider: string; connectedAt: string; source: string };
+type OAuthConnectionMap = Record<string, OAuthConnection>;
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:3000';
 const LS_ACCESS = 'pulsegrid.accessToken';
@@ -109,6 +113,7 @@ export default function HomePage() {
   const [credentials, setCredentials]       = useState<WorkspaceCredential[]>([]);
   const [events, setEvents]                 = useState<EventPayload[]>([]);
   const [marketTemplates, setMarketTemplates] = useState<MarketTemplate[]>([]);
+  const [oauthConnections, setOauthConnections] = useState<OAuthConnectionMap>({});
   const [error, setError]                   = useState('');
   const [authMsg, setAuthMsg]               = useState('');
   const [managementApiKey, setManagementApiKey] = useState(process.env.NEXT_PUBLIC_MANAGEMENT_API_KEY || '');
@@ -144,6 +149,32 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => { if (workspaceId) localStorage.setItem(LS_WORKSPACE, workspaceId); }, [workspaceId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab === 'overview' || tab === 'flows' || tab === 'builder' || tab === 'credentials' || tab === 'connectors' || tab === 'events' || tab === 'marketplace') {
+      setActiveTab(tab);
+    }
+
+    const workspace = params.get('workspace');
+    if (workspace) {
+      setWorkspaceId(workspace);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceId) {
+      setOauthConnections({});
+      return;
+    }
+
+    setOauthConnections(readOAuthConnections(workspaceId));
+  }, [workspaceId]);
 
   useEffect(() => {
     let socket: Socket | null = null;
@@ -268,6 +299,56 @@ export default function HomePage() {
     const data = await res.json() as { templates: MarketTemplate[] };
     setMarketTemplates(data.templates || []);
   }
+
+  function persistOauthConnection(connector: string, provider: string) {
+    if (!workspaceId) return;
+    const next = { ...oauthConnections, [connector]: { provider, connectedAt: new Date().toISOString(), source: 'dashboard' } };
+    setOauthConnections(next);
+    writeOAuthConnections(workspaceId, next);
+  }
+
+  function launchConnectorInstall(connector: string) {
+    if (!workspaceId) {
+      setError('Select a workspace first');
+      return;
+    }
+
+    if (!isOAuthConnector(connector)) {
+      setError('This connector does not use OAuth installation');
+      return;
+    }
+
+    const config = getOAuthInstallConfig(connector, workspaceId);
+    const installUrl = config ? buildOAuthAuthorizeUrl(config) : '';
+    window.location.href = `/oauth/install?connector=${encodeURIComponent(connector)}&workspaceId=${encodeURIComponent(workspaceId)}&installUrl=${encodeURIComponent(installUrl)}`;
+  }
+
+  const analyticsSeries = useMemo(() => {
+    const daily = new Map<string, number>();
+    runs.forEach((run) => {
+      const day = new Date(run.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      daily.set(day, (daily.get(day) || 0) + 1);
+    });
+
+    return Array.from(daily.entries()).slice(-7).map(([day, count]) => ({ day, runs: count }));
+  }, [runs]);
+
+  const connectorAuthData = useMemo(() => {
+    const counts = connectors.reduce<Record<string, number>>((acc, item) => {
+      acc[item.auth] = (acc[item.auth] || 0) + 1;
+      return acc;
+    }, {});
+
+    return Object.entries(counts).map(([auth, value]) => ({ auth, value }));
+  }, [connectors]);
+
+  const oauthInstalledData = useMemo(() => {
+    return Object.entries(oauthConnections).map(([connector, info]) => ({
+      connector,
+      connectedAt: info.connectedAt,
+      provider: info.provider,
+    }));
+  }, [oauthConnections]);
 
   async function installMarketTemplate(templateId: string) {
     if (!workspaceId || !token || !refreshToken) { setError('Select a workspace first'); return; }
@@ -578,6 +659,70 @@ export default function HomePage() {
                       hint={<><span className="live-dot" style={{ display: 'inline-block', marginRight: 4 }} />streaming</>}
                       color="var(--success)"  bg="rgba(34,214,116,0.09)" />
                   </motion.div>
+
+                  <div className="two-col" style={{ marginBottom: 24 }}>
+                    <div className="card">
+                      <div className="card-hd">
+                        <div className="card-title"><Ic n="activity" s={13} />Runs by day</div>
+                        <span className="badge b-neutral">Last 7</span>
+                      </div>
+                      <div style={{ width: '100%', height: 260, padding: '12px 16px 8px' }}>
+                        {analyticsSeries.length === 0 ? (
+                          <div className="empty-state" style={{ paddingTop: 42 }}>
+                            <div className="empty-icon"><Ic n="activity" s={18} /></div>
+                            <div className="empty-title">No run data yet</div>
+                            <div className="empty-sub">Run activity will appear once flows execute</div>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={analyticsSeries} margin={{ top: 10, right: 8, left: -20, bottom: 0 }}>
+                              <defs>
+                                <linearGradient id="runsGradient" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.42} />
+                                  <stop offset="95%" stopColor="var(--accent)" stopOpacity={0.02} />
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="3 3" />
+                              <XAxis dataKey="day" stroke="var(--text-3)" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} />
+                              <YAxis stroke="var(--text-3)" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                              <Tooltip contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)' }} />
+                              <Area type="monotone" dataKey="runs" stroke="var(--accent)" fill="url(#runsGradient)" strokeWidth={2} />
+                            </AreaChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="card">
+                      <div className="card-hd">
+                        <div className="card-title"><Ic n="plug" s={13} />Connector mix</div>
+                        <span className="badge b-neutral">Auth types</span>
+                      </div>
+                      <div style={{ width: '100%', height: 260, padding: '12px 16px 8px' }}>
+                        {connectorAuthData.length === 0 ? (
+                          <div className="empty-state" style={{ paddingTop: 42 }}>
+                            <div className="empty-icon"><Ic n="plug" s={18} /></div>
+                            <div className="empty-title">No connector data yet</div>
+                            <div className="empty-sub">Connector health and usage will show here</div>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={connectorAuthData} margin={{ top: 10, right: 8, left: -20, bottom: 0 }}>
+                              <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="3 3" />
+                              <XAxis dataKey="auth" stroke="var(--text-3)" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} />
+                              <YAxis stroke="var(--text-3)" tick={{ fill: 'var(--text-3)', fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                              <Tooltip contentStyle={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 10, color: 'var(--text)' }} />
+                              <Bar dataKey="value" radius={[8, 8, 0, 0]}>
+                                {connectorAuthData.map((entry, index) => (
+                                  <Cell key={entry.auth} fill={['#5a7dff', '#22d674', '#f59e0b', '#8b5cf6', '#f25c5c'][index % 5]} />
+                                ))}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+                    </div>
+                  </div>
 
                   <div className="two-col">
                     {/* Recent Runs */}
@@ -949,6 +1094,7 @@ export default function HomePage() {
                           none: 'var(--text-3)', bearer: 'var(--accent)',
                           api_key: 'var(--success)', oauth2: 'var(--warning)', mixed: 'var(--accent-2)',
                         };
+                        const installed = oauthConnections[item.connector];
                         return (
                           <motion.div key={`${item.connector}:${item.action}`} className="connector-card" variants={statItem}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -963,6 +1109,25 @@ export default function HomePage() {
                                   <span style={{ color: 'var(--text-3)', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Required</span>
                                   <div className="font-mono" style={{ fontSize: 10.5, marginTop: 2, color: 'var(--text-3)' }}>{item.required_input_fields.join(', ')}</div>
                                 </div>
+                              )}
+                              {installed && (
+                                <div style={{ marginTop: 10 }}>
+                                  <span className="badge b-success">Installed</span>
+                                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-3)' }}>
+                                    Connected via {installed.provider} · {new Date(installed.connectedAt).toLocaleString()}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+                              {item.auth === 'oauth2' ? (
+                                <button className="btn btn-primary w-full" style={{ justifyContent: 'center' }} onClick={() => launchConnectorInstall(item.connector)}>
+                                  {installed ? 'Reconnect OAuth' : 'Install OAuth'}
+                                </button>
+                              ) : (
+                                <button className="btn btn-secondary w-full" style={{ justifyContent: 'center' }} onClick={() => setActiveTab('builder')}>
+                                  Use in Flow Builder
+                                </button>
                               )}
                             </div>
                           </motion.div>
