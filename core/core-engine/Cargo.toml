@@ -10,6 +10,7 @@ core-connectors = { version = "0.1.0", path = "../core-connectors" }
 core-proto = { version = "0.1.0", path = "../core-proto" }
 core-vault = { version = "0.1.0", path = "../core-vault" }
 core-vm = { version = "0.1.0", path = "../core-vm" }
+core-ai = { version = "0.1.0", path = "../core-ai" }
 dotenvy = "0.15.7"
 prost = "0.13"
 redis = { version = "0.27", features = ["streams", "tokio-comp", "aio"] }

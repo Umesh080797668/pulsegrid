@@ -6,6 +6,14 @@ service PulseCoreService {
   rpc TriggerFlow (TriggerFlowRequest) returns (TriggerFlowResponse);
   rpc SetWorkspaceSecret (SetWorkspaceSecretRequest) returns (SetWorkspaceSecretResponse);
   rpc VerifyWebhookSignature (VerifyWebhookRequest) returns (VerifyWebhookResponse);
+
+  // Phase 2: AI Enhancements
+  rpc GenerateFlowFromPrompt (GenerateFlowRequest) returns (GenerateFlowResponse);
+  rpc AnalyzeFailure (AnalyzeFailureRequest) returns (AnalyzeFailureResponse);
+
+  // Phase 2: Market
+  rpc ListMarketTemplates (ListMarketTemplatesRequest) returns (ListMarketTemplatesResponse);
+  rpc InstallTemplate (InstallTemplateRequest) returns (InstallTemplateResponse);
 }
 
 message SetWorkspaceSecretRequest {
@@ -38,5 +46,52 @@ message TriggerFlowRequest {
 message TriggerFlowResponse {
   bool success = 1;
   string run_id = 2;
+  string message = 3;
+}
+
+// -- AI Messages --
+message GenerateFlowRequest {
+  string prompt = 1;
+}
+
+message GenerateFlowResponse {
+  bool success = 1;
+  string flow_json = 2;
+  string error_message = 3;
+}
+
+message AnalyzeFailureRequest {
+  string error_log = 1;
+}
+
+message AnalyzeFailureResponse {
+  bool success = 1;
+  string analysis = 2;
+}
+
+// -- Market Messages --
+message ListMarketTemplatesRequest {
+  string category = 1;
+}
+
+message MarketTemplate {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  int32 price_cents = 4;
+}
+
+message ListMarketTemplatesResponse {
+  repeated MarketTemplate templates = 1;
+}
+
+message InstallTemplateRequest {
+  string workspace_id = 1;
+  string template_id = 2;
+}
+
+message InstallTemplateResponse {
+  bool success = 1;
+  string new_flow_id = 2;
   string message = 3;
 }

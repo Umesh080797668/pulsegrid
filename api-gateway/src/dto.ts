@@ -237,3 +237,17 @@ export class UpdateFlowDto {
   @IsBoolean()
   enabled?: boolean;
 }
+
+export class InstallTemplateDto {
+  templateId!: string;
+}
+
+export class TemplateResponseDto {
+  id!: string;
+  creator_workspace_id!: string;
+  title!: string;
+  description!: string;
+  price_cents!: number;
+  category!: string;
+  published!: boolean;
+}

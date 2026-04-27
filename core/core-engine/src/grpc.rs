@@ -2,7 +2,9 @@ use crate::models::WorkspaceSecret;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreService;
 use core_proto::pulsecore::{
     SetWorkspaceSecretRequest, SetWorkspaceSecretResponse, TriggerFlowRequest, TriggerFlowResponse,
-    VerifyWebhookRequest, VerifyWebhookResponse,
+    VerifyWebhookRequest, VerifyWebhookResponse, GenerateFlowRequest, GenerateFlowResponse,
+    AnalyzeFailureRequest, AnalyzeFailureResponse, ListMarketTemplatesRequest,
+    ListMarketTemplatesResponse, InstallTemplateRequest, InstallTemplateResponse, MarketTemplate
 };
 use core_vault::Vault;
 use redis::AsyncCommands;
@@ -27,6 +29,131 @@ impl MyPulseCoreService {
 
 #[tonic::async_trait]
 impl PulseCoreService for MyPulseCoreService {
+    async fn generate_flow_from_prompt(
+        &self,
+        request: Request<GenerateFlowRequest>,
+    ) -> Result<Response<GenerateFlowResponse>, Status> {
+        let req = request.into_inner();
+        
+        match core_ai::flow_builder::generate_flow_from_prompt(&req.prompt).await {
+            Ok(flow_json) => {
+                Ok(Response::new(GenerateFlowResponse {
+                    flow_json: flow_json.to_string(),
+                    success: true,
+                    error_message: String::new(),
+                }))
+            },
+            Err(e) => {
+                Ok(Response::new(GenerateFlowResponse {
+                    flow_json: String::new(),
+                    success: false,
+                    error_message: e.to_string(),
+                }))
+            }
+        }
+    }
+
+    async fn analyze_failure(
+        &self,
+        request: Request<AnalyzeFailureRequest>,
+    ) -> Result<Response<AnalyzeFailureResponse>, Status> {
+        let req = request.into_inner();
+        
+        match core_ai::failure_analysis::analyze_failure(&req.error_log).await {
+            Ok(analysis) => {
+                Ok(Response::new(AnalyzeFailureResponse {
+                    success: true,
+                    analysis: analysis,
+                }))
+            },
+            Err(e) => {
+                Ok(Response::new(AnalyzeFailureResponse {
+                    success: false,
+                    analysis: e.to_string(),
+                }))
+            }
+        }
+    }
+
+    async fn list_market_templates(
+        &self,
+        request: Request<ListMarketTemplatesRequest>,
+    ) -> Result<Response<ListMarketTemplatesResponse>, Status> {
+        let req = request.into_inner();
+        let category = req.category.trim();
+        
+        let templates = if category.is_empty() {
+             let rows = sqlx::query!(
+                 "SELECT id, title, description, price_cents FROM market_templates WHERE published = TRUE ORDER BY created_at DESC LIMIT 50"
+             ).fetch_all(&self.pg_pool).await.map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+             rows.into_iter().map(|row| MarketTemplate {
+                 id: row.id.to_string(),
+                 title: row.title,
+                 description: row.description.unwrap_or_default(),
+                 price_cents: row.price_cents as i32,
+             }).collect::<Vec<_>>()
+        } else {
+             let rows = sqlx::query!(
+                 "SELECT id, title, description, price_cents FROM market_templates WHERE published = TRUE AND category = $1 ORDER BY created_at DESC LIMIT 50",
+                 category
+             ).fetch_all(&self.pg_pool).await.map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+             rows.into_iter().map(|row| MarketTemplate {
+                 id: row.id.to_string(),
+                 title: row.title,
+                 description: row.description.unwrap_or_default(),
+                 price_cents: row.price_cents as i32,
+             }).collect::<Vec<_>>()
+        };
+        
+        Ok(Response::new(ListMarketTemplatesResponse { templates }))
+    }
+
+    async fn install_template(
+        &self,
+        request: Request<InstallTemplateRequest>,
+    ) -> Result<Response<InstallTemplateResponse>, Status> {
+        let req = request.into_inner();
+        
+        let workspace_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+            
+        let template_id = Uuid::parse_str(&req.template_id)
+            .map_err(|_| Status::invalid_argument("Invalid template ID"))?;
+            
+        let template = sqlx::query!(
+            "SELECT title, description, flow_definition FROM market_templates WHERE id = $1 AND published = TRUE",
+            template_id
+        )
+        .fetch_optional(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("DB Error: {}", e)))?;
+        
+        let template = match template {
+            Some(t) => t,
+            None => return Err(Status::not_found("Template not found")),
+        };
+        
+        let new_flow_id = Uuid::new_v4();
+        
+        sqlx::query!(
+            "INSERT INTO flows (id, workspace_id, name, description, definition, enabled) VALUES ($1, $2, $3, $4, $5, false)",
+            new_flow_id, workspace_id, template.title, template.description, template.flow_definition
+        )
+        .execute(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("DB insertion error: {}", e)))?;
+        
+        let _ = sqlx::query!("UPDATE market_templates SET install_count = install_count + 1 WHERE id = $1", template_id)
+            .execute(&self.pg_pool)
+            .await;
+
+        Ok(Response::new(InstallTemplateResponse {
+            success: true,
+            new_flow_id: Uuid::new_v4().to_string(),
+            message: format!("Template installed successfully (Stub)"),
+        }))
+    }
+
     async fn trigger_flow(
         &self,
         request: Request<TriggerFlowRequest>,
@@ -39,7 +166,6 @@ impl PulseCoreService for MyPulseCoreService {
 
         let run_id = Uuid::new_v4().to_string();
 
-        // Push event to Redis (assuming we want to simulate the gateway passing the flow trigger down)
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
         let client = redis::Client::open(redis_url.clone())
             .map_err(|_| Status::internal("Failed to create Redis client"))?;
@@ -97,12 +223,6 @@ impl PulseCoreService for MyPulseCoreService {
             return Err(Status::not_found("Workspace not found"));
         }
 
-        let _encrypted_blob = self
-            .vault
-            .encrypt(&req.secret_value)
-            .map_err(|_| Status::internal("Encryption failed"))?;
-
-        // Upsert the secret
         let (encrypted_blob, nonce) = self.vault.encrypt(&req.secret_value).map_err(|e| {
             Status::internal(format!("Encryption error: {:?}", e))
         })?;
@@ -142,7 +262,6 @@ impl PulseCoreService for MyPulseCoreService {
         let ws_id = Uuid::parse_str(&req.workspace_id)
             .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
 
-        // Fetch encrypted secret, assuming WEBHOOK_SECRET is the name
         let row = sqlx::query_as::<_, WorkspaceSecret>(
             "SELECT id, workspace_id, connector_id, encrypted_blob, nonce, created_at, updated_at FROM credentials WHERE workspace_id = $1 AND connector_id = 'WEBHOOK_SECRET'"
         )

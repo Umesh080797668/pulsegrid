@@ -6,11 +6,15 @@ import { ManagementApiKeyGuard } from './management-api-key.guard';
 import { AuthModule } from './auth/auth.module';
 import { RateLimitService } from './rate-limit.service';
 import { EventsGateway } from './events.gateway';
+import { MarketModule } from './market/market.module';
+import { AiModule } from './ai/ai.module';
 
 @Global()
 @Module({
   imports: [
     AuthModule,
+    MarketModule,
+    AiModule,
     ClientsModule.register([
       {
         name: 'PULSECORE_PACKAGE',
