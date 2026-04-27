@@ -14,7 +14,10 @@ import {
   Handle,
   Position,
   NodeProps,
+  Connection,
+  addEdge,
 } from '@xyflow/react';
+import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
 
 type ConnectorCatalogItem = {
@@ -45,6 +48,7 @@ type FlowDefinition = {
       max_retries: number;
       initial_backoff_ms: number;
     };
+    condition?: string;
   }>;
   error_policy?: {
     on_failure: string;
@@ -54,6 +58,34 @@ type FlowDefinition = {
 function makeStepId() {
   return typeof crypto !== 'undefined' ? crypto.randomUUID() : `step-${Date.now()}`;
 }
+
+const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+  dagreGraph.setGraph({ rankdir: 'LR' });
+
+  nodes.forEach((node) => {
+    dagreGraph.setNode(node.id, { width: 250, height: 120 });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  nodes.forEach((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
+    node.targetPosition = Position.Left;
+    node.sourcePosition = Position.Right;
+    node.position = {
+      x: nodeWithPosition.x - 250 / 2,
+      y: nodeWithPosition.y - 120 / 2,
+    };
+  });
+
+  return { nodes, edges };
+};
 
 export function FlowCanvas({
   definitionJson,
@@ -65,10 +97,17 @@ export function FlowCanvas({
   connectors: ConnectorCatalogItem[];
 }) {
   const [selectedStepId, setSelectedStepId] = useState('');
+  
+  // Add step state
   const [newConnector, setNewConnector] = useState(() => connectors[0]?.connector || 'custom');
   const [newAction, setNewAction] = useState(() => connectors[0]?.action || 'call_api');
   const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'loop' | 'sub_flow'>('action');
-  const [newInputJson, setNewInputJson] = useState('{\n  "endpoint_url": "https://httpbin.org/post",\n  "method": "POST"\n}');
+  
+  // Edit step state
+  const [editAction, setEditAction] = useState('');
+  const [editConnector, setEditConnector] = useState('');
+  const [editInputJson, setEditInputJson] = useState('');
+  const [editCondition, setEditCondition] = useState('');
 
   const parsed = useMemo(() => {
     try {
@@ -79,27 +118,23 @@ export function FlowCanvas({
   }, [definitionJson]);
 
   const canEdit = Boolean(parsed);
+  const selectedStep = parsed?.steps.find(s => s.id === selectedStepId);
+
+  useEffect(() => {
+    if (selectedStep) {
+      setEditAction(selectedStep.action);
+      setEditConnector(selectedStep.connector);
+      setEditInputJson(JSON.stringify(selectedStep.input_mapping, null, 2));
+      setEditCondition(selectedStep.condition || '');
+    }
+  }, [selectedStepId, selectedStep]);
 
   function updateDefinition(next: FlowDefinition) {
     onDefinitionJsonChange(JSON.stringify(next, null, 2));
   }
 
   function addStep() {
-    if (!parsed) {
-      return;
-    }
-
-    let inputMapping: Record<string, string> = {};
-    try {
-      const parsedInput = newInputJson.trim() ? JSON.parse(newInputJson) : {};
-      if (parsedInput && typeof parsedInput === 'object' && !Array.isArray(parsedInput)) {
-        inputMapping = Object.fromEntries(
-          Object.entries(parsedInput as Record<string, unknown>).map(([key, value]) => [key, JSON.stringify(value)]),
-        );
-      }
-    } catch {
-      inputMapping = {};
-    }
+    if (!parsed) return;
 
     updateDefinition({
       ...parsed,
@@ -110,7 +145,7 @@ export function FlowCanvas({
           type: newStepType,
           connector: newConnector,
           action: newAction,
-          input_mapping: inputMapping,
+          input_mapping: {},
           depends_on: parsed.steps.length > 0 ? [parsed.steps[parsed.steps.length - 1].id] : [],
           retry_policy: {
             max_retries: 1,
@@ -123,16 +158,13 @@ export function FlowCanvas({
   }
 
   function removeStep(stepId: string) {
-    if (!parsed) {
-      return;
-    }
-
+    if (!parsed) return;
     const filtered = parsed.steps.filter((step) => step.id !== stepId);
     updateDefinition({
       ...parsed,
-      steps: filtered.map((step, index) => ({
+      steps: filtered.map((step) => ({
         ...step,
-        depends_on: index === 0 ? [] : [filtered[index - 1].id],
+        depends_on: step.depends_on.filter(dep => dep !== stepId)
       })),
     });
     if (selectedStepId === stepId) {
@@ -140,7 +172,34 @@ export function FlowCanvas({
     }
   }
 
-  // React Flow state
+  function updateSelectedStep() {
+    if (!parsed || !selectedStepId) return;
+
+    let inputMapping = {};
+    try {
+      inputMapping = editInputJson.trim() ? JSON.parse(editInputJson) : {};
+    } catch {
+      // Ignore parse error
+      inputMapping = selectedStep?.input_mapping || {};
+    }
+
+    updateDefinition({
+      ...parsed,
+      steps: parsed.steps.map(step => {
+        if (step.id === selectedStepId) {
+          return {
+            ...step,
+            action: editAction,
+            connector: editConnector,
+            input_mapping: inputMapping,
+            condition: editCondition ? editCondition : undefined,
+          };
+        }
+        return step;
+      })
+    });
+  }
+
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
 
@@ -154,6 +213,33 @@ export function FlowCanvas({
     []
   );
 
+  const onConnect = useCallback((connection: Connection) => {
+    if (!parsed) return;
+    
+    // Updates dependencies when dragging an edge
+    const sourceId = connection.source;
+    const targetId = connection.target;
+    
+    if (sourceId && targetId && targetId !== 'trigger') {
+      const dependsOnAdd = sourceId === 'trigger' ? [] : [sourceId];
+      
+      updateDefinition({
+        ...parsed,
+        steps: parsed.steps.map(step => {
+          if (step.id === targetId) {
+            const currentDeps = step.depends_on.filter(d => d !== 'trigger');
+            const newDeps = Array.from(new Set([...currentDeps, ...dependsOnAdd]));
+            return {
+              ...step,
+              depends_on: newDeps
+            };
+          }
+          return step;
+        })
+      });
+    }
+  }, [parsed]);
+
   const onNodeClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
       setSelectedStepId(node.id === 'trigger' ? '' : node.id);
@@ -161,57 +247,24 @@ export function FlowCanvas({
     []
   );
 
-  // Sync JSON -> React Flow elements
   useEffect(() => {
     if (!parsed) return;
 
     const newNodes: Node[] = [];
     const newEdges: Edge[] = [];
 
-    // Compute basic topological levels for layout
-    const levels = new Map<string, number>();
-    levels.set('trigger', 0);
-    
-    let changed = true;
-    while(changed) {
-      changed = false;
-      for (const step of parsed.steps) {
-        const oldLevel = levels.get(step.id) || 0;
-        let maxDepLevel = -1;
-        const deps = step.depends_on.length > 0 ? step.depends_on : ['trigger'];
-        for (const d of deps) {
-          maxDepLevel = Math.max(maxDepLevel, levels.get(d) ?? 0);
-        }
-        const newLevel = maxDepLevel + 1;
-        if (newLevel > oldLevel) {
-          levels.set(step.id, newLevel);
-          changed = true;
-        }
-      }
-    }
-
-    // Counts per level to stack them
-    const levelCounts = new Map<number, number>();
-
-    // Trigger Node
-    levelCounts.set(0, 1);
     newNodes.push({
       id: 'trigger',
-      position: { x: 50, y: 150 },
+      position: { x: 0, y: 0 },
       data: { kind: 'Trigger', title: parsed.trigger.connector, subtitle: parsed.trigger.event, stepType: 'trigger' },
       type: 'customNode',
       draggable: true,
     });
 
-    // Steps
     parsed.steps.forEach((step, index) => {
-      const level = levels.get(step.id) || 1;
-      const count = levelCounts.get(level) || 0;
-      levelCounts.set(level, count + 1);
-      
       newNodes.push({
         id: step.id,
-        position: { x: 50 + (level * 320), y: 50 + (count * 150) },
+        position: { x: 0, y: 0 },
         data: { 
           kind: step.type === 'action' ? `Step ${index + 1}` : `${step.type.toUpperCase()} ${index + 1}`,
           title: `${step.connector}.${step.action}`, 
@@ -222,31 +275,31 @@ export function FlowCanvas({
         draggable: true,
       });
 
-      const deps = step.depends_on.length > 0 ? step.depends_on : ['trigger'];
-      deps.forEach(dep => {
+      const deps = step.depends_on.length > 0 ? step.depends_on.filter(d => d !== 'trigger') : [];
+      if (deps.length === 0) {
         newEdges.push({
-          id: `e-${dep}-${step.id}`,
-          source: dep,
+          id: `e-trigger-${step.id}`,
+          source: 'trigger',
           target: step.id,
           animated: true,
           style: { stroke: '#7c9cff' },
         });
-      });
+      } else {
+        deps.forEach(dep => {
+          newEdges.push({
+            id: `e-${dep}-${step.id}`,
+            source: dep,
+            target: step.id,
+            animated: true,
+            style: { stroke: '#7c9cff' },
+          });
+        });
+      }
     });
 
-    // To retain manual dragged positions, we could merge with existing nodes.
-    // For simplicity, we auto-layout whenever the JSON changes.
-    setNodes(n => {
-      // Basic merge to keep positions if nodes exist
-      return newNodes.map(nn => {
-        const existing = n.find(x => x.id === nn.id);
-        if (existing) {
-          return { ...nn, position: existing.position };
-        }
-        return nn;
-      });
-    });
-    setEdges(newEdges);
+    const layouted = getLayoutedElements(newNodes, newEdges);
+    setNodes(layouted.nodes);
+    setEdges(layouted.edges);
   }, [definitionJson, parsed]);
 
   const nodeTypes = useMemo(() => ({
@@ -254,13 +307,13 @@ export function FlowCanvas({
   }), []);
 
   return (
-    <div>
-      <div className="muted" style={{ marginBottom: 8 }}>
-        Visual builder for trigger + actions. Select a step to remove it, or add a new action step below.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div className="muted">
+        Visual builder for trigger + actions. Connect nodes safely to build parallel DAGs or complex logic.
       </div>
-
+      
       {!canEdit ? (
-        <div className="muted" style={{ marginBottom: 12 }}>
+        <div className="muted">
           The flow definition is invalid JSON, so the canvas cannot render yet.
         </div>
       ) : null}
@@ -271,6 +324,7 @@ export function FlowCanvas({
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
           onNodeClick={onNodeClick}
           nodeTypes={nodeTypes}
           fitView
@@ -281,48 +335,88 @@ export function FlowCanvas({
         </ReactFlow>
       </div>
 
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', marginTop: 16, paddingTop: 16 }}>
-         {selectedStepId && selectedStepId !== 'trigger' ? (
-          <div style={{ marginBottom: 16 }}>
-            <button onClick={() => removeStep(selectedStepId)} style={{ color: 'red' }}>
-              Remove Selected Step
+      <div style={{ display: 'flex', gap: '16px' }}>
+        {/* ADD STEP PANEL */}
+        <div style={{ flex: 1, padding: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.02)' }}>
+          <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 16 }}>Add New Step</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <select value={newStepType} onChange={(e) => setNewStepType(e.target.value as any)} style={{ padding: '8px', flex: 1 }}>
+                <option value="action">Action</option>
+                <option value="parallel">Parallel</option>
+                <option value="loop">Loop</option>
+                <option value="sub_flow">Sub-Flow</option>
+              </select>
+              <select value={newConnector} onChange={(e) => setNewConnector(e.target.value)} style={{ padding: '8px', flex: 1 }}>
+                {connectors.length === 0 ? <option value="custom">custom</option> : null}
+                {connectors.map((item) => (
+                  <option key={`${item.connector}:${item.action}`} value={item.connector}>
+                    {item.connector}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <input
+              style={{ padding: '8px' }}
+              value={newAction}
+              onChange={(e) => setNewAction(e.target.value)}
+              placeholder="Action name"
+            />
+            <button onClick={addStep} disabled={!canEdit} style={{ padding: '8px', backgroundColor: '#7c9cff', color: '#000', fontWeight: 'bold' }}>
+              Add Step
             </button>
           </div>
-        ) : null}
+        </div>
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-          <select value={newStepType} onChange={(e) => setNewStepType(e.target.value as 'action' | 'parallel' | 'loop' | 'sub_flow')} style={{ padding: '8px' }}>
-            <option value="action">action</option>
-            <option value="parallel">parallel</option>
-            <option value="loop">loop</option>
-            <option value="sub_flow">sub-flow</option>
-          </select>
-          <select value={newConnector} onChange={(e) => setNewConnector(e.target.value)} style={{ padding: '8px' }}>
-            {connectors.length === 0 ? <option value="custom">custom</option> : null}
-            {connectors.map((item) => (
-              <option key={`${item.connector}:${item.action}`} value={item.connector}>
-                {item.connector}
-              </option>
-            ))}
-          </select>
-          <input
-            style={{ minWidth: 240, padding: '8px' }}
-            value={newAction}
-            onChange={(e) => setNewAction(e.target.value)}
-            placeholder="Action name"
-          />
-          <button onClick={addStep} disabled={!canEdit} style={{ padding: '8px 16px' }}>Add Step</button>
-        </div>
-        <textarea
-          rows={5}
-          value={newInputJson}
-          onChange={(e) => setNewInputJson(e.target.value)}
-          placeholder="New step input JSON"
-          style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
-        />
-        <div className="muted" style={{ marginTop: 8 }}>
-          Selected step: {selectedStepId || 'none'}
-        </div>
+        {/* EDIT STEP PANEL */}
+        {selectedStep ? (
+          <div style={{ flex: 1, padding: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.02)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>Edit {selectedStep.type} ({selectedStep.id})</h3>
+              <button onClick={() => removeStep(selectedStep.id)} style={{ padding: '4px 8px', background: 'transparent', border: '1px solid red', color: 'red', borderRadius: 4, fontSize: 12 }}>
+                Delete
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  style={{ padding: '8px', flex: 1 }}
+                  value={editConnector}
+                  onChange={(e) => setEditConnector(e.target.value)}
+                  placeholder="Connector"
+                />
+                <input
+                  style={{ padding: '8px', flex: 1 }}
+                  value={editAction}
+                  onChange={(e) => setEditAction(e.target.value)}
+                  placeholder="Action"
+                />
+              </div>
+              <textarea
+                rows={4}
+                value={editInputJson}
+                onChange={(e) => setEditInputJson(e.target.value)}
+                placeholder="Input mapping JSON"
+                style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
+              />
+              {selectedStep.type === 'loop' && (
+                <input
+                  style={{ padding: '8px' }}
+                  value={editCondition}
+                  onChange={(e) => setEditCondition(e.target.value)}
+                  placeholder="Loop Condition (e.g., array length > 0)"
+                />
+              )}
+              <button onClick={updateSelectedStep} style={{ padding: '8px', backgroundColor: '#22d674', color: '#000', fontWeight: 'bold' }}>
+                Save Changes
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, padding: 16, border: '1px dashed rgba(255,255,255,0.08)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>
+            Select a step on the canvas to edit.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -331,6 +425,7 @@ export function FlowCanvas({
 function CustomNode({ data, selected }: NodeProps) {
   const stepType = typeof data.stepType === 'string' ? data.stepType : 'action';
   const borderColor = stepType === 'parallel' ? '#22d674' : stepType === 'loop' ? '#f59e0b' : stepType === 'sub_flow' ? '#8b5cf6' : '#7c9cff';
+  
   return (
     <div
       style={{
@@ -344,26 +439,23 @@ function CustomNode({ data, selected }: NodeProps) {
         color: '#fff',
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: borderColor }} />
-      <div className="muted" style={{ fontSize: 12, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{typeof data.kind === "string" ? data.kind : "Step"}</div>
-      <div style={{ fontWeight: 700, marginBottom: 4 }}>{typeof data.title === "string" ? data.title : "Title"}</div>
-      <div className="muted" style={{ wordBreak: 'break-all', opacity: 0.7, fontSize: 12 }}>{typeof data.subtitle === "string" ? data.subtitle : "Subtitle"}</div>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-        <span className="badge b-neutral" style={{ fontSize: 10, borderColor: borderColor, color: borderColor }}>{stepType}</span>
+      <Handle type="target" position={Position.Left} style={{ background: borderColor, width: 8, height: 8 }} />
+      <div className="muted" style={{ fontSize: 12, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        {typeof data.kind === "string" ? data.kind : "Step"}
       </div>
-      {stepType === 'parallel' ? (
-        <>
-          <Handle type="source" position={Position.Right} id="parallel-a" style={{ top: 30, background: borderColor }} />
-          <Handle type="source" position={Position.Right} id="parallel-b" style={{ top: 58, background: borderColor }} />
-        </>
-      ) : stepType === 'loop' ? (
-        <>
-          <Handle type="source" position={Position.Right} style={{ background: borderColor }} />
-          <Handle type="source" position={Position.Bottom} style={{ background: borderColor }} />
-        </>
-      ) : (
-        <Handle type="source" position={Position.Right} style={{ background: borderColor }} />
-      )}
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>
+        {typeof data.title === "string" ? data.title : "Title"}
+      </div>
+      <div className="muted" style={{ wordBreak: 'break-all', opacity: 0.7, fontSize: 12 }}>
+        {typeof data.subtitle === "string" ? data.subtitle : "Subtitle"}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+        <span className="badge b-neutral" style={{ fontSize: 10, borderColor, color: borderColor }}>
+          {stepType}
+        </span>
+      </div>
+      
+      <Handle type="source" position={Position.Right} style={{ top: '50%', background: borderColor, width: 8, height: 8 }} />
     </div>
   );
 }

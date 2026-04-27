@@ -1886,3 +1886,9 @@ The dashboard must render connector choices from `/connectors/catalog` dynamical
 ---
 
 *PulseGrid Blueprint v1.0 — Built with Rust at the core, designed to last.*
+\n## Advanced Workflow Canvas Features
+- Drag edge to update depends_on (connect step output to another step input visually)
+- Multiple dependencies (true DAG) allowed rather than linear connections
+- Node edit panel that allows editing action configurations instead of just deletion
+- Visual parallel branching with auto-layouting (using Dagre) mapping out multiple child nodes
+- Loop condition configuration (add custom conditionals directly to loop nodes via edit panel)
