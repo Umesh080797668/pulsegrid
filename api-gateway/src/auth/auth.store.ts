@@ -6,6 +6,7 @@ interface DbUserRow {
   email: string;
   password_hash: string | null;
   full_name: string | null;
+  email_verified: boolean;
   created_at: Date;
 }
 
@@ -29,7 +30,7 @@ export class AuthStore implements OnModuleDestroy {
 
   async findUserByEmail(email: string): Promise<DbUserRow | null> {
     const result = await this.pool.query<DbUserRow>(
-      `SELECT id, email, password_hash, full_name, created_at
+      `SELECT id, email, password_hash, full_name, email_verified, created_at
        FROM users
        WHERE email = $1`,
       [email],
@@ -39,7 +40,7 @@ export class AuthStore implements OnModuleDestroy {
 
   async findUserById(userId: string): Promise<DbUserRow | null> {
     const result = await this.pool.query<DbUserRow>(
-      `SELECT id, email, password_hash, full_name, created_at
+      `SELECT id, email, password_hash, full_name, email_verified, created_at
        FROM users
        WHERE id = $1`,
       [userId],
@@ -133,6 +134,50 @@ export class AuthStore implements OnModuleDestroy {
     return result.rows[0]?.allowed === true;
   }
 
+  async storeEmailVerificationToken(params: {
+    token: string;
+    userId: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO email_verification_tokens (token, user_id, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (token)
+       DO UPDATE SET user_id = EXCLUDED.user_id, expires_at = EXCLUDED.expires_at`,
+      [params.token, params.userId, params.expiresAt],
+    );
+  }
+
+  async consumeEmailVerificationToken(token: string): Promise<string | null> {
+    const result = await this.pool.query<{ user_id: string }>(
+      `DELETE FROM email_verification_tokens
+       WHERE token = $1
+         AND expires_at > NOW()
+       RETURNING user_id`,
+      [token],
+    );
+
+    return result.rows[0]?.user_id ?? null;
+  }
+
+  async markEmailAsVerified(userId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE users
+       SET email_verified = true
+       WHERE id = $1`,
+      [userId],
+    );
+  }
+
+  async isEmailVerified(userId: string): Promise<boolean> {
+    const result = await this.pool.query<{ email_verified: boolean }>(
+      `SELECT email_verified FROM users WHERE id = $1`,
+      [userId],
+    );
+
+    return result.rows[0]?.email_verified === true;
+  }
+
   private async ensureAuthSchema(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
@@ -145,6 +190,18 @@ export class AuthStore implements OnModuleDestroy {
 
       CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_user_id
       ON auth_refresh_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS email_verification_tokens (
+        token VARCHAR(256) PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_user_id
+      ON email_verification_tokens(user_id);
+
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
     `);
   }
 }

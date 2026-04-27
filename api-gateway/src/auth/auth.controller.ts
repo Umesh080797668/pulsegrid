@@ -1,6 +1,8 @@
 import { Body, Controller, Get, Headers, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 import { AuthService } from './auth.service';
+import { EmailService } from '../email/email.service';
+import { SendVerificationEmailDto, VerifyEmailDto } from '../dto';
 import { Request } from 'express';
 import { RateLimitService } from '../rate-limit.service';
 
@@ -36,13 +38,20 @@ class RefreshDto {
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
+    private readonly emailService: EmailService,
     private readonly rateLimitService: RateLimitService,
   ) {}
 
   @Post('register')
   async register(@Body() body: RegisterDto, @Req() req: Request) {
     await this.checkAuthRateLimit(req, 'register', Number(process.env.RATE_LIMIT_REGISTER_PER_MINUTE || 20));
-    return this.authService.register(body.email, body.password, body.name);
+    const tokens = await this.authService.register(body.email, body.password, body.name);
+    const user = await this.authService.getUserByEmail(body.email);
+    if (user && !user.emailVerified) {
+      const token = await this.authService.generateEmailVerificationToken(user.id);
+      await this.emailService.sendVerificationEmail(body.email, token);
+    }
+    return tokens;
   }
 
   @Post('login')
@@ -60,6 +69,35 @@ export class AuthController {
   async logout(@Body() body: RefreshDto) {
     await this.authService.logout(body.refreshToken);
     return { success: true };
+  }
+
+  @Post('send-verification-email')
+  async sendVerificationEmail(@Body() body: SendVerificationEmailDto, @Req() req: Request) {
+    await this.checkAuthRateLimit(req, 'send-verification-email', Number(process.env.RATE_LIMIT_VERIFICATION_EMAIL_PER_MINUTE || 5));
+
+    const user = await this.authService.getUserByEmail(body.email);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (user.emailVerified) {
+      return { success: true, message: 'Email already verified' };
+    }
+
+    const token = await this.authService.generateEmailVerificationToken(user.id);
+    const sent = await this.emailService.sendVerificationEmail(body.email, token);
+
+    if (!sent) {
+      throw new UnauthorizedException('Failed to send verification email');
+    }
+
+    return { success: true, message: 'Verification email sent' };
+  }
+
+  @Post('verify-email')
+  async verifyEmail(@Body() body: VerifyEmailDto) {
+    await this.authService.verifyEmail(body.token);
+    return { success: true, message: 'Email verified successfully' };
   }
 
   @Get('google')

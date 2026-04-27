@@ -3,6 +3,7 @@ export interface AuthUser {
   email: string;
   name?: string;
   passwordHash: string;
+  emailVerified: boolean;
   createdAt: string;
 }
 

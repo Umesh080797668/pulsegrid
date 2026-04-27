@@ -4,6 +4,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AuthStore } from './auth.store';
+import { EmailModule } from '../email/email.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { AuthStore } from './auth.store';
         expiresIn: Number(process.env.JWT_ACCESS_TTL_SECONDS || 900),
       },
     }),
+    EmailModule,
   ],
   controllers: [AuthController],
   providers: [AuthStore, AuthService, JwtAuthGuard],

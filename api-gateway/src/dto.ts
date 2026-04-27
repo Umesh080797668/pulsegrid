@@ -3,11 +3,18 @@ import {
   ArrayUnique,
   IsArray,
   IsBoolean,
+  IsEmail,
   IsNotEmpty,
+  IsNumber,
   IsObject,
   IsOptional,
   IsString,
+  IsUrl,
   MaxLength,
+  MinLength,
+  Min,
+  Max,
+  Matches,
   ValidateNested,
 } from 'class-validator';
 
@@ -28,11 +35,13 @@ export class SetSecretDto {
   @IsOptional()
   @IsString()
   @MaxLength(255)
+  @MinLength(1)
   name?: string;
 
   @IsString()
   @IsNotEmpty()
   @MaxLength(4096)
+  @MinLength(1)
   value!: string;
 }
 
@@ -40,11 +49,13 @@ export class UpsertWorkspaceCredentialDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
+  @MinLength(1)
   name!: string;
 
   @IsString()
   @IsNotEmpty()
   @MaxLength(4096)
+  @MinLength(1)
   value!: string;
 }
 
@@ -52,24 +63,30 @@ export class CreateWorkspaceDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
+  @MinLength(1)
   name!: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(255)
+  @MinLength(1)
+  @Matches(/^[a-z0-9_-]+$/, { message: 'slug must contain only lowercase letters, numbers, hyphens, and underscores' })
   slug?: string;
 
   @IsOptional()
+  @IsObject()
   settings?: Record<string, unknown>;
 }
 
 export class FilterConditionDto {
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   field!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   op!: string;
 
   @IsOptional()
@@ -79,10 +96,12 @@ export class FilterConditionDto {
 export class TriggerDefinitionDto {
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   connector!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   event!: string;
 
   @IsOptional()
@@ -94,27 +113,37 @@ export class TriggerDefinitionDto {
 
 export class RetryPolicyDto {
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(10)
   max_retries?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Min(100)
+  @Max(60000)
   initial_backoff_ms?: number;
 }
 
 export class FlowStepDto {
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   id!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   type!: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
   connector?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
   action?: string;
 
   @IsOptional()
@@ -133,26 +162,31 @@ export class FlowStepDto {
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
   condition?: string;
 }
 
 export class ErrorPolicyDto {
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   on_failure!: string;
 
   @IsOptional()
-  @IsString()
+  @IsEmail()
   notify_email?: string;
 }
 
 export class FlowDefinitionDto {
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   id!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
+  @MinLength(1)
   name!: string;
 
   @ValidateNested()
@@ -160,6 +194,7 @@ export class FlowDefinitionDto {
   trigger!: TriggerDefinitionDto;
 
   @IsArray()
+  @IsNotEmpty()
   @ValidateNested({ each: true })
   @Type(() => FlowStepDto)
   steps!: FlowStepDto[];
@@ -173,10 +208,12 @@ export class FlowDefinitionDto {
 export class CustomConnectorContractDto {
   @IsString()
   @IsNotEmpty()
+  @IsUrl()
   endpoint_url!: string;
 
   @IsOptional()
   @IsString()
+  @Matches(/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/, { message: 'method must be a valid HTTP method' })
   method?: string;
 
   @IsOptional()
@@ -188,29 +225,36 @@ export class CustomConnectorContractDto {
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
   bearer_token?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
   api_key_header?: string;
 
   @IsOptional()
   @IsString()
+  @MinLength(1)
   api_key_value?: string;
 }
 
 export class CreateFlowDto {
   @IsString()
   @IsNotEmpty()
+  @MinLength(1)
   workspaceId!: string;
 
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
+  @MinLength(1)
   name!: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
+  @MinLength(1)
   description?: string;
 
   @ValidateNested()
@@ -222,10 +266,13 @@ export class UpdateFlowDto {
   @IsOptional()
   @IsString()
   @MaxLength(255)
+  @MinLength(1)
   name?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
+  @MinLength(1)
   description?: string;
 
   @IsOptional()
@@ -239,6 +286,9 @@ export class UpdateFlowDto {
 }
 
 export class InstallTemplateDto {
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(1)
   templateId!: string;
 }
 
@@ -250,4 +300,16 @@ export class TemplateResponseDto {
   price_cents!: number;
   category!: string;
   published!: boolean;
+}
+
+export class SendVerificationEmailDto {
+  @IsEmail()
+  email!: string;
+}
+
+export class VerifyEmailDto {
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(1)
+  token!: string;
 }

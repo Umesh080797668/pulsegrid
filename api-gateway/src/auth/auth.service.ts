@@ -48,6 +48,10 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    if (!user.emailVerified) {
+      throw new UnauthorizedException('Email not verified. Please check your email for verification link.');
+    }
+
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
       throw new UnauthorizedException('Invalid credentials');
@@ -132,6 +136,7 @@ export class AuthService {
     email: string;
     password_hash: string | null;
     full_name: string | null;
+    email_verified: boolean;
     created_at: Date;
   }): AuthUser {
     return {
@@ -139,7 +144,36 @@ export class AuthService {
       email: row.email,
       name: row.full_name ?? undefined,
       passwordHash: row.password_hash || '',
+      emailVerified: row.email_verified,
       createdAt: row.created_at.toISOString(),
     };
   }
+
+  async generateEmailVerificationToken(userId: string): Promise<string> {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    await this.authStore.storeEmailVerificationToken({
+      token,
+      userId,
+      expiresAt,
+    });
+
+    return token;
+  }
+
+  async verifyEmail(token: string): Promise<void> {
+    const userId = await this.authStore.consumeEmailVerificationToken(token);
+    if (!userId) {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+
+    await this.authStore.markEmailAsVerified(userId);
+  }
+
+  async getUserByEmail(email: string): Promise<AuthUser | null> {
+    const row = await this.authStore.findUserByEmail(email.trim().toLowerCase());
+    return row ? this.toAuthUser(row) : null;
+  }
+
 }
