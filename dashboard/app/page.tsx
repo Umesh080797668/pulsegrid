@@ -12,8 +12,9 @@ type FlowRun = { id: string; status: 'success' | 'failed' | 'running' | string; 
 type ConnectorCatalogItem = { connector: string; action: string; category: string; auth: 'none' | 'bearer' | 'api_key' | 'oauth2' | 'mixed'; required_input_fields: string[]; optional_input_fields: string[]; };
 type WorkspaceCredential = { name: string; updated_at?: string | null; };
 type WorkspaceItem = { id: string; name: string; slug: string; plan: string; owner_user_id: string; settings?: Record<string, unknown>; created_at?: string | null; };
+type MarketTemplate = { id: string; title: string; description: string; price_cents: number; };
 type AuthMode = 'login' | 'register';
-type Tab = 'overview' | 'flows' | 'builder' | 'credentials' | 'connectors' | 'events';
+type Tab = 'overview' | 'flows' | 'builder' | 'credentials' | 'connectors' | 'events' | 'marketplace';
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:3000';
 const LS_ACCESS = 'pulsegrid.accessToken';
@@ -55,6 +56,7 @@ function Ic({ n, s = 15 }: { n: string; s?: number }) {
     shield:    'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
     cpu:       'M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18',
     layers:    'M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
+    market:    'M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18M16 10a4 4 0 0 1-8 0',
   };
   return (
     <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -106,6 +108,7 @@ export default function HomePage() {
   const [connectors, setConnectors]         = useState<ConnectorCatalogItem[]>([]);
   const [credentials, setCredentials]       = useState<WorkspaceCredential[]>([]);
   const [events, setEvents]                 = useState<EventPayload[]>([]);
+  const [marketTemplates, setMarketTemplates] = useState<MarketTemplate[]>([]);
   const [error, setError]                   = useState('');
   const [authMsg, setAuthMsg]               = useState('');
   const [managementApiKey, setManagementApiKey] = useState(process.env.NEXT_PUBLIC_MANAGEMENT_API_KEY || '');
@@ -162,6 +165,7 @@ export default function HomePage() {
     if (activeTab === 'flows')       void loadFlows();
     if (activeTab === 'credentials') void loadCredentials();
     if (activeTab === 'connectors')  void loadConnectors();
+    if (activeTab === 'marketplace') void loadMarketTemplates();
   }, [activeTab, workspaceId]);
 
   const successRuns  = runs.filter(r => r.status === 'success').length;
@@ -255,6 +259,25 @@ export default function HomePage() {
     const res = await authenticatedFetch(`${apiBase}/workspaces/${workspaceId}/credentials`, { headers: { 'x-management-api-key': managementApiKey } });
     if (!res.ok) return;
     setCredentials((await res.json()) as WorkspaceCredential[]);
+  }
+
+  async function loadMarketTemplates() {
+    if (!token || !refreshToken) return;
+    const res = await authenticatedFetch(`${apiBase}/market/templates`);
+    if (!res.ok) { setError(`Failed to load templates (${res.status})`); return; }
+    const data = await res.json() as { templates: MarketTemplate[] };
+    setMarketTemplates(data.templates || []);
+  }
+
+  async function installMarketTemplate(templateId: string) {
+    if (!workspaceId || !token || !refreshToken) { setError('Select a workspace first'); return; }
+    const res = await authenticatedFetch(`${apiBase}/market/install`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspaceId, templateId })
+    });
+    if (!res.ok) { setError(`Failed to install template (${res.status})`); return; }
+    alert('Template installed successfully!');
+    setActiveTab('flows');
   }
 
   function buildFlowDefinition() {
@@ -411,6 +434,7 @@ export default function HomePage() {
     { tab: 'builder',     icon: 'tool',     label: 'Flow Builder' },
     { tab: 'credentials', icon: 'key',      label: 'Credentials', count: credentials.length || undefined },
     { tab: 'connectors',  icon: 'plug',     label: 'Connectors',  count: connectors.length || undefined },
+    { tab: 'marketplace', icon: 'market',   label: 'Marketplace', count: marketTemplates.length || undefined },
     { tab: 'events',      icon: 'activity', label: 'Live Events', count: events.length || undefined },
   ];
 
@@ -836,6 +860,52 @@ export default function HomePage() {
                       )}
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* ══════════ MARKETPLACE ══════════ */}
+              {activeTab === 'marketplace' && (
+                <div>
+                  <div className="page-hd">
+                    <div>
+                      <div className="page-title">AutoMarket</div>
+                      <div className="page-sub">Discover and install ready-made automation templates</div>
+                    </div>
+                    <div className="page-actions">
+                      <button className="btn btn-secondary" onClick={loadMarketTemplates}><Ic n="refresh" s={13} />Refresh</button>
+                    </div>
+                  </div>
+                  {error && <div className="alert alert-error mb-16">{error}</div>}
+                  {marketTemplates.length === 0 ? (
+                    <div className="card">
+                      <div className="empty-state">
+                        <div className="empty-icon"><Ic n="market" s={20} /></div>
+                        <div className="empty-title">No templates available</div>
+                        <div className="empty-sub">Templates will appear here once published to the marketplace</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <motion.div className="connector-grid" variants={stagger} initial="initial" animate="animate">
+                      {marketTemplates.map(item => (
+                        <motion.div key={item.id} className="connector-card" variants={statItem}>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
+                            <div className="connector-name" style={{ flex: 1, paddingRight: 8 }}>{item.title}</div>
+                            <span className="badge b-success" style={{ fontSize: 10 }}>
+                              {item.price_cents === 0 ? 'FREE' : `$${(item.price_cents / 100).toFixed(2)}`}
+                            </span>
+                          </div>
+                          <div className="connector-meta" style={{ flex: 1, minHeight: 60 }}>
+                            <div style={{ color: 'var(--text-2)' }}>{item.description}</div>
+                          </div>
+                          <div style={{ marginTop: 16 }}>
+                            <button className="btn btn-primary w-full" style={{ justifyContent: 'center' }} onClick={() => installMarketTemplate(item.id)}>
+                              Install Template
+                            </button>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </motion.div>
+                  )}
                 </div>
               )}
 
