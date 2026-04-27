@@ -280,6 +280,18 @@ export default function HomePage() {
     setActiveTab('flows');
   }
 
+  async function upgradePlan(wsId: string, plan: string) {
+    if (!token || !refreshToken) return;
+    const res = await authenticatedFetch(`${apiBase}/workspaces/${wsId}/upgrade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan })
+    });
+    if (!res.ok) { setError(`Failed to upgrade plan (${res.status})`); return; }
+    alert(`Successfully upgraded to ${plan.toUpperCase()}!`);
+    await loadWorkspaces();
+  }
+
   function buildFlowDefinition() {
     const flowId = typeof crypto !== 'undefined' ? crypto.randomUUID() : `flow-${Date.now()}`;
     const stepId = typeof crypto !== 'undefined' ? crypto.randomUUID() : `step-${Date.now()}`;
@@ -1067,11 +1079,20 @@ export default function HomePage() {
                                   </div>
                                 </td>
                                 <td><span className="font-mono text-faint" style={{ fontSize: 12 }}>{ws.slug}</span></td>
-                                <td><span className="badge b-neutral">{ws.plan}</span></td>
                                 <td>
-                                  <button className="btn btn-secondary btn-sm" onClick={() => setWorkspaceId(ws.id)}>
-                                    {ws.id === workspaceId ? 'Selected' : 'Select'}
-                                  </button>
+                                  <span className={`badge ${ws.plan === 'pro' ? 'b-success' : 'b-neutral'}`}>{ws.plan}</span>
+                                </td>
+                                <td>
+                                  <div style={{ display: 'flex', gap: '8px' }}>
+                                    <button className="btn btn-secondary btn-sm" onClick={() => setWorkspaceId(ws.id)}>
+                                      {ws.id === workspaceId ? 'Selected' : 'Select'}
+                                    </button>
+                                    {ws.plan === 'free' && (
+                                      <button className="btn btn-primary btn-sm" onClick={() => upgradePlan(ws.id, 'pro')}>
+                                        Upgrade to Pro
+                                      </button>
+                                    )}
+                                  </div>
                                 </td>
                               </tr>
                             ))}

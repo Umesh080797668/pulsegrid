@@ -65,6 +65,7 @@ async fn main() {
             post(create_workspace).get(list_workspaces),
         )
         .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
+        .route("/api/v1/workspaces/{workspace_id}/upgrade", post(upgrade_workspace))
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
         .route(
@@ -645,6 +646,59 @@ async fn get_workspace(
         axum::http::StatusCode::NOT_FOUND,
         "Workspace not found".to_string(),
     ))?;
+
+    Ok(Json(WorkspaceResponse {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        plan: row.plan,
+        owner_user_id: row.owner_user_id,
+        settings: row.settings.unwrap_or_else(|| serde_json::json!({})),
+        created_at: row.created_at,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct UpgradeWorkspaceRequest {
+    plan: String,
+}
+
+async fn upgrade_workspace(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+    Json(payload): Json<UpgradeWorkspaceRequest>,
+) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
+    let plan = payload.plan.trim().to_lowercase();
+    if plan.is_empty() {
+        return Err((axum::http::StatusCode::BAD_REQUEST, "Plan is required".into()));
+    }
+
+    let mut tx = state.pool.begin().await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Update workspaces table
+    let row = sqlx::query!(
+        "UPDATE workspaces SET plan = $1 WHERE id = $2 RETURNING id, name, slug, plan, owner_user_id, settings, created_at",
+        plan,
+        workspace_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Workspace not found".to_string()))?;
+
+    // Upsert into billing_subscriptions
+    sqlx::query!(
+        r#"
+        INSERT INTO billing_subscriptions (workspace_id, plan_tier, status)
+        VALUES ($1, $2, 'active')
+        ON CONFLICT (workspace_id) 
+        DO UPDATE SET plan_tier = EXCLUDED.plan_tier, status = 'active', updated_at = NOW()
+        "#,
+        workspace_id, plan
+    ).execute(&mut *tx).await.map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tx.commit().await.map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(WorkspaceResponse {
         id: row.id,

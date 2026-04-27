@@ -336,6 +336,19 @@ export class AppController implements OnModuleInit {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('workspaces/:workspaceId/upgrade')
+  async upgradeWorkspace(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Body() body: { plan: string }
+  ) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/upgrade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: body.plan }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('trigger')
   async triggerFlow(@Body() body: TriggerFlowDto, @Req() req: Request) {
     await this.rateLimitService.check(
