@@ -1065,8 +1065,8 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    #[test]
-    fn matches_trigger_with_filters() {
+    #[tokio::test]
+    async fn matches_trigger_with_filters() {
         let executor = FlowExecutor::new(
             sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
             std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
@@ -1092,10 +1092,10 @@ mod tests {
         assert!(executor.matches_trigger(&trigger, &event));
     }
 
-    #[test]
-    fn resolve_execution_order_groups_parallel_steps() {
+    #[tokio::test]
+    async fn resolve_execution_order_groups_parallel_steps() {
         let executor = FlowExecutor::new(
-            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+            sqlx::PgPool::connect_lazy("postgres://postgres:1234@localhost:5432/pulsegrid").unwrap(),
             std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
         );
         let steps = vec![
@@ -1143,8 +1143,8 @@ mod tests {
         assert_eq!(groups[1].len(), 2);
     }
 
-    #[test]
-    fn transform_data_replaces_template_values() {
+    #[tokio::test]
+    async fn transform_data_replaces_template_values() {
         let executor = FlowExecutor::new(
             sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
             std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))

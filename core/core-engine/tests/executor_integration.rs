@@ -11,8 +11,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-#[test]
-fn multi_step_flow_execution_order_groups_parallel_steps() {
+#[tokio::test]
+async fn multi_step_flow_execution_order_groups_parallel_steps() {
     let executor = FlowExecutor::new(
         sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
         std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
@@ -64,8 +64,8 @@ fn multi_step_flow_execution_order_groups_parallel_steps() {
     assert!(order[1].contains(&"step3".to_string()));
 }
 
-#[test]
-fn trigger_condition_matching_works() {
+#[tokio::test]
+async fn trigger_condition_matching_works() {
     let executor = FlowExecutor::new(
         sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
         std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
@@ -124,8 +124,8 @@ async fn step_condition_can_skip_execution() {
     assert_eq!(result.status, "skipped");
 }
 
-#[test]
-fn data_transformation_resolves_templates() {
+#[tokio::test]
+async fn data_transformation_resolves_templates() {
     let executor = FlowExecutor::new(
         sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
         std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
@@ -151,8 +151,8 @@ fn data_transformation_resolves_templates() {
     assert_eq!(result, json!("test@example.com/Imantha"));
 }
 
-#[test]
-fn cyclic_dependencies_return_error() {
+#[tokio::test]
+async fn cyclic_dependencies_return_error() {
     let executor = FlowExecutor::new(
         sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
         std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))

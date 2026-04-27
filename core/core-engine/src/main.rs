@@ -111,7 +111,6 @@ async fn main() {
 
     // Spawn our background worker for cron/scheduled flows
     let cron_pool = pool.clone();
-    let cron_vault = state.vault.clone();
     tokio::spawn(async move {
         
         loop {
