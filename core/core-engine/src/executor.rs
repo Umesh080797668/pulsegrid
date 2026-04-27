@@ -1067,7 +1067,10 @@ mod tests {
 
     #[test]
     fn matches_trigger_with_filters() {
-        let executor = FlowExecutor::new();
+        let executor = FlowExecutor::new(
+            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+            std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+        );
         let trigger = TriggerDefinition {
             connector: "shopify".to_string(),
             event: "order.created".to_string(),
@@ -1091,7 +1094,10 @@ mod tests {
 
     #[test]
     fn resolve_execution_order_groups_parallel_steps() {
-        let executor = FlowExecutor::new();
+        let executor = FlowExecutor::new(
+            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+            std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+        );
         let steps = vec![
             FlowStep {
                 id: "step1".into(),
@@ -1139,7 +1145,10 @@ mod tests {
 
     #[test]
     fn transform_data_replaces_template_values() {
-        let executor = FlowExecutor::new();
+        let executor = FlowExecutor::new(
+            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+            std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+        );
         let event = PulseEvent {
             id: Uuid::new_v4(),
             tenant_id: Uuid::new_v4(),

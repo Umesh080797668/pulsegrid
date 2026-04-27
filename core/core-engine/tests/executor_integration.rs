@@ -13,7 +13,10 @@ use uuid::Uuid;
 
 #[test]
 fn multi_step_flow_execution_order_groups_parallel_steps() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let steps = vec![
         FlowStep {
             id: "step1".into(),
@@ -63,7 +66,10 @@ fn multi_step_flow_execution_order_groups_parallel_steps() {
 
 #[test]
 fn trigger_condition_matching_works() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let trigger = TriggerDefinition {
         connector: "shopify".into(),
         event: "order.created".into(),
@@ -87,7 +93,10 @@ fn trigger_condition_matching_works() {
 
 #[tokio::test]
 async fn step_condition_can_skip_execution() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "conditional-step".into(),
         r#type: "action".into(),
@@ -117,7 +126,10 @@ async fn step_condition_can_skip_execution() {
 
 #[test]
 fn data_transformation_resolves_templates() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let event = PulseEvent {
         id: Uuid::new_v4(),
         tenant_id: Uuid::new_v4(),
@@ -141,7 +153,10 @@ fn data_transformation_resolves_templates() {
 
 #[test]
 fn cyclic_dependencies_return_error() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let steps = vec![
         FlowStep {
             id: "a".into(),
@@ -175,7 +190,10 @@ fn cyclic_dependencies_return_error() {
 
 #[tokio::test]
 async fn schedule_connector_step_returns_next_run() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "schedule-step".into(),
         r#type: "action".into(),
@@ -209,7 +227,10 @@ async fn schedule_connector_step_returns_next_run() {
 
 #[tokio::test]
 async fn resend_connector_requires_api_key() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "resend-step".into(),
         r#type: "action".into(),
@@ -250,7 +271,10 @@ async fn resend_connector_requires_api_key() {
 
 #[tokio::test]
 async fn jira_connector_requires_access_token() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "jira-step".into(),
         r#type: "action".into(),
@@ -292,7 +316,10 @@ async fn jira_connector_requires_access_token() {
 
 #[tokio::test]
 async fn stripe_connector_requires_api_key() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "stripe-step".into(),
         r#type: "action".into(),
@@ -331,7 +358,10 @@ async fn stripe_connector_requires_api_key() {
 
 #[tokio::test]
 async fn wat_script_step_executes_in_sandbox() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "sandbox-step".into(),
         r#type: "script".into(),
@@ -386,7 +416,10 @@ async fn wat_script_step_executes_in_sandbox() {
 
 #[tokio::test]
 async fn sendgrid_connector_requires_api_key() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "sendgrid-step".into(),
         r#type: "action".into(),
@@ -427,7 +460,10 @@ async fn sendgrid_connector_requires_api_key() {
 
 #[tokio::test]
 async fn salesforce_connector_requires_access_token() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "salesforce-step".into(),
         r#type: "action".into(),
@@ -473,7 +509,10 @@ async fn salesforce_connector_requires_access_token() {
 
 #[tokio::test]
 async fn shopify_connector_requires_access_token() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "shopify-step".into(),
         r#type: "action".into(),
@@ -518,7 +557,10 @@ async fn shopify_connector_requires_access_token() {
 
 #[tokio::test]
 async fn gitlab_connector_requires_access_token() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "gitlab-step".into(),
         r#type: "action".into(),
@@ -557,7 +599,10 @@ async fn gitlab_connector_requires_access_token() {
 
 #[tokio::test]
 async fn monday_connector_requires_api_key() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "monday-step".into(),
         r#type: "action".into(),
@@ -596,7 +641,10 @@ async fn monday_connector_requires_api_key() {
 
 #[tokio::test]
 async fn brevo_connector_requires_api_key() {
-    let executor = FlowExecutor::new();
+    let executor = FlowExecutor::new(
+        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/pulsegrid").unwrap(),
+        std::sync::Arc::new(core_vault::Vault::new("test_password", b"test_salt"))
+    );
     let step = FlowStep {
         id: "brevo-step".into(),
         r#type: "action".into(),
