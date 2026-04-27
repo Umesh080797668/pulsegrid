@@ -220,11 +220,34 @@ export default function HomePage() {
     const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
     const payload  = authMode === 'register' ? { email, password, name: name || undefined } : { email, password };
     const res = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (!res.ok) { setAuthMsg(`Authentication failed (${res.status})`); return; }
-    const data = await res.json() as { accessToken: string; refreshToken: string };
-    setToken(data.accessToken); setRefreshToken(data.refreshToken);
-    localStorage.setItem(LS_ACCESS, data.accessToken); localStorage.setItem(LS_REFRESH, data.refreshToken);
-    setAuthMsg(authMode === 'register' ? 'Account created successfully' : 'Signed in successfully');
+    const data = await res.json().catch(() => ({} as Record<string, unknown>));
+
+    if (!res.ok) {
+      const message = typeof data.message === 'string' ? data.message : `Authentication failed (${res.status})`;
+      setAuthMsg(message);
+      return;
+    }
+
+    if (authMode === 'register') {
+      setToken('');
+      setRefreshToken('');
+      localStorage.removeItem(LS_ACCESS);
+      localStorage.removeItem(LS_REFRESH);
+      setAuthMode('login');
+      setPassword('');
+      setAuthMsg(typeof data.message === 'string' ? data.message : 'Account created. Please verify your email before signing in.');
+      return;
+    }
+
+    const loginData = data as { accessToken?: string; refreshToken?: string };
+    if (!loginData.accessToken || !loginData.refreshToken) {
+      setAuthMsg('Authentication succeeded but tokens were not returned');
+      return;
+    }
+
+    setToken(loginData.accessToken); setRefreshToken(loginData.refreshToken);
+    localStorage.setItem(LS_ACCESS, loginData.accessToken); localStorage.setItem(LS_REFRESH, loginData.refreshToken);
+    setAuthMsg('Signed in successfully');
   }
 
   async function onLogout() {

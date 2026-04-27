@@ -20,7 +20,7 @@ export class AuthService {
     return Number(process.env.JWT_REFRESH_TTL_SECONDS || 60 * 60 * 24 * 30);
   }
 
-  async register(email: string, password: string, name?: string): Promise<AuthTokens> {
+  async register(email: string, password: string, name?: string): Promise<void> {
     const normalizedEmail = email.trim().toLowerCase();
     const existing = await this.authStore.findUserByEmail(normalizedEmail);
     if (existing) {
@@ -29,15 +29,12 @@ export class AuthService {
 
     const id = crypto.randomUUID();
     const passwordHash = await bcrypt.hash(password, 12);
-    const row = await this.authStore.createUser({
+    await this.authStore.createUser({
       id,
       email: normalizedEmail,
       passwordHash,
       fullName: name,
     });
-
-    const user = this.toAuthUser(row);
-    return this.issueTokens(user);
   }
 
   async login(email: string, password: string): Promise<AuthTokens> {

@@ -45,13 +45,17 @@ export class AuthController {
   @Post('register')
   async register(@Body() body: RegisterDto, @Req() req: Request) {
     await this.checkAuthRateLimit(req, 'register', Number(process.env.RATE_LIMIT_REGISTER_PER_MINUTE || 20));
-    const tokens = await this.authService.register(body.email, body.password, body.name);
+    await this.authService.register(body.email, body.password, body.name);
     const user = await this.authService.getUserByEmail(body.email);
     if (user && !user.emailVerified) {
       const token = await this.authService.generateEmailVerificationToken(user.id);
       await this.emailService.sendVerificationEmail(body.email, token);
     }
-    return tokens;
+    return {
+      success: true,
+      requiresEmailVerification: true,
+      message: 'Account created. Please verify your email before signing in.',
+    };
   }
 
   @Post('login')
