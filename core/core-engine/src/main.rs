@@ -14,6 +14,7 @@ use sqlx::FromRow;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::str::FromStr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -54,7 +55,7 @@ async fn main() {
         .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
     let state = AppState {
         pool: pool.clone(),
-        vault: Arc::new(Vault::new(&master_key)),
+        vault: Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes())),
     };
 
     // Build the Axum application
@@ -82,7 +83,7 @@ async fn main() {
         )
         .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
         .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
-        .with_state(state);
+        .with_state(state.clone());
 
     // Run the server on port 8000 to avoid Tomcat conflict
     let addr = SocketAddr::from(([0, 0, 0, 0], 8000));
@@ -90,8 +91,9 @@ async fn main() {
 
     // Spawn our background worker for Redis Streams Event Bus
     let pool_clone = pool.clone();
+    let vault_clone = state.vault.clone();
     tokio::spawn(async move {
-        start_event_listener(pool_clone).await;
+        start_event_listener(pool_clone, vault_clone).await;
     });
 
     // Start gRPC server
@@ -107,12 +109,62 @@ async fn main() {
             .unwrap();
     });
 
+    // Spawn our background worker for cron/scheduled flows
+    let cron_pool = pool.clone();
+    let cron_vault = state.vault.clone();
+    tokio::spawn(async move {
+        
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            
+            let rows = sqlx::query!(
+                r#"SELECT id, workspace_id, definition, last_run_at FROM flows WHERE enabled = true"#
+            ).fetch_all(&cron_pool).await.unwrap_or_default();
+            
+            for row in rows {
+                let def: crate::models::FlowDefinition = match serde_json::from_value(row.definition) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                
+                if def.trigger.connector == "schedule" {
+                    let cron_val = def.trigger.filters.iter().find(|f| f.field == "cron").map(|f| &f.value);
+                    if let Some(serde_json::Value::String(cron_expr)) = cron_val {
+                        let last = row.last_run_at.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
+                        // parse cron and see if past due
+                        if let Ok(schedule) = cron::Schedule::from_str(cron_expr) {
+                            if let Some(next) = schedule.after(&last).next() {
+                                if chrono::Utc::now() >= next {
+                                    // Emit event to Redis
+                                    let event = crate::models::PulseEvent {
+                                        id: uuid::Uuid::new_v4(),
+                                        tenant_id: row.workspace_id.unwrap_or_default(),
+                                        source: Some("schedule".into()),
+                                        event_type: def.trigger.event.clone(),
+                                        data: serde_json::json!({ "triggered_at": chrono::Utc::now().to_rfc3339() }),
+                                    };
+                                    
+                                    let redis_url = "redis://127.0.0.1:6379/";
+                                    if let Ok(client) = redis::Client::open(redis_url) {
+                                        if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                                            let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, "stream:events:global", "*", &[("payload", serde_json::to_string(&event).unwrap())]).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     let listener = TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
 /// Connects to Redis and indefinitely reads from the Real-Time Event Stream
-async fn start_event_listener(pg_pool: sqlx::PgPool) {
+async fn start_event_listener(pg_pool: sqlx::PgPool, vault: std::sync::Arc<core_vault::Vault>) {
     let redis_url = "redis://127.0.0.1:6379/";
     let client = match redis::Client::open(redis_url) {
         Ok(c) => c,
@@ -140,7 +192,7 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
         .block(5000) // Block for 5 seconds waiting for events
         .count(10); // Read up to 10 events per batch
 
-    let executor = Arc::new(FlowExecutor::new());
+    let executor = Arc::new(FlowExecutor::new(pg_pool.clone(), vault.clone()));
 
     loop {
         // XREAD block from our blueprint's stream key
@@ -358,6 +410,11 @@ async fn start_event_listener(pg_pool: sqlx::PgPool) {
                                             final_status,
                                             steps_log,
                                             flow_run_id as _
+                                        ).execute(&pg_pool).await;
+
+                                        let _ = sqlx::query!(
+                                            r#"UPDATE flows SET run_count = run_count + 1, last_run_at = NOW() WHERE id = $1"#,
+                                            flow.id as _
                                         ).execute(&pg_pool).await;
 
                                         if final_status == "failed" {

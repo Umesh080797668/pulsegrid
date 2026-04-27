@@ -15,13 +15,19 @@ use std::sync::Arc;
 pub struct FlowExecutor {
     engine: Arc<Engine>,
     sandbox: Arc<CoreVm>,
+    pub connectors: Arc<core_connectors::Connectors>,
+    pub pool: sqlx::PgPool,
+    pub vault: Arc<core_vault::Vault>,
 }
 
 impl FlowExecutor {
-    pub fn new() -> Self {
+    pub fn new(pool: sqlx::PgPool, vault: Arc<core_vault::Vault>) -> Self {
         Self {
             engine: Arc::new(Engine::new()),
             sandbox: Arc::new(CoreVm::new()),
+            connectors: Arc::new(core_connectors::Connectors::new()),
+            pool,
+            vault,
         }
     }
 
@@ -236,8 +242,26 @@ impl FlowExecutor {
                 let connector_name = step.connector.clone().unwrap_or_default().to_lowercase();
                 let action_name = step.action.clone().unwrap_or_default().to_lowercase();
                 let input = self.render_input_mapping(step, step_outputs, event);
+                let mut input_obj = input.as_object().cloned().unwrap_or_default();
+                let upper_connector = connector_name.to_uppercase();
+                if let Ok(row) = sqlx::query!("SELECT encrypted_blob, nonce FROM credentials WHERE workspace_id = $1 AND connector_id = $2", event.tenant_id, upper_connector)
+                    .fetch_one(&self.pool)
+                    .await
+                {
+                    if let Ok(decrypted) = self.vault.decrypt(&row.encrypted_blob, &row.nonce) {
+                        if let Ok(secret_json) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&decrypted) {
+                            for (k, v) in secret_json {
+                                input_obj.entry(k).or_insert(v);
+                            }
+                        } else {
+                            input_obj.entry("access_token".to_string()).or_insert(serde_json::Value::String(decrypted.clone()));
+                            input_obj.entry("bot_token".to_string()).or_insert(serde_json::Value::String(decrypted));
+                        }
+                    }
+                }
+                let input = serde_json::Value::Object(input_obj);
+                let connectors = self.connectors.clone();
 
-                let connectors = Connectors::new();
                 let exec_result = self
                     .dispatch_connector_action(&connectors, &connector_name, &action_name, &input)
                     .await;

@@ -32,7 +32,7 @@ export class BetaController {
 
   @UseGuards(JwtAuthGuard)
   @Post('feedback')
-  async submitFeedback(@Req() req: Request, @Body() body: { type: string, content: string }) {
+  async submitFeedback(@Req() req: any, @Body() body: { type: string, content: string }) {
     const userId = (req.user as any).id;
     try {
       await this.pool.query('INSERT INTO user_feedbacks (user_id, type, content) VALUES ($1, $2, $3)', [userId, body.type, body.content]);

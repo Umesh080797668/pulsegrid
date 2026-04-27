@@ -22,7 +22,7 @@ impl MyPulseCoreService {
     pub fn new(pg_pool: sqlx::PgPool) -> Self {
         let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
             .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
-        let vault = std::sync::Arc::new(Vault::new(&master_key));
+        let vault = std::sync::Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes()));
         Self { pg_pool, vault }
     }
 }

@@ -17,9 +17,9 @@ pub struct Vault {
 }
 
 impl Vault {
-    pub fn new(master_password: &str) -> Self {
+    pub fn new(master_password: &str, salt: &[u8]) -> Self {
         let mut key_bytes = [0u8; 32];
-        let salt = b"pulsegrid_salt";
+        // let salt = b"pulsegrid_salt";
         pbkdf2::derive(
             pbkdf2::PBKDF2_HMAC_SHA256,
             NonZeroU32::new(100_000).unwrap(),

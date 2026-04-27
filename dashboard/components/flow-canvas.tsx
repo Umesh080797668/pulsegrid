@@ -271,7 +271,7 @@ export function FlowCanvas({
           subtitle: step.id,
           stepType: step.type,
         },
-        type: 'customNode',
+        type: step.type === 'loop' ? 'loopNode' : step.type === 'parallel' ? 'parallelNode' : 'customNode',
         draggable: true,
       });
 
@@ -303,7 +303,7 @@ export function FlowCanvas({
   }, [definitionJson, parsed]);
 
   const nodeTypes = useMemo(() => ({
-    customNode: CustomNode
+    customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode
   }), []);
 
   return (
@@ -456,6 +456,33 @@ function CustomNode({ data, selected }: NodeProps) {
       </div>
       
       <Handle type="source" position={Position.Right} style={{ top: '50%', background: borderColor, width: 8, height: 8 }} />
+    </div>
+  );
+}
+
+function LoopNode({ data, selected }: NodeProps) {
+  const borderColor = '#f59e0b';
+  return (
+    <div style={{ minWidth: 240, padding: 14, borderRadius: 14, border: selected ? `1px solid ${borderColor}` : '1px solid rgba(255,255,255,0.12)', background: selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)', backgroundColor: '#1a1a1a', color: '#fff' }}>
+      <Handle type="target" position={Position.Left} style={{ background: borderColor }} />
+      <div style={{ fontSize: 12, marginBottom: 6, color: borderColor, fontWeight: 600, letterSpacing: '0.05em' }}>LOOP</div>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{String(data.title)}</div>
+      <div style={{ opacity: 0.7, fontSize: 12, wordBreak: 'break-all' }}>{String(data.subtitle)}</div>
+      <Handle type="source" position={Position.Right} style={{ top: '30%', background: borderColor }} id="body" />
+      <Handle type="source" position={Position.Right} style={{ top: '70%', background: '#7c9cff' }} id="next" />
+    </div>
+  );
+}
+
+function ParallelNode({ data, selected }: NodeProps) {
+  const borderColor = '#22d674';
+  return (
+    <div style={{ minWidth: 240, padding: 14, borderRadius: 14, border: selected ? `1px solid ${borderColor}` : '1px solid rgba(255,255,255,0.12)', background: selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)', backgroundColor: '#1a1a1a', color: '#fff' }}>
+      <Handle type="target" position={Position.Left} style={{ background: borderColor }} />
+      <div style={{ fontSize: 12, marginBottom: 6, color: borderColor, fontWeight: 600, letterSpacing: '0.05em' }}>PARALLEL</div>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{String(data.title)}</div>
+      <div style={{ opacity: 0.7, fontSize: 12, wordBreak: 'break-all' }}>{String(data.subtitle)}</div>
+      <Handle type="source" position={Position.Right} style={{ background: borderColor }} />
     </div>
   );
 }
