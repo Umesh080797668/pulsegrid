@@ -1,11 +1,27 @@
-import { useEffect } from 'react';
-import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFlowStore } from '@/lib/store';
 
 export default function HomeScreen() {
   const router = useRouter();
   const { flows, isLoading, error, loadFlows, loadDigest, triggerFlow } = useFlowStore();
+  const [triggeringFlowId, setTriggeringFlowId] = useState<string | null>(null);
+
+  const quickStats = useMemo(() => {
+    const activeFlows = flows.filter((flow) => flow.status === 'active').length;
+    const totalRuns = flows.reduce((sum, flow) => sum + (flow.retryCount ?? 0), 0);
+    return { activeFlows, totalRuns };
+  }, [flows]);
 
   useEffect(() => {
     void loadFlows();
@@ -17,6 +33,18 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>Quick Triggers</Text>
         <Text style={styles.subtitle}>Tap a flow to execute instantly.</Text>
+
+        <View style={styles.statsCard}>
+          <Text style={styles.statsTitle}>Today</Text>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsValue}>{quickStats.activeFlows}</Text>
+            <Text style={styles.statsLabel}>Active flows</Text>
+          </View>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsValue}>{quickStats.totalRuns}</Text>
+            <Text style={styles.statsLabel}>Total runs</Text>
+          </View>
+        </View>
 
         {isLoading ? (
           <ActivityIndicator size="large" color="#7c3aed" />
@@ -30,17 +58,29 @@ export default function HomeScreen() {
               key={flow.id}
               style={styles.card}
               onPress={async () => {
-                await triggerFlow(flow.id);
-                router.push('/modal');
+                setTriggeringFlowId(flow.id);
+                const ok = await triggerFlow(flow.id);
+                setTriggeringFlowId(null);
+
+                if (ok) {
+                  Alert.alert('Triggered', `${flow.name} started successfully.`);
+                  router.push('/modal');
+                } else {
+                  Alert.alert('Trigger failed', 'Please try again.');
+                }
               }}>
               <View style={styles.row}>
                 <View style={styles.flowMeta}>
                   <Text style={styles.flowName}>{flow.name}</Text>
                   <Text style={styles.flowDesc}>{flow.description}</Text>
                 </View>
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{flow.status}</Text>
-                </View>
+                {triggeringFlowId === flow.id ? (
+                  <ActivityIndicator size="small" color="#e0e7ff" />
+                ) : (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>{flow.status}</Text>
+                  </View>
+                )}
               </View>
             </Pressable>
           ))
@@ -67,6 +107,31 @@ const styles = StyleSheet.create({
   subtitle: {
     color: '#94a3b8',
     marginBottom: 12,
+  },
+  statsCard: {
+    backgroundColor: '#1e1b4b',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    gap: 8,
+  },
+  statsTitle: {
+    color: '#c7d2fe',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 8,
+  },
+  statsValue: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  statsLabel: {
+    color: '#cbd5e1',
   },
   card: {
     backgroundColor: '#111827',

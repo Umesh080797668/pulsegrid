@@ -15,7 +15,7 @@ interface FlowStore {
   failedFlows: Array<{ id: string; name: string; failures: number }>;
   loadFlows: () => Promise<void>;
   loadDigest: () => Promise<void>;
-  triggerFlow: (flowId: string) => Promise<void>;
+  triggerFlow: (flowId: string) => Promise<boolean>;
   refreshStats: (flowId: string) => Promise<void>;
   setError: (error: string | null) => void;
 }
@@ -52,8 +52,10 @@ export const useFlowStore = create<FlowStore>((set) => ({
   triggerFlow: async (flowId: string) => {
     try {
       await triggerFlowApi(flowId);
+      return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : 'Failed to trigger flow' });
+      return false;
     }
   },
 
