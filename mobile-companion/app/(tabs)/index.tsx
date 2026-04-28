@@ -1,98 +1,108 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
-
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { useEffect } from 'react';
+import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useFlowStore } from '@/lib/store';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const router = useRouter();
+  const { flows, isLoading, error, loadFlows, loadDigest, triggerFlow } = useFlowStore();
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  useEffect(() => {
+    void loadFlows();
+    void loadDigest();
+  }, [loadFlows, loadDigest]);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <Text style={styles.title}>Quick Triggers</Text>
+        <Text style={styles.subtitle}>Tap a flow to execute instantly.</Text>
+
+        {isLoading ? (
+          <ActivityIndicator size="large" color="#7c3aed" />
+        ) : error ? (
+          <View style={styles.card}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : (
+          flows.slice(0, 5).map((flow) => (
+            <Pressable
+              key={flow.id}
+              style={styles.card}
+              onPress={async () => {
+                await triggerFlow(flow.id);
+                router.push('/modal');
+              }}>
+              <View style={styles.row}>
+                <View style={styles.flowMeta}>
+                  <Text style={styles.flowName}>{flow.name}</Text>
+                  <Text style={styles.flowDesc}>{flow.description}</Text>
+                </View>
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{flow.status}</Text>
+                </View>
+              </View>
+            </Pressable>
+          ))
+        )}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+  },
+  content: {
+    padding: 20,
+    gap: 12,
+  },
+  title: {
+    color: '#f8fafc',
+    fontSize: 32,
+    fontWeight: '700',
+  },
+  subtitle: {
+    color: '#94a3b8',
+    marginBottom: 12,
+  },
+  card: {
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+  },
+  row: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  flowMeta: {
+    flex: 1,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  flowName: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '600',
+  },
+  flowDesc: {
+    color: '#cbd5e1',
+    marginTop: 4,
+  },
+  badge: {
+    backgroundColor: '#312e81',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  badgeText: {
+    color: '#e0e7ff',
+    textTransform: 'capitalize',
+  },
+  errorText: {
+    color: '#fca5a5',
   },
 });

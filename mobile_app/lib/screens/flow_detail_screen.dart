@@ -1,30 +1,93 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/flow_providers.dart';
 
-class FlowDetailScreen extends StatelessWidget {
+class FlowDetailScreen extends ConsumerWidget {
   final String flowId;
 
   const FlowDetailScreen({super.key, required this.flowId});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final flowAsync = ref.watch(flowProvider(flowId));
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Flow Details'),
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text('Flow ID: $flowId'),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: const Text('Back'),
+      body: flowAsync.when(
+        data: (flow) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  flow.name,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 8),
+                Text(flow.description),
+                const SizedBox(height: 24),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildDetailRow('Status', flow.status),
+                        _buildDetailRow('Trigger Type', flow.triggerType),
+                        _buildDetailRow('Retry Count', flow.retryCount.toString()),
+                        _buildDetailRow('Steps', flow.steps.length.toString()),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Steps',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                ListView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: flow.steps.length,
+                  itemBuilder: (context, index) {
+                    final step = flow.steps[index];
+                    return ListTile(
+                      title: Text('Step ${index + 1}: ${step.actionName}'),
+                      subtitle: Text('Connector: ${step.connectorId}'),
+                    );
+                  },
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    // TODO: Trigger flow execution
+                  },
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Run Flow'),
+                ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, stack) => Center(child: Text('Error: $error')),
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label),
+          Text(value),
+        ],
       ),
     );
   }
