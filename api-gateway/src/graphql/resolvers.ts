@@ -1,21 +1,29 @@
 import { Resolver, Query, Mutation, Args, ID, Context } from '@nestjs/graphql';
-import { Inject } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Flow, FlowRun, EventData, EventPattern, Workspace } from './types';
 import { DataLoaders } from './dataloaders';
 
 @Resolver(() => Flow)
 export class FlowResolver {
+  private logger = new Logger('FlowResolver');
+
   constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
 
   @Query(() => [Flow])
   async flows(
-    @Context('dataloaders') dataloaders: DataLoaders,
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
   ): Promise<Flow[]> {
-    // In a real implementation, fetch flows from PULSECORE gRPC service
-    // Then use dataloaders to prevent N+1 queries
-    return [];
+    try {
+      const flowService: any = this.client.getService('FlowService');
+      const response = await flowService
+        .listFlows({ workspace_id: workspaceId })
+        .toPromise?.();
+      return response?.flows || [];
+    } catch (error) {
+      this.logger.error(`Error fetching flows for workspace ${workspaceId}:`, error);
+      return [];
+    }
   }
 
   @Query(() => Flow, { nullable: true })
@@ -23,15 +31,32 @@ export class FlowResolver {
     @Context('dataloaders') dataloaders: DataLoaders,
     @Args('id', { type: () => ID }) id: string,
   ): Promise<Flow | null> {
-    return dataloaders.flowLoader.load(id);
+    try {
+      const flowService: any = this.client.getService('FlowService');
+      const response = await flowService
+        .getFlow({ id })
+        .toPromise?.();
+      return response || null;
+    } catch (error) {
+      this.logger.error(`Error fetching flow ${id}:`, error);
+      return null;
+    }
   }
 
   @Query(() => [FlowRun])
   async flowRuns(
-    @Context('dataloaders') dataloaders: DataLoaders,
     @Args('flowId', { type: () => ID }) flowId: string,
   ): Promise<FlowRun[]> {
-    return dataloaders.flowRunsLoader.load(flowId);
+    try {
+      const flowService: any = this.client.getService('FlowService');
+      const response = await flowService
+        .getFlowRuns({ flow_id: flowId, limit: 10 })
+        .toPromise?.();
+      return response?.runs || [];
+    } catch (error) {
+      this.logger.error(`Error fetching flow runs for flow ${flowId}:`, error);
+      return [];
+    }
   }
 
   @Mutation(() => Flow)
@@ -40,8 +65,21 @@ export class FlowResolver {
     @Args('name') name: string,
     @Args('description', { nullable: true }) description?: string,
   ): Promise<Flow> {
-    // TODO: Call PULSECORE gRPC service to create flow
-    return {} as Flow;
+    try {
+      const flowService: any = this.client.getService('FlowService');
+      const response = await flowService
+        .createFlow({
+          workspace_id: workspaceId,
+          name,
+          description: description || '',
+          steps: [],
+        })
+        .toPromise?.();
+      return response || ({} as Flow);
+    } catch (error) {
+      this.logger.error(`Error creating flow: ${name}`, error);
+      throw error;
+    }
   }
 
   @Mutation(() => Flow)
@@ -50,84 +88,183 @@ export class FlowResolver {
     @Args('name', { nullable: true }) name?: string,
     @Args('description', { nullable: true }) description?: string,
   ): Promise<Flow> {
-    // TODO: Call PULSECORE gRPC service to update flow
-    return {} as Flow;
+    try {
+      const flowService: any = this.client.getService('FlowService');
+      const payload: any = { id };
+      if (name) payload.name = name;
+      if (description) payload.description = description;
+
+      const response = await flowService
+        .updateFlow(payload)
+        .toPromise?.();
+      return response || ({} as Flow);
+    } catch (error) {
+      this.logger.error(`Error updating flow ${id}:`, error);
+      throw error;
+    }
   }
 
   @Mutation(() => Boolean)
   async deleteFlow(@Args('id', { type: () => ID }) id: string): Promise<boolean> {
-    // TODO: Call PULSECORE gRPC service to delete flow
-    return true;
+    try {
+      const flowService: any = this.client.getService('FlowService');
+      await flowService.deleteFlow({ id }).toPromise?.();
+      return true;
+    } catch (error) {
+      this.logger.error(`Error deleting flow ${id}:`, error);
+      return false;
+    }
   }
 }
 
 @Resolver(() => EventData)
 export class EventResolver {
+  private logger = new Logger('EventResolver');
+
   constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
 
   @Query(() => [EventData])
   async events(
-    @Context('dataloaders') dataloaders: DataLoaders,
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
     @Args('limit', { type: () => Number, defaultValue: 50 }) limit: number,
   ): Promise<EventData[]> {
-    // TODO: Fetch recent events for workspace
-    return [];
+    try {
+      const eventService: any = this.client.getService('EventService');
+      const response = await eventService
+        .listEvents({ workspace_id: workspaceId, limit })
+        .toPromise?.();
+      return response?.events || [];
+    } catch (error) {
+      this.logger.error(
+        `Error fetching events for workspace ${workspaceId}:`,
+        error,
+      );
+      return [];
+    }
   }
 
   @Query(() => EventData, { nullable: true })
   async event(
-    @Context('dataloaders') dataloaders: DataLoaders,
     @Args('id', { type: () => ID }) id: string,
   ): Promise<EventData | null> {
-    return dataloaders.eventLoader.load(id);
+    try {
+      const eventService: any = this.client.getService('EventService');
+      const response = await eventService
+        .getEvent({ id })
+        .toPromise?.();
+      return response || null;
+    } catch (error) {
+      this.logger.error(`Error fetching event ${id}:`, error);
+      return null;
+    }
   }
 }
 
 @Resolver(() => EventPattern)
 export class PatternResolver {
-  constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
+  private logger = new Logger('PatternResolver');
+
+  constructor(
+    @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
+  ) {}
 
   @Query(() => [EventPattern])
   async detectedPatterns(
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
   ): Promise<EventPattern[]> {
-    // TODO: Call core-ai service to get detected patterns
-    return [];
+    try {
+      // Call core-ai service for pattern detection via PULSECORE gRPC proxy
+      const patternService: any = this.client.getService('PatternService');
+      const response = await patternService
+        .detectPatterns({ workspace_id: workspaceId })
+        .toPromise?.();
+      return response?.patterns || [];
+    } catch (error) {
+      this.logger.error(
+        `Error detecting patterns for workspace ${workspaceId}:`,
+        error,
+      );
+      return [];
+    }
   }
 
   @Mutation(() => Flow, { nullable: true })
   async suggestFlowFromPattern(
     @Args('patternId') patternId: string,
   ): Promise<Flow | null> {
-    // TODO: Generate flow suggestion from pattern
-    // Call core-ai to get pattern details
-    // Use flow_builder to suggest DSL
-    return null;
+    try {
+      // First, get pattern details from core-ai service
+      const patternService: any = this.client.getService('PatternService');
+      const patternResponse = await patternService
+        .getPattern({ id: patternId })
+        .toPromise?.();
+
+      if (!patternResponse) {
+        return null;
+      }
+
+      // Then generate flow suggestion from pattern
+      const suggestionService: any = this.client.getService('SuggestionService');
+      const flowResponse = await suggestionService
+        .suggestFlow({ pattern: patternResponse })
+        .toPromise?.();
+
+      return flowResponse || null;
+    } catch (error) {
+      this.logger.error(`Error suggesting flow from pattern ${patternId}:`, error);
+      return null;
+    }
   }
 }
 
 @Resolver(() => Workspace)
 export class WorkspaceResolver {
+  private logger = new Logger('WorkspaceResolver');
+
   constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
 
   @Query(() => [Workspace])
   async workspaces(): Promise<Workspace[]> {
-    // TODO: Fetch user's workspaces
-    return [];
+    try {
+      const workspaceService: any = this.client.getService('WorkspaceService');
+      const response = await workspaceService
+        .listWorkspaces({})
+        .toPromise?.();
+      return response?.workspaces || [];
+    } catch (error) {
+      this.logger.error('Error fetching workspaces:', error);
+      return [];
+    }
   }
 
   @Query(() => Workspace, { nullable: true })
   async workspace(
-    @Context('dataloaders') dataloaders: DataLoaders,
     @Args('id', { type: () => ID }) id: string,
   ): Promise<Workspace | null> {
-    return dataloaders.workspaceLoader.load(id);
+    try {
+      const workspaceService: any = this.client.getService('WorkspaceService');
+      const response = await workspaceService
+        .getWorkspace({ id })
+        .toPromise?.();
+      return response || null;
+    } catch (error) {
+      this.logger.error(`Error fetching workspace ${id}:`, error);
+      return null;
+    }
   }
 
   @Mutation(() => Workspace)
   async createWorkspace(@Args('name') name: string): Promise<Workspace> {
-    // TODO: Create workspace
-    return {} as Workspace;
+    try {
+      const workspaceService: any = this.client.getService('WorkspaceService');
+      const response = await workspaceService
+        .createWorkspace({ name })
+        .toPromise?.();
+      return response || ({} as Workspace);
+    } catch (error) {
+      this.logger.error(`Error creating workspace: ${name}`, error);
+      throw error;
+    }
   }
 }
+

@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { Module, Inject } from '@nestjs/common';
 import { GraphQLModule as ApolloGraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import { ClientGrpc } from '@nestjs/microservices';
 import { FlowResolver, EventResolver, PatternResolver, WorkspaceResolver } from './resolvers';
 import { DataLoaders } from './dataloaders';
 
@@ -10,11 +11,10 @@ import { DataLoaders } from './dataloaders';
       driver: ApolloDriver,
       autoSchemaFile: true,
       playground: process.env.NODE_ENV !== 'production',
-      context: async ({ req }) => {
-        // Initialize dataloaders for this request
-        // In a real app, inject the database connection here
-        const dataloaders = new DataLoaders(req.db);
-        return { dataloaders, req };
+      context: async ({ req }: any) => {
+        // DataLoaders will be injected by resolvers via constructor dependency injection
+        // This context factory ensures proper module initialization
+        return { req };
       },
     }),
   ],

@@ -3,10 +3,10 @@ import { ObjectType, Field, ID, Int, Float } from '@nestjs/graphql';
 @ObjectType()
 export class FlowStep {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  type: string;
+  type!: string;
 
   @Field({ nullable: true })
   connector?: string;
@@ -24,128 +24,128 @@ export class FlowStep {
 @ObjectType()
 export class Flow {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  workspace_id: string;
+  workspace_id!: string;
 
   @Field()
-  name: string;
+  name!: string;
 
   @Field({ nullable: true })
   description?: string;
 
   @Field(() => [FlowStep])
-  steps: FlowStep[];
+  steps!: FlowStep[];
 
   @Field()
-  created_at: Date;
+  created_at!: Date;
 
   @Field()
-  updated_at: Date;
+  updated_at!: Date;
 
   @Field()
-  is_active: boolean;
+  is_active!: boolean;
 }
 
 @ObjectType()
 export class EventData {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  tenant_id: string;
+  tenant_id!: string;
 
   @Field({ nullable: true })
   source?: string;
 
   @Field()
-  event_type: string;
+  event_type!: string;
 
   @Field(() => String)
-  data: string;
+  data!: string;
 
   @Field()
-  created_at: Date;
+  created_at!: Date;
 }
 
 @ObjectType()
 export class FlowRun {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  flow_id: string;
+  flow_id!: string;
 
   @Field()
-  status: string;
+  status!: string;
 
   @Field(() => Int)
-  duration_ms: number;
+  duration_ms!: number;
 
   @Field({ nullable: true })
   error?: string;
 
   @Field()
-  started_at: Date;
+  started_at!: Date;
 
   @Field()
-  completed_at: Date;
+  completed_at!: Date;
 }
 
 @ObjectType()
 export class Workspace {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  name: string;
+  name!: string;
 
   @Field()
-  created_at: Date;
+  created_at!: Date;
 
   @Field()
-  updated_at: Date;
+  updated_at!: Date;
 }
 
 @ObjectType()
 export class User {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  email: string;
+  email!: string;
 
   @Field()
-  created_at: Date;
+  created_at!: Date;
 
   @Field()
-  updated_at: Date;
+  updated_at!: Date;
 }
 
 @ObjectType()
 export class EventPattern {
   @Field(() => ID)
-  id: string;
+  id!: string;
 
   @Field()
-  pattern_type: string;
+  pattern_type!: string;
 
   @Field()
-  description: string;
+  description!: string;
 
   @Field(() => Float)
-  confidence: number;
+  confidence!: number;
 
   @Field()
-  frequency: string;
+  frequency!: string;
 
   @Field(() => [String])
-  events_involved: string[];
+  events_involved!: string[];
 
   @Field({ nullable: true })
   suggested_trigger?: string;
 
   @Field(() => [String])
-  suggested_actions: string[];
+  suggested_actions!: string[];
 }

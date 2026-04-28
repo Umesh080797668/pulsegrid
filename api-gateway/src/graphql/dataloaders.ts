@@ -1,8 +1,9 @@
-import * as DataLoader from 'dataloader';
+import DataLoader from 'dataloader';
+import { ClientGrpc } from '@nestjs/microservices';
 
 /**
  * DataLoader instances for preventing N+1 query problems in GraphQL
- * Each loader batches database queries within a single request
+ * Each loader batches gRPC calls to PULSECORE within a single request
  */
 
 export class DataLoaders {
@@ -11,61 +12,76 @@ export class DataLoaders {
   flowRunsLoader: DataLoader<string, any[]>;
   workspaceLoader: DataLoader<string, any>;
 
-  constructor(private db: any) {
-    // Batch load flows by ID
-    this.flowLoader = new DataLoader(async (flowIds: string[]) => {
-      const query = `
-        SELECT id, workspace_id, name, description, steps, created_at, updated_at, is_active
-        FROM flows
-        WHERE id = ANY($1)
-      `;
-      const result = await this.db.query(query, [flowIds]);
-      const flowMap = new Map(result.rows.map((r: any) => [r.id, r]));
-      return flowIds.map((id) => flowMap.get(id));
+  constructor(private client: ClientGrpc) {
+    // Batch load flows by ID via gRPC
+    this.flowLoader = new DataLoader(async (flowIds: readonly string[]) => {
+      try {
+        const flowService: any = this.client.getService('FlowService');
+        const result = await flowService.getFlows({ ids: Array.from(flowIds) }).toPromise?.();
+        
+        const flowMap = new Map(result?.flows?.map((f: any) => [f.id, f]) || []);
+        return Array.from(flowIds).map((id) => flowMap.get(id) || null);
+      } catch (error) {
+        console.error('Error batching flows:', error);
+        return Array.from(flowIds).map(() => null);
+      }
     });
 
-    // Batch load events by ID
-    this.eventLoader = new DataLoader(async (eventIds: string[]) => {
-      const query = `
-        SELECT id, tenant_id, source, event_type, data, created_at
-        FROM events
-        WHERE id = ANY($1)
-      `;
-      const result = await this.db.query(query, [eventIds]);
-      const eventMap = new Map(result.rows.map((r: any) => [r.id, r]));
-      return eventIds.map((id) => eventMap.get(id));
+    // Batch load events by ID via gRPC
+    this.eventLoader = new DataLoader(async (eventIds: readonly string[]) => {
+      try {
+        const eventService: any = this.client.getService('EventService');
+        const result = await eventService.getEvents({ ids: Array.from(eventIds) }).toPromise?.();
+        
+        const eventMap = new Map(result?.events?.map((e: any) => [e.id, e]) || []);
+        return Array.from(eventIds).map((id) => eventMap.get(id) || null);
+      } catch (error) {
+        console.error('Error batching events:', error);
+        return Array.from(eventIds).map(() => null);
+      }
     });
 
-    // Batch load flow runs by flow ID
-    this.flowRunsLoader = new DataLoader(async (flowIds: string[]) => {
-      const query = `
-        SELECT id, flow_id, status, duration_ms, error, started_at, completed_at
-        FROM flow_runs
-        WHERE flow_id = ANY($1)
-        ORDER BY completed_at DESC
-        LIMIT 10
-      `;
-      const result = await this.db.query(query, [flowIds]);
-      const runsMap = new Map<string, any[]>();
-      flowIds.forEach((id) => runsMap.set(id, []));
-      result.rows.forEach((row: any) => {
-        const runs = runsMap.get(row.flow_id) || [];
-        runs.push(row);
-        runsMap.set(row.flow_id, runs);
-      });
-      return flowIds.map((id) => runsMap.get(id) || []);
+    // Batch load flow runs by flow ID via gRPC
+    this.flowRunsLoader = new DataLoader(async (flowIds: readonly string[]) => {
+      try {
+        const flowService: any = this.client.getService('FlowService');
+        const result = await flowService
+          .getFlowRuns({ 
+            flow_ids: Array.from(flowIds),
+            limit: 10 
+          })
+          .toPromise?.();
+        
+        const runsMap = new Map<string, any[]>();
+        Array.from(flowIds).forEach((id) => runsMap.set(id, []));
+        
+        result?.runs?.forEach((run: any) => {
+          const runs = runsMap.get(run.flow_id) || [];
+          runs.push(run);
+          runsMap.set(run.flow_id, runs);
+        });
+        
+        return Array.from(flowIds).map((id) => runsMap.get(id) || []);
+      } catch (error) {
+        console.error('Error batching flow runs:', error);
+        return Array.from(flowIds).map(() => []);
+      }
     });
 
-    // Batch load workspaces by ID
-    this.workspaceLoader = new DataLoader(async (workspaceIds: string[]) => {
-      const query = `
-        SELECT id, name, created_at, updated_at
-        FROM workspaces
-        WHERE id = ANY($1)
-      `;
-      const result = await this.db.query(query, [workspaceIds]);
-      const wsMap = new Map(result.rows.map((r: any) => [r.id, r]));
-      return workspaceIds.map((id) => wsMap.get(id));
+    // Batch load workspaces by ID via gRPC
+    this.workspaceLoader = new DataLoader(async (workspaceIds: readonly string[]) => {
+      try {
+        const workspaceService: any = this.client.getService('WorkspaceService');
+        const result = await workspaceService
+          .getWorkspaces({ ids: Array.from(workspaceIds) })
+          .toPromise?.();
+        
+        const wsMap = new Map(result?.workspaces?.map((w: any) => [w.id, w]) || []);
+        return Array.from(workspaceIds).map((id) => wsMap.get(id) || null);
+      } catch (error) {
+        console.error('Error batching workspaces:', error);
+        return Array.from(workspaceIds).map(() => null);
+      }
     });
   }
 }
