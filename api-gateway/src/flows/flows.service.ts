@@ -185,4 +185,31 @@ export class FlowsService {
       throw error;
     }
   }
+
+  /**
+   * Deploy a flow (enable it in workspace)
+   */
+  async deployFlow(id: string, workspaceId: string): Promise<Flow> {
+    try {
+      // Get current flow
+      const flow = await this.getFlow(id, workspaceId);
+
+      // Update flow to enabled state
+      const updateRequest: UpdateFlowRequest = {
+        id,
+        workspaceId,
+        enabled: true,
+      };
+
+      const deployedFlow = (await firstValueFrom(
+        this.flowService.updateFlow(updateRequest),
+      )) as Flow;
+
+      this.logger.log(`Flow ${id} deployed and enabled`);
+      return deployedFlow;
+    } catch (error) {
+      this.logger.error(`Failed to deploy flow ${id}:`, error);
+      throw error;
+    }
+  }
 }

@@ -158,6 +158,41 @@ export class FlowsController {
   }
 
   /**
+   * Deploy a flow to a workspace
+   * POST /flows/:id/deploy
+   * Makes the flow active in the workspace
+   */
+  @Post(':id/deploy')
+  async deployFlow(
+    @Param('id') id: string,
+    @Body() body: { workspaceId: string },
+    @Request() req: ExpressRequest,
+  ) {
+    try {
+      const workspaceId = this.extractWorkspaceId(req);
+      // Verify workspace matches
+      if (body.workspaceId !== workspaceId) {
+        throw new BadRequestException(
+          'Deploy workspace does not match authenticated workspace',
+        );
+      }
+
+      this.logger.log(`Deploying flow ${id} to workspace ${workspaceId}`);
+
+      const result = await this.flowsService.deployFlow(id, workspaceId);
+
+      return {
+        statusCode: 200,
+        message: 'Flow deployed successfully',
+        data: result,
+      };
+    } catch (error) {
+      this.logger.error(`Error deploying flow ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Extract workspace ID from JWT token in request
    * Throws BadRequestException if workspace not found in token
    */
