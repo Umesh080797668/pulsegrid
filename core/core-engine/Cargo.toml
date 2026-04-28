@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["ws"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 core-connectors = { version = "0.1.0", path = "../core-connectors" }
 core-proto = { version = "0.1.0", path = "../core-proto" }
@@ -12,6 +12,7 @@ core-vault = { version = "0.1.0", path = "../core-vault" }
 core-vm = { version = "0.1.0", path = "../core-vm" }
 core-ai = { version = "0.1.0", path = "../core-ai" }
 dotenvy = "0.15.7"
+futures-util = "0.3"
 prost = "0.13"
 redis = { version = "0.27", features = ["streams", "tokio-comp", "aio"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

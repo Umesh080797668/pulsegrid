@@ -1,9 +1,14 @@
 use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query, State,
+    },
+    response::IntoResponse,
     routing::{delete, get, post},
+    Json, Router,
 };
 use core_vault::Vault;
+use futures_util::{SinkExt, StreamExt};
 use redis::{
     AsyncCommands,
     streams::{StreamReadOptions, StreamReadReply},
@@ -13,10 +18,11 @@ use serde::Deserialize;
 use sqlx::FromRow;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 
 mod grpc;
 mod models;
@@ -34,6 +40,7 @@ use grpc::MyPulseCoreService;
 struct AppState {
     pool: sqlx::PgPool,
     vault: Arc<Vault>,
+    event_tx: broadcast::Sender<String>,
 }
 
 #[tokio::main]
@@ -53,9 +60,11 @@ async fn main() {
 
     let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
         .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
+    let (event_tx, _) = broadcast::channel::<String>(256);
     let state = AppState {
         pool: pool.clone(),
         vault: Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes())),
+        event_tx: event_tx.clone(),
     };
 
     // Build the Axum application
@@ -83,6 +92,7 @@ async fn main() {
         )
         .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
         .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
+        .route("/events/stream", get(events_stream))
         .with_state(state.clone());
 
     // Run the server on port 8000 to avoid Tomcat conflict
@@ -92,8 +102,9 @@ async fn main() {
     // Spawn our background worker for Redis Streams Event Bus
     let pool_clone = pool.clone();
     let vault_clone = state.vault.clone();
+    let event_tx_clone = event_tx.clone();
     tokio::spawn(async move {
-        start_event_listener(pool_clone, vault_clone).await;
+        start_event_listener(pool_clone, vault_clone, event_tx_clone).await;
     });
 
     // Start gRPC server
@@ -162,8 +173,72 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+#[derive(Debug, Deserialize)]
+struct EventStreamQuery {
+    workspace_id: Option<uuid::Uuid>,
+}
+
+async fn events_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<EventStreamQuery>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_events_socket(socket, state, query.workspace_id))
+}
+
+async fn handle_events_socket(
+    socket: WebSocket,
+    state: AppState,
+    workspace_id: Option<uuid::Uuid>,
+) {
+    let mut rx = state.event_tx.subscribe();
+    let (mut sender, mut receiver) = socket.split();
+
+    let send_task = tokio::spawn(async move {
+        while let Ok(payload) = rx.recv().await {
+            if !event_matches_workspace(&payload, workspace_id) {
+                continue;
+            }
+
+            if sender.send(Message::Text(payload.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(message)) = receiver.next().await {
+            if matches!(message, Message::Close(_)) {
+                break;
+            }
+        }
+    });
+
+    let _ = tokio::join!(send_task, recv_task);
+}
+
+fn event_matches_workspace(payload: &str, workspace_id: Option<uuid::Uuid>) -> bool {
+    let Some(workspace_id) = workspace_id else {
+        return true;
+    };
+
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("tenant_id")
+                .and_then(|tenant_id| tenant_id.as_str())
+                .map(|tenant_id| tenant_id == workspace_id.to_string())
+        })
+        .unwrap_or(false)
+}
+
 /// Connects to Redis and indefinitely reads from the Real-Time Event Stream
-async fn start_event_listener(pg_pool: sqlx::PgPool, vault: std::sync::Arc<core_vault::Vault>) {
+async fn start_event_listener(
+    pg_pool: sqlx::PgPool,
+    vault: std::sync::Arc<core_vault::Vault>,
+    event_tx: broadcast::Sender<String>,
+) {
     let redis_url = "redis://127.0.0.1:6379/";
     let client = match redis::Client::open(redis_url) {
         Ok(c) => c,
@@ -213,7 +288,7 @@ async fn start_event_listener(pg_pool: sqlx::PgPool, vault: std::sync::Arc<core_
                             match serde_json::from_str::<PulseEvent>(&payload_str) {
                                 Ok(event) => {
                                     println!("🔥 Received PulseEvent (ID: {})", last_id);
-
+                                    let _ = event_tx.send(payload_str.to_string());
 
                                     // Fetch active flows for this workspace
                                     let active_flows = sqlx::query!(
