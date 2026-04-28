@@ -372,6 +372,16 @@ async fn jira_connector_requires_access_token() {
         condition: None,
         script_language: None,
         code: None,
+        loop_items: None,
+        loop_variable_name: None,
+        max_iterations: None,
+        loop_condition: None,
+        parallel_steps: None,
+        sub_flow_id: None,
+        sub_flow_input: None,
+        filter_condition: None,
+        transform_expr: None,
+        delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -462,7 +472,7 @@ async fn wat_script_step_executes_in_sandbox() {
         retry_policy: Default::default(),
         condition: None,
         script_language: Some("wat".into()),
-                code: Some(
+        code: Some(
                         r#"
                         (module
                             (memory (export "memory") 1)
@@ -486,6 +496,16 @@ async fn wat_script_step_executes_in_sandbox() {
                         "#
                         .trim()
                         .into()),
+        loop_items: None,
+        loop_variable_name: None,
+        max_iterations: None,
+        loop_condition: None,
+        parallel_steps: None,
+        sub_flow_id: None,
+        sub_flow_input: None,
+        filter_condition: None,
+        transform_expr: None,
+        delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -585,6 +605,16 @@ async fn salesforce_connector_requires_access_token() {
         condition: None,
         script_language: None,
         code: None,
+        loop_items: None,
+        loop_variable_name: None,
+        max_iterations: None,
+        loop_condition: None,
+        parallel_steps: None,
+        sub_flow_id: None,
+        sub_flow_input: None,
+        filter_condition: None,
+        transform_expr: None,
+        delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -737,6 +767,16 @@ async fn monday_connector_requires_api_key() {
         condition: None,
         script_language: None,
         code: None,
+        loop_items: None,
+        loop_variable_name: None,
+        max_iterations: None,
+        loop_condition: None,
+        parallel_steps: None,
+        sub_flow_id: None,
+        sub_flow_input: None,
+        filter_condition: None,
+        transform_expr: None,
+        delay_ms: None,
     };
 
     let event = PulseEvent {
