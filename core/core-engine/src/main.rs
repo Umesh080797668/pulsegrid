@@ -1210,6 +1210,7 @@ async fn health_postgres(State(state): State<AppState>) -> Result<Json<serde_jso
 
 // Webhook endpoints
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct WebhookPayload {
     #[serde(default)]
     payload: serde_json::Value,
