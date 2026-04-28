@@ -8,10 +8,13 @@ import {
   Param,
   UseGuards,
   Logger,
+  Request,
+  BadRequestException,
 } from '@nestjs/common';
 import { CreateFlowDto, UpdateFlowDto } from '../dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { FlowsService } from './flows.service';
+import { Request as ExpressRequest } from 'express';
 
 @Controller('flows')
 @UseGuards(JwtAuthGuard)
@@ -25,10 +28,9 @@ export class FlowsController {
    * GET /flows
    */
   @Get()
-  async listFlows() {
+  async listFlows(@Request() req: ExpressRequest) {
     try {
-      // In a real implementation, extract workspaceId from JWT token
-      const workspaceId = 'default'; // TODO: Extract from JWT context
+      const workspaceId = this.extractWorkspaceId(req);
       const flows = await this.flowsService.listFlows(workspaceId);
       return {
         statusCode: 200,
@@ -45,9 +47,9 @@ export class FlowsController {
    * GET /flows/:id
    */
   @Get(':id')
-  async getFlow(@Param('id') id: string) {
+  async getFlow(@Param('id') id: string, @Request() req: ExpressRequest) {
     try {
-      const workspaceId = 'default'; // TODO: Extract from JWT context
+      const workspaceId = this.extractWorkspaceId(req);
       const flow = await this.flowsService.getFlow(id, workspaceId);
       return {
         statusCode: 200,
@@ -73,8 +75,19 @@ export class FlowsController {
    * - Input mapping source validation
    */
   @Post()
-  async createFlow(@Body() createFlowDto: CreateFlowDto) {
+  async createFlow(
+    @Body() createFlowDto: CreateFlowDto,
+    @Request() req: ExpressRequest,
+  ) {
     try {
+      const workspaceId = this.extractWorkspaceId(req);
+      // Ensure workspaceId matches JWT context (security check)
+      if (createFlowDto.workspaceId !== workspaceId) {
+        throw new BadRequestException(
+          'Flow workspaceId does not match authenticated workspace',
+        );
+      }
+
       this.logger.log(
         `Creating flow "${createFlowDto.name}" with ${createFlowDto.definition.steps.length} steps`,
       );
@@ -103,11 +116,13 @@ export class FlowsController {
   async updateFlow(
     @Param('id') id: string,
     @Body() updateFlowDto: UpdateFlowDto,
+    @Request() req: ExpressRequest,
   ) {
     try {
+      const workspaceId = this.extractWorkspaceId(req);
       this.logger.log(`Updating flow ${id}`);
 
-      const flow = await this.flowsService.updateFlow(id, updateFlowDto);
+      const flow = await this.flowsService.updateFlow(id, updateFlowDto, workspaceId);
 
       return {
         statusCode: 200,
@@ -125,11 +140,11 @@ export class FlowsController {
    * DELETE /flows/:id
    */
   @Delete(':id')
-  async deleteFlow(@Param('id') id: string) {
+  async deleteFlow(@Param('id') id: string, @Request() req: ExpressRequest) {
     try {
       this.logger.log(`Deleting flow ${id}`);
 
-      const workspaceId = 'default'; // TODO: Extract from JWT context
+      const workspaceId = this.extractWorkspaceId(req);
       await this.flowsService.deleteFlow(id, workspaceId);
 
       return {
@@ -140,5 +155,17 @@ export class FlowsController {
       this.logger.error(`Error deleting flow ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Extract workspace ID from JWT token in request
+   * Throws BadRequestException if workspace not found in token
+   */
+  private extractWorkspaceId(req: ExpressRequest): string {
+    const user = (req as ExpressRequest & { user?: any }).user;
+    if (!user || !user.workspaceId) {
+      throw new BadRequestException('Invalid or missing workspace in JWT token');
+    }
+    return user.workspaceId;
   }
 }

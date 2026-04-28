@@ -144,14 +144,8 @@ export class FlowsService {
   /**
    * Update an existing flow with comprehensive validation
    */
-  async updateFlow(id: string, dto: UpdateFlowDto): Promise<Flow> {
+  async updateFlow(id: string, dto: UpdateFlowDto, workspaceId: string): Promise<Flow> {
     try {
-      // Get current flow to determine workspace
-      const currentFlow = await this.getFlow(
-        id,
-        (dto as any).workspaceId || 'unknown',
-      );
-
       // Validate new definition if provided
       if (dto.definition) {
         this.validationService.validateFlowDefinitionOrThrow(dto.definition);
@@ -161,7 +155,7 @@ export class FlowsService {
 
       const updateRequest: UpdateFlowRequest = {
         id,
-        workspaceId: currentFlow.workspaceId,
+        workspaceId,
         ...dto,
       };
 

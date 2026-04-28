@@ -10,6 +10,7 @@ export interface AuthUser {
 export interface JwtPayload {
   sub: string;
   email: string;
+  workspaceId: string;
 }
 
 export interface AuthTokens {

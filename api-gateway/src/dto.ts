@@ -16,8 +16,7 @@ import {
   Max,
   Matches,
   ValidateNested,
-  IsIn,
-  Validate,
+  IsIn
 } from 'class-validator';
 
 export class TriggerFlowDto {

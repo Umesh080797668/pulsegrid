@@ -102,7 +102,11 @@ export class AuthService {
   }
 
   private async issueTokens(user: AuthUser): Promise<AuthTokens> {
-    const payload: JwtPayload = { sub: user.id, email: user.email };
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      workspaceId: user.id, // Use user ID as default workspace ID
+    };
 
     const accessToken = await this.jwtService.signAsync(payload, {
       secret: process.env.JWT_SECRET || 'pulsegrid-dev-access-secret',
