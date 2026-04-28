@@ -9,6 +9,7 @@ import { RateLimitService } from './rate-limit.service';
 import { EventsGateway } from './events.gateway';
 import { MarketModule } from './market/market.module';
 import { AiModule } from './ai/ai.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { GraphqlModule } from './graphql/graphql.module';
 
 @Global()
@@ -19,6 +20,7 @@ import { GraphqlModule } from './graphql/graphql.module';
     AuthModule,
     MarketModule,
     AiModule,
+    AnalyticsModule,
     ClientsModule.register([
       {
         name: 'PULSECORE_PACKAGE',

@@ -1,9 +1,7 @@
-import { Module, Inject } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { GraphQLModule as ApolloGraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
-import { ClientGrpc } from '@nestjs/microservices';
 import { FlowResolver, EventResolver, PatternResolver, WorkspaceResolver } from './resolvers';
-import { DataLoaders } from './dataloaders';
 
 @Module({
   imports: [
