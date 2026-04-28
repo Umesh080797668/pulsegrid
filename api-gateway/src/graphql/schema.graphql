@@ -1,0 +1,130 @@
+# PulseGrid GraphQL API Schema
+# Serves as BFF (Backend-for-Frontend) for dashboard and mobile apps
+# Uses DataLoader for N+1 prevention and batched database queries
+
+type Query {
+  # Flow Queries
+  flows(workspaceId: ID!): [Flow!]!
+  flow(id: ID!): Flow
+  flowRuns(flowId: ID!): [FlowRun!]!
+  
+  # Event Queries
+  events(workspaceId: ID!, limit: Int = 50): [EventData!]!
+  event(id: ID!): EventData
+  
+  # Pattern Detection Queries (from core-ai)
+  detectedPatterns(workspaceId: ID!): [EventPattern!]!
+  
+  # Workspace Queries
+  workspaces: [Workspace!]!
+  workspace(id: ID!): Workspace
+}
+
+type Mutation {
+  # Flow Management
+  createFlow(workspaceId: ID!, name: String!, description: String): Flow!
+  updateFlow(id: ID!, name: String, description: String): Flow!
+  deleteFlow(id: ID!): Boolean!
+  
+  # Pattern-to-Flow Suggestions
+  suggestFlowFromPattern(patternId: String!): Flow
+  
+  # Workspace Management
+  createWorkspace(name: String!): Workspace!
+}
+
+type Subscription {
+  # Real-time event stream (connects to WebSocket gateway)
+  eventReceived(workspaceId: ID!): EventData!
+  
+  # Flow run status updates
+  flowRunUpdated(flowId: ID!): FlowRun!
+}
+
+# Core Types
+
+type Flow {
+  id: ID!
+  workspaceId: ID!
+  name: String!
+  description: String
+  steps: [FlowStep!]!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  isActive: Boolean!
+  
+  # Resolved via DataLoader (no N+1)
+  recentRuns(limit: Int = 10): [FlowRun!]!
+}
+
+type FlowStep {
+  id: ID!
+  type: String! # action, condition, script, loop, parallel, sub_flow, etc
+  connector: String
+  action: String
+  dependsOn: [ID!]
+  condition: String
+  
+  # Loop-specific config
+  loopItems: String
+  loopVariableName: String
+  maxIterations: Int
+  loopCondition: String
+  
+  # Parallel/Fork config
+  parallelSteps: [ID!]
+  
+  # Sub-flow reference
+  subFlowId: ID
+  subFlowInput: String
+  
+  # Filter/Transform config
+  filterCondition: String
+  transformExpr: String
+  
+  # Delay config
+  delayMs: Int
+}
+
+type FlowRun {
+  id: ID!
+  flowId: ID!
+  status: String! # success, failed, running, skipped
+  durationMs: Int!
+  error: String
+  startedAt: DateTime!
+  completedAt: DateTime!
+}
+
+type EventData {
+  id: ID!
+  tenantId: ID!
+  source: String
+  eventType: String!
+  data: String!
+  createdAt: DateTime!
+}
+
+type EventPattern {
+  id: ID!
+  patternType: String! # time_based, correlation, anomaly
+  description: String!
+  confidence: Float! # 0.0 - 1.0
+  frequency: String!
+  eventsInvolved: [String!]!
+  suggestedTrigger: String
+  suggestedActions: [String!]!
+}
+
+type Workspace {
+  id: ID!
+  name: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  
+  # Resolved via DataLoader
+  flows(limit: Int = 100): [Flow!]!
+  recentEvents(limit: Int = 50): [EventData!]!
+}
+
+scalar DateTime

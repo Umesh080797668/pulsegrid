@@ -9,10 +9,12 @@ import { RateLimitService } from './rate-limit.service';
 import { EventsGateway } from './events.gateway';
 import { MarketModule } from './market/market.module';
 import { AiModule } from './ai/ai.module';
+import { GraphqlModule } from './graphql/graphql.module';
 
 @Global()
 @Module({
   imports: [
+    GraphqlModule,
     BetaModule,
     AuthModule,
     MarketModule,
