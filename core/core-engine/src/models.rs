@@ -173,3 +173,107 @@ pub struct StepExecutionResult {
     pub error: Option<String>,
     pub duration_ms: i32,
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pulse_event_serialization() {
+        let event = PulseEvent {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            source: Some("shopify".to_string()),
+            event_type: "order.created".to_string(),
+            data: serde_json::json!({"order_id": "123", "total": 99.99}),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: PulseEvent = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(event.event_type, deserialized.event_type);
+        assert_eq!(event.source, deserialized.source);
+    }
+
+    #[test]
+    fn test_trigger_definition_with_filters() {
+        let trigger = TriggerDefinition {
+            connector: "shopify".to_string(),
+            event: "order.created".to_string(),
+            filters: vec![
+                FilterCondition {
+                    field: "order.total".to_string(),
+                    op: "gt".to_string(),
+                    value: serde_json::json!(100),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&trigger).unwrap();
+        let deserialized: TriggerDefinition = serde_json::from_str(&json).unwrap();
+        
+        assert_eq!(deserialized.connector, "shopify");
+        assert_eq!(deserialized.filters.len(), 1);
+    }
+
+    #[test]
+    fn test_flow_step_creation() {
+        let step = FlowStep {
+            id: "step1".to_string(),
+            r#type: "action".to_string(),
+            connector: Some("slack".to_string()),
+            action: Some("send_message".to_string()),
+            input_mapping: Some(
+                [
+                    ("webhook_url".to_string(), "{{secrets.slack_webhook}}".to_string()),
+                    ("text".to_string(), "Hello {{trigger.data.name}}".to_string()),
+                ]
+                .iter()
+                .cloned()
+                .collect(),
+            ),
+            depends_on: vec![],
+            retry_policy: RetryPolicy {
+                max_retries: 3,
+                initial_backoff_ms: 1000,
+            },
+            condition: None,
+            script_language: None,
+            code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
+        };
+
+        assert_eq!(step.r#type, "action");
+        assert_eq!(step.connector, Some("slack".to_string()));
+        assert_eq!(step.retry_policy.max_retries, 3);
+    }
+
+    #[test]
+    fn test_error_policy_defaults() {
+        let policy = ErrorPolicy::default();
+        assert_eq!(policy.on_failure, "");
+        assert_eq!(policy.notify_email, None);
+    }
+
+    #[test]
+    fn test_step_execution_result() {
+        let result = StepExecutionResult {
+            step_id: "step1".to_string(),
+            status: "success".to_string(),
+            output: serde_json::json!({"message_id": "abc123"}),
+            error: None,
+            duration_ms: 245,
+        };
+
+        assert_eq!(result.status, "success");
+        assert_eq!(result.duration_ms, 245);
+    }
+}

@@ -31,6 +31,35 @@ impl FlowExecutor {
         }
     }
 
+    /// Check if an event with the same idempotency key has been processed
+    /// Returns true if this is a duplicate, false if it's a new event
+    pub async fn check_idempotency(&self, workspace_id: uuid::Uuid, idempotency_key: &str) -> Result<bool, String> {
+        // Check Redis cache first (24h TTL)
+        let redis_url = "redis://127.0.0.1:6379/";
+        if let Ok(client) = redis::Client::open(redis_url) {
+            if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                let cache_key = format!("idempotency:{}:{}", workspace_id, idempotency_key);
+                
+                // Check if key exists
+                let exists: bool = redis::cmd("EXISTS")
+                    .arg(&cache_key)
+                    .query_async(&mut con)
+                    .await
+                    .unwrap_or(false);
+                
+                if exists {
+                    return Ok(true); // Duplicate
+                }
+                
+                // Set the key with 24h TTL using redis async CommandsConnectionFuture
+                use redis::AsyncCommands;
+                let _ = con.set_ex::<_, _, String>(&cache_key, "1", 86400).await;
+            }
+        }
+        
+        Ok(false) // Not a duplicate
+    }
+
     pub fn matches_trigger(&self, trigger: &TriggerDefinition, event: &PulseEvent) -> bool {
         if !trigger.connector.is_empty() {
             match event.source.as_deref() {

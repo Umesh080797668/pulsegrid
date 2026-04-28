@@ -69,19 +69,28 @@ async fn main() {
 
     // Build the Axum application
     let app = Router::new()
-        .route("/health", get(|| async { "OK" }))
+        // Health check endpoints
+        .route("/health", get(health_check))
+        .route("/health/redis", get(health_redis))
+        .route("/health/postgres", get(health_postgres))
+        // Workspace endpoints
         .route(
             "/api/v1/workspaces",
             post(create_workspace).get(list_workspaces),
         )
         .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
         .route("/api/v1/workspaces/{workspace_id}/upgrade", post(upgrade_workspace))
+        // Flow CRUD endpoints
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
         .route(
             "/api/v1/flow/{flow_id}",
             get(get_flow).put(update_flow).delete(delete_flow),
         )
+        // Webhook endpoints
+        .route("/api/v1/webhooks/:workspace_id", post(webhook_receiver))
+        .route("/api/v1/webhooks/:workspace_id/:flow_id", post(flow_webhook_receiver))
+        // Credentials endpoints
         .route(
             "/api/v1/workspaces/{workspace_id}/secrets",
             post(upsert_credential).get(list_credentials),
@@ -90,8 +99,13 @@ async fn main() {
             "/api/v1/workspaces/{workspace_id}/secrets/{connector_id}",
             delete(delete_workspace_secret),
         )
+        // Flow run endpoints
         .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
         .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
+        .route("/api/v1/flows/{flow_id}/runs", get(get_flow_runs))
+        .route("/api/v1/flows/{flow_id}/runs/{run_id}", get(get_flow_run_details))
+        .route("/api/v1/flows/{flow_id}/stats", get(get_flow_stats))
+        // WebSocket event stream
         .route("/events/stream", get(events_stream))
         .with_state(state.clone());
 
@@ -1167,6 +1181,220 @@ async fn get_flow_run(
         steps_log: row.steps_log,
         error_message: row.error_message,
     }))
+}
+
+// Health check endpoints
+async fn health_check() -> &'static str {
+    "OK"
+}
+
+async fn health_redis(State(_state): State<AppState>) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let redis_url = "redis://127.0.0.1:6379/";
+    match redis::Client::open(redis_url) {
+        Ok(client) => {
+            match client.get_multiplexed_async_connection().await {
+                Ok(_) => Ok(Json(serde_json::json!({"status": "healthy"}))),
+                Err(e) => Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, format!("Redis connection failed: {}", e))),
+            }
+        }
+        Err(e) => Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, format!("Redis client error: {}", e))),
+    }
+}
+
+async fn health_postgres(State(state): State<AppState>) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    match sqlx::query!("SELECT NOW()").fetch_one(&state.pool).await {
+        Ok(_) => Ok(Json(serde_json::json!({"status": "healthy"}))),
+        Err(e) => Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, format!("PostgreSQL connection failed: {}", e))),
+    }
+}
+
+// Webhook endpoints
+#[derive(Debug, Deserialize)]
+struct WebhookPayload {
+    #[serde(default)]
+    payload: serde_json::Value,
+    #[serde(default)]
+    signature: Option<String>,
+}
+
+async fn webhook_receiver(
+    State(_state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+    Json(_payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // For now, accept any webhook and push to event bus
+    // TODO: Implement signature verification based on workspace webhooks config
+    
+    let event = PulseEvent {
+        id: uuid::Uuid::new_v4(),
+        tenant_id: workspace_id,
+        source: Some("webhook".to_string()),
+        event_type: "webhook.received".to_string(),
+        data: serde_json::json!({"timestamp": chrono::Utc::now().to_rfc3339()}),
+    };
+
+    // Push to Redis Streams
+    let redis_url = "redis://127.0.0.1:6379/";
+    if let Ok(client) = redis::Client::open(redis_url) {
+        if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+            let payload_str = serde_json::to_string(&event).unwrap_or_default();
+            let _ = con.xadd::<_, _, _, _, ()>(
+                "stream:events:global",
+                "*",
+                &[("payload", payload_str)]
+            ).await;
+        }
+    }
+
+    Ok(Json(serde_json::json!({"success": true})))
+}
+
+async fn flow_webhook_receiver(
+    State(state): State<AppState>,
+    Path((workspace_id, flow_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // Verify flow exists and is enabled
+    let _flow = sqlx::query!("SELECT id FROM flows WHERE id = $1 AND workspace_id = $2", flow_id, workspace_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    // Create flow run
+    let run_id = sqlx::query!("
+        INSERT INTO flow_runs (flow_id, workspace_id, status, started_at) 
+        VALUES ($1, $2, $3, NOW())
+        RETURNING id
+    ", flow_id, workspace_id, "running")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow_run_id": run_id.id
+    })))
+}
+
+// Flow run history endpoints
+async fn get_flow_runs(
+    State(state): State<AppState>,
+    Path(flow_id): Path<uuid::Uuid>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let limit = params.get("limit").and_then(|s| s.parse::<i64>().ok()).unwrap_or(50).min(500);
+    let offset = params.get("offset").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, error_message
+        FROM flow_runs
+        WHERE flow_id = $1
+        ORDER BY started_at DESC
+        LIMIT $2 OFFSET $3
+        "#,
+        flow_id,
+        limit,
+        offset
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let runs: Vec<serde_json::Value> = rows.iter().map(|row| {
+        serde_json::json!({
+            "id": row.id,
+            "flow_id": row.flow_id,
+            "workspace_id": row.workspace_id,
+            "status": row.status,
+            "trigger_event_id": row.trigger_event_id,
+            "started_at": row.started_at.to_rfc3339(),
+            "completed_at": row.completed_at.as_ref().map(|t| t.to_rfc3339()),
+            "duration_ms": row.duration_ms,
+            "error_message": row.error_message,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "runs": runs,
+        "total": runs.len(),
+        "limit": limit,
+        "offset": offset
+    })))
+}
+
+async fn get_flow_run_details(
+    State(state): State<AppState>,
+    Path((flow_id, run_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<Json<FlowRunResponse>, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        FROM flow_runs
+        WHERE id = $1 AND flow_id = $2
+        "#,
+        run_id,
+        flow_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow run not found".to_string()))?;
+
+    Ok(Json(FlowRunResponse {
+        id: row.id,
+        flow_id: row.flow_id,
+        workspace_id: row.workspace_id,
+        status: row.status,
+        trigger_event_id: row.trigger_event_id,
+        started_at: row.started_at,
+        completed_at: row.completed_at,
+        duration_ms: row.duration_ms,
+        steps_log: row.steps_log,
+        error_message: row.error_message,
+    }))
+}
+
+async fn get_flow_stats(
+    State(state): State<AppState>,
+    Path(flow_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let stats = sqlx::query!(
+        r#"
+        SELECT
+            COUNT(*) as total_runs,
+            COUNT(CASE WHEN status = 'success' THEN 1 END) as successful_runs,
+            COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_runs,
+            MAX(duration_ms) as max_duration_ms,
+            MIN(duration_ms) as min_duration_ms
+        FROM flow_runs
+        WHERE flow_id = $1
+        "#,
+        flow_id
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Calculate average manually
+    let avg_query = sqlx::query!("SELECT AVG(CAST(duration_ms AS FLOAT8)) as avg_dur FROM flow_runs WHERE flow_id = $1", flow_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = stats.total_runs.unwrap_or(0);
+    let successful = stats.successful_runs.unwrap_or(0);
+    let success_rate = if total > 0 { (successful as f64 / total as f64) * 100.0 } else { 0.0 };
+
+    Ok(Json(serde_json::json!({
+        "total_runs": total,
+        "successful_runs": successful,
+        "failed_runs": stats.failed_runs.unwrap_or(0),
+        "success_rate_percent": success_rate,
+        "avg_duration_ms": avg_query.avg_dur,
+        "max_duration_ms": stats.max_duration_ms,
+        "min_duration_ms": stats.min_duration_ms,
+    })))
 }
 
 fn normalize_slug(slug: &str) -> Result<String, (axum::http::StatusCode, String)> {
