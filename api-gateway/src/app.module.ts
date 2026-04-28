@@ -11,6 +11,7 @@ import { MarketModule } from './market/market.module';
 import { AiModule } from './ai/ai.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { GraphqlModule } from './graphql/graphql.module';
+import { FlowsModule } from './flows/flows.module';
 
 @Global()
 @Module({
@@ -21,6 +22,7 @@ import { GraphqlModule } from './graphql/graphql.module';
     MarketModule,
     AiModule,
     AnalyticsModule,
+    FlowsModule,
     ClientsModule.register([
       {
         name: 'PULSECORE_PACKAGE',

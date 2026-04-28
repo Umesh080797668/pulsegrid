@@ -16,6 +16,8 @@ import {
   Max,
   Matches,
   ValidateNested,
+  IsIn,
+  Validate,
 } from 'class-validator';
 
 export class TriggerFlowDto {
@@ -87,6 +89,7 @@ export class FilterConditionDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
+  @IsIn(['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'contains', 'starts_with', 'ends_with', 'in', 'nin', 'regex'])
   op!: string;
 
   @IsOptional()
@@ -109,6 +112,15 @@ export class TriggerDefinitionDto {
   @ValidateNested({ each: true })
   @Type(() => FilterConditionDto)
   filters?: FilterConditionDto[];
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  debounce_ms?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  replay_on_deploy?: boolean;
 }
 
 export class RetryPolicyDto {
@@ -134,6 +146,18 @@ export class FlowStepDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
+  @IsIn([
+    'action',
+    'trigger',
+    'condition',
+    'loop',
+    'parallel',
+    'sub_flow',
+    'filter',
+    'transform',
+    'delay',
+    'fork',
+  ])
   type!: string;
 
   @IsOptional()
@@ -164,17 +188,28 @@ export class FlowStepDto {
   @IsString()
   @MinLength(1)
   condition?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  timeout_ms?: number;
 }
 
 export class ErrorPolicyDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(1)
+  @IsIn(['retry', 'fail', 'skip', 'fallback'])
   on_failure!: string;
 
   @IsOptional()
   @IsEmail()
   notify_email?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  fallback_step_id?: string;
 }
 
 export class FlowDefinitionDto {
@@ -203,6 +238,15 @@ export class FlowDefinitionDto {
   @ValidateNested()
   @Type(() => ErrorPolicyDto)
   error_policy?: ErrorPolicyDto;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  timeout_ms?: number;
+
+  @IsOptional()
+  @IsString()
+  version?: string;
 }
 
 export class CustomConnectorContractDto {
