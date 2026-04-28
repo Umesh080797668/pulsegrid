@@ -89,7 +89,7 @@ pub struct FilterCondition {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FlowStep {
     pub id: String,
-    pub r#type: String, // "action", "condition", "loop", etc.
+    pub r#type: String, // "action", "condition", "loop", "parallel", "sub_flow", "delay", "filter", "transform", "fork", etc.
     pub connector: Option<String>,
     pub action: Option<String>,
     pub input_mapping: Option<HashMap<String, String>>, // Template expressions like "{{trigger.data.email}}"
@@ -99,6 +99,20 @@ pub struct FlowStep {
     pub condition: Option<String>, // Rhai expression for conditional execution
     pub script_language: Option<String>,
     pub code: Option<String>,
+    // Loop configuration
+    pub loop_items: Option<String>,          // Expression evaluating to array: "{{steps.previous.items}}"
+    pub loop_variable_name: Option<String>,  // Variable name for each iteration (e.g., "item")
+    pub max_iterations: Option<i32>,         // Safety limit to prevent infinite loops
+    pub loop_condition: Option<String>,      // Optional condition to continue looping
+    // Parallel configuration
+    pub parallel_steps: Option<Vec<String>>, // Step IDs to execute in parallel
+    // Sub-flow configuration
+    pub sub_flow_id: Option<String>,         // Reference to another flow definition
+    pub sub_flow_input: Option<String>,      // Expression for input to sub-flow
+    // Filter/Transform/Fork/Delay configuration
+    pub filter_condition: Option<String>,    // Condition for filter steps
+    pub transform_expr: Option<String>,      // Expression for transform steps
+    pub delay_ms: Option<i32>,               // Delay in milliseconds
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

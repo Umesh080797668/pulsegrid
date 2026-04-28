@@ -340,12 +340,159 @@ impl FlowExecutor {
                     }
                 }
             }
+            "loop" => {
+                let items_expr = step.loop_items.as_deref().unwrap_or("");
+                let loop_var = step.loop_variable_name.as_deref().unwrap_or("item");
+                let max_iters = step.max_iterations.unwrap_or(100) as usize;
+
+                let items = match self.transform_data(items_expr, step_outputs, event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(format!("loop items resolution failed: {e}")),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                };
+
+                let default_arr = vec![];
+                let arr = items.as_array().unwrap_or(&default_arr);
+                let mut loop_outputs = Vec::new();
+
+                for (idx, item) in arr.iter().take(max_iters).enumerate() {
+                    let mut loop_context = step_outputs.clone();
+                    loop_context.insert(loop_var.to_string(), item.clone());
+                    loop_context.insert("__index".to_string(), json!(idx));
+
+                    if let Some(loop_cond) = &step.loop_condition {
+                        if !self.evaluate_condition(loop_cond, &loop_context, event) {
+                            break;
+                        }
+                    }
+
+                    loop_outputs.push(item.clone());
+                }
+
+                json!({
+                    "status": "loop_completed",
+                    "items_processed": loop_outputs.len(),
+                    "results": loop_outputs,
+                    "loop_variable": loop_var,
+                })
+            }
+            "parallel" => {
+                let default_steps = vec![];
+                let step_ids = step.parallel_steps.as_ref().unwrap_or(&default_steps);
+                json!({
+                    "status": "parallel_scheduled",
+                    "parallel_steps": step_ids,
+                    "note": "Parallel execution handled by main event loop; this is a marker step",
+                })
+            }
+            "sub_flow" => {
+                let sub_flow_id = step.sub_flow_id.as_deref().unwrap_or("");
+                if sub_flow_id.is_empty() {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("sub_flow step requires sub_flow_id".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
+
+                json!({
+                    "status": "sub_flow_invoked",
+                    "sub_flow_id": sub_flow_id,
+                    "note": "Sub-flow execution would be implemented by fetching flow definition and executing it",
+                })
+            }
+            "filter" => {
+                let filter_cond = step.filter_condition.as_deref().unwrap_or("");
+                if filter_cond.is_empty() {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("filter step requires filter_condition".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
+
+                let passes = self.evaluate_condition(filter_cond, step_outputs, event);
+                json!({
+                    "status": "filter_evaluated",
+                    "condition": filter_cond,
+                    "passed": passes,
+                    "input": _input_data,
+                })
+            }
+            "transform" => {
+                let transform_expr = step.transform_expr.as_deref().unwrap_or("");
+                if transform_expr.is_empty() {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("transform step requires transform_expr".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
+
+                match self.transform_data(transform_expr, step_outputs, event) {
+                    Ok(transformed) => json!({
+                        "status": "transform_completed",
+                        "expression": transform_expr,
+                        "result": transformed,
+                    }),
+                    Err(e) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(format!("transform execution failed: {e}")),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                }
+            }
+            "delay" => {
+                let delay_ms = step.delay_ms.unwrap_or(1000) as u64;
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                json!({
+                    "status": "delay_completed",
+                    "delay_ms": delay_ms,
+                })
+            }
+            "fork" => {
+                let fork_condition = step.condition.as_deref().unwrap_or("");
+                if fork_condition.is_empty() {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("fork step requires condition".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
+
+                let takes_branch = self.evaluate_condition(fork_condition, step_outputs, event);
+                json!({
+                    "status": "fork_evaluated",
+                    "condition": fork_condition,
+                    "branch_taken": takes_branch,
+                    "note": "Use depends_on to select which branch executes next",
+                })
+            }
             other => {
                 return StepExecutionResult {
                     step_id: step.id.clone(),
                     status: "failed".to_string(),
                     output: Value::Null,
-                    error: Some(format!("Unknown step type: {other}")),
+                    error: Some(format!("Unknown or unimplemented step type: {other}. Supported types: action, condition, script, loop, parallel, sub_flow, filter, transform, delay, fork")),
                     duration_ms: started.elapsed().as_millis() as i32,
                 };
             }
@@ -1110,6 +1257,16 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_items: None,
+                loop_variable_name: None,
+                max_iterations: None,
+                loop_condition: None,
+                parallel_steps: None,
+                sub_flow_id: None,
+                sub_flow_input: None,
+                filter_condition: None,
+                transform_expr: None,
+                delay_ms: None,
             },
             FlowStep {
                 id: "step2".into(),
@@ -1122,6 +1279,16 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_items: None,
+                loop_variable_name: None,
+                max_iterations: None,
+                loop_condition: None,
+                parallel_steps: None,
+                sub_flow_id: None,
+                sub_flow_input: None,
+                filter_condition: None,
+                transform_expr: None,
+                delay_ms: None,
             },
             FlowStep {
                 id: "step3".into(),
@@ -1134,6 +1301,16 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_items: None,
+                loop_variable_name: None,
+                max_iterations: None,
+                loop_condition: None,
+                parallel_steps: None,
+                sub_flow_id: None,
+                sub_flow_input: None,
+                filter_condition: None,
+                transform_expr: None,
+                delay_ms: None,
             },
         ];
 

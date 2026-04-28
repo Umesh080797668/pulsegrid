@@ -29,6 +29,16 @@ async fn multi_step_flow_execution_order_groups_parallel_steps() {
             condition: None,
             script_language: None,
             code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
         },
         FlowStep {
             id: "step2".into(),
@@ -41,6 +51,16 @@ async fn multi_step_flow_execution_order_groups_parallel_steps() {
             condition: None,
             script_language: None,
             code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
         },
         FlowStep {
             id: "step3".into(),
@@ -53,6 +73,16 @@ async fn multi_step_flow_execution_order_groups_parallel_steps() {
             condition: None,
             script_language: None,
             code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
         },
     ];
 
@@ -108,6 +138,16 @@ async fn step_condition_can_skip_execution() {
         condition: Some("event_type == \"something_else\"".into()),
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -169,6 +209,16 @@ async fn cyclic_dependencies_return_error() {
             condition: None,
             script_language: None,
             code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
         },
         FlowStep {
             id: "b".into(),
@@ -181,6 +231,16 @@ async fn cyclic_dependencies_return_error() {
             condition: None,
             script_language: None,
             code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
         },
     ];
 
@@ -208,6 +268,16 @@ async fn schedule_connector_step_returns_next_run() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -247,6 +317,16 @@ async fn resend_connector_requires_api_key() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -334,6 +414,16 @@ async fn stripe_connector_requires_api_key() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -436,6 +526,16 @@ async fn sendgrid_connector_requires_api_key() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -533,6 +633,16 @@ async fn shopify_connector_requires_access_token() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -575,6 +685,16 @@ async fn gitlab_connector_requires_access_token() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
@@ -661,6 +781,16 @@ async fn brevo_connector_requires_api_key() {
         condition: None,
         script_language: None,
         code: None,
+            loop_items: None,
+            loop_variable_name: None,
+            max_iterations: None,
+            loop_condition: None,
+            parallel_steps: None,
+            sub_flow_id: None,
+            sub_flow_input: None,
+            filter_condition: None,
+            transform_expr: None,
+            delay_ms: None,
     };
 
     let event = PulseEvent {
