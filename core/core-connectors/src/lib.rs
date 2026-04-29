@@ -7,6 +7,7 @@ use sha2::Sha256;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::time::Duration;
+use async_trait::async_trait;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -101,6 +102,52 @@ pub struct CustomConnectorConfig {
     pub bearer_token: Option<String>,
     pub api_key_header: Option<String>,
     pub api_key_value: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Credentials {
+    pub connector_id: String,
+    pub encrypted_blob: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TriggerDefinition {
+    pub trigger_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub payload_schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ActionDefinition {
+    pub action_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: Option<serde_json::Value>,
+    pub output_schema: Option<serde_json::Value>,
+}
+
+/// Trait that all connectors must implement to integrate with PulseGrid
+#[async_trait::async_trait]
+pub trait Connector: Send + Sync {
+    /// Validate that credentials are valid and have access to the service
+    async fn validate_credentials(&self, creds: &Credentials) -> Result<(), ConnectorError>;
+
+    /// Return list of supported trigger definitions for this connector
+    fn supported_triggers(&self) -> Vec<TriggerDefinition>;
+
+    /// Return list of supported action definitions for this connector
+    fn supported_actions(&self) -> Vec<ActionDefinition>;
+
+    /// Execute an action with the given credentials and parameters
+    async fn execute_action(
+        &self,
+        credentials: &Credentials,
+        action_id: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError>;
 }
 
 pub struct Connectors {
