@@ -30,6 +30,8 @@ use tokio::sync::broadcast;
 
 mod grpc;
 mod models;
+mod cache;
+use cache::LocalCache;
 use models::{
     CreateFlowRequest, CreateWorkspaceRequest, FlowDefinition, FlowResponse, FlowRunResponse,
     PulseEvent, UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceResponse,
@@ -45,6 +47,7 @@ struct AppState {
     pool: sqlx::PgPool,
     vault: Arc<Vault>,
     event_tx: broadcast::Sender<String>,
+    cache: Arc<LocalCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -522,6 +525,13 @@ async fn main() {
 
     println!("Connected to PostgreSQL databases!");
 
+    // Initialize local cache
+    let cache = Arc::new(
+        LocalCache::new("./data/local_cache")
+            .expect("Failed to initialize RocksDB cache")
+    );
+    println!("Initialized local RocksDB cache!");
+
     let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
         .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
     let (event_tx, _) = broadcast::channel::<String>(256);
@@ -529,6 +539,7 @@ async fn main() {
         pool: pool.clone(),
         vault: Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes())),
         event_tx: event_tx.clone(),
+        cache: cache.clone(),
     };
 
     // Build the Axum application
@@ -585,12 +596,13 @@ async fn main() {
     let pool_clone = pool.clone();
     let vault_clone = state.vault.clone();
     let event_tx_clone = event_tx.clone();
+    let cache_clone = state.cache.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to build event listener runtime");
-        rt.block_on(start_event_listener(pool_clone, vault_clone, event_tx_clone));
+        rt.block_on(start_event_listener(pool_clone, vault_clone, event_tx_clone, cache_clone));
     });
 
     // Start gRPC server
@@ -734,6 +746,7 @@ async fn start_event_listener(
     pg_pool: sqlx::PgPool,
     vault: std::sync::Arc<core_vault::Vault>,
     event_tx: broadcast::Sender<String>,
+    cache: Arc<LocalCache>,
 ) {
     const STREAM_KEY: &str = "stream:events:global";
     const CONSUMER_GROUP: &str = "pulsegrid-workers";
@@ -821,17 +834,30 @@ async fn start_event_listener(
                                         // TODO: Call analyze_event_history() and store to ai_detected_patterns table
                                     }
 
-                                    // Fetch active flows for this workspace
-                                    let active_flows = sqlx::query!(
-                                        r#"
-                                        SELECT id, name, definition FROM flows 
-                                        WHERE workspace_id = $1 AND enabled = true
-                                        "#,
-                                        event.tenant_id as _
-                                    )
-                                    .fetch_all(&pg_pool)
-                                    .await
-                                    .unwrap_or_else(|_| vec![]);
+                                    // Check cache for flow definitions first
+                                    let cache_key = format!("flows:{}", event.tenant_id);
+                                    let active_flows = if let Some(cached) = cache.get::<Vec<(uuid::Uuid, String, serde_json::Value)>>(&cache_key) {
+                                        println!("   📦 Using cached flows for workspace {}", event.tenant_id);
+                                        cached
+                                    } else {
+                                        // Cache miss: fetch from database
+                                        let flows = sqlx::query!(
+                                            r#"
+                                            SELECT id, name, definition FROM flows 
+                                            WHERE workspace_id = $1 AND enabled = true
+                                            "#,
+                                            event.tenant_id as _
+                                        )
+                                        .fetch_all(&pg_pool)
+                                        .await
+                                        .unwrap_or_else(|_| vec![]);
+                                        
+                                        let result: Vec<_> = flows.iter().map(|f| (f.id, f.name.clone(), f.definition.clone())).collect();
+                                        
+                                        // Write to cache with TTL (5 minutes is handled by LocalCache)
+                                        let _ = cache.set(&cache_key, result.clone());
+                                        result
+                                    };
 
                                     if active_flows.is_empty() {
                                         println!(
@@ -841,16 +867,16 @@ async fn start_event_listener(
                                     }
 
                                     // Process each flow
-                                    for flow in active_flows {
+                                    for (flow_id, flow_name, flow_definition) in active_flows {
                                         // Parse FlowDefinition
                                         let flow_def: FlowDefinition = match serde_json::from_value(
-                                            flow.definition.clone(),
+                                            flow_definition.clone(),
                                         ) {
                                             Ok(def) => def,
                                             Err(e) => {
                                                 eprintln!(
                                                     "   ❌ Invalid flow definition for flow {}: {}",
-                                                    flow.id, e
+                                                    flow_id, e
                                                 );
                                                 continue;
                                             }
@@ -860,12 +886,12 @@ async fn start_event_listener(
                                         if !executor.matches_trigger(&flow_def.trigger, &event) {
                                             println!(
                                                 "   ⏭️  Flow {} trigger did not match event",
-                                                flow.name
+                                                flow_name
                                             );
                                             continue;
                                         }
 
-                                        println!("   ⚡ Executing flow: {}", flow.name);
+                                        println!("   ⚡ Executing flow: {}", flow_name);
 
                                         let insert_result = sqlx::query!(
                                             r#"
@@ -1016,12 +1042,62 @@ async fn start_event_listener(
                                             flow_run_id as _
                                         ).execute(&pg_pool).await;
 
+                                        // Non-blocking ClickHouse insert for flow_run_metrics
+                                        let clickhouse_url = std::env::var("CLICKHOUSE_URL").ok();
+                                        let clickhouse_user = std::env::var("CLICKHOUSE_USER").ok();
+                                        let clickhouse_password = std::env::var("CLICKHOUSE_PASSWORD").ok();
+                                        let clickhouse_db = std::env::var("CLICKHOUSE_DB").ok();
+
+                                        if clickhouse_url.is_some() {
+                                            let run_id = flow_run_id;
+                                            let tenant_id = event.tenant_id;
+                                            let fid = flow_id;
+                                            let now = chrono::Utc::now();
+                                            let status_str = final_status.to_string();
+                                            let step_count = steps_log.as_array().map(|a| a.len()).unwrap_or(0) as u8;
+                                            let failures = steps_log.as_array().map(|a| {
+                                                a.iter().filter(|s| s.get("status").and_then(|st| st.as_str()) == Some("failed")).count()
+                                            }).unwrap_or(0) as u8;
+
+                                            tokio::spawn(async move {
+                                                if let (Some(url), Some(user), Some(password), Some(db)) = 
+                                                    (clickhouse_url, clickhouse_user, clickhouse_password, clickhouse_db) {
+                                                    let insert_query = format!(
+                                                        "INSERT INTO {}.flow_run_metrics (run_id, tenant_id, flow_id, started_at, duration_ms, status, steps_count, failures_count) FORMAT JSONEachRow",
+                                                        db
+                                                    );
+                                                    
+                                                    // Calculate duration in milliseconds
+                                                    let duration_ms = 0u32; // TODO: Get from flow_runs table completed_at - started_at
+                                                    
+                                                    let json_payload = serde_json::json!({
+                                                        "run_id": run_id,
+                                                        "tenant_id": tenant_id,
+                                                        "flow_id": fid,
+                                                        "started_at": now,
+                                                        "duration_ms": duration_ms,
+                                                        "status": status_str,
+                                                        "steps_count": step_count,
+                                                        "failures_count": failures
+                                                    });
+
+                                                    let client = reqwest::Client::new();
+                                                    let _ = client
+                                                        .post(format!("{}/?query={}", url, urlencoding::encode(&insert_query)))
+                                                        .basic_auth(&user, Some(&password))
+                                                        .json(&json_payload)
+                                                        .send()
+                                                        .await;
+                                                }
+                                            });
+                                        }
+
                                         // Push run-completion event for realtime dashboard updates
                                         let workspace_stream = format!("stream:events:{}", event.tenant_id);
                                         let completion_payload = serde_json::json!({
                                             "event_type": "flow_run_completed",
                                             "tenant_id": event.tenant_id,
-                                            "flow_id": flow.id,
+                                            "flow_id": flow_id,
                                             "status": final_status,
                                             "run_id": flow_run_id,
                                             "completed_at": chrono::Utc::now().to_rfc3339(),
@@ -1038,7 +1114,7 @@ async fn start_event_listener(
 
                                         let _ = sqlx::query!(
                                             r#"UPDATE flows SET run_count = run_count + 1, last_run_at = NOW() WHERE id = $1"#,
-                                            flow.id as _
+                                            flow_id as _
                                         ).execute(&pg_pool).await;
 
                                         if final_status == "failed"
@@ -1532,6 +1608,7 @@ async fn update_flow(
         "Flow not found".to_string(),
     ))?;
 
+    let workspace_id = existing.workspace_id;
     let updated_name = payload.name.unwrap_or(existing.name);
     let updated_description = payload.description.or(existing.description);
     let updated_definition = payload.definition.unwrap_or(existing.definition);
@@ -1558,6 +1635,12 @@ async fn update_flow(
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // Invalidate flow cache for this workspace
+    if let Some(ws_id) = workspace_id {
+        let cache_key = format!("flows:{}", ws_id);
+        let _ = state.cache.delete(&cache_key);
+    }
+
     Ok(Json(FlowResponse {
         id: row.id,
         workspace_id: row.workspace_id.unwrap_or_default(),
@@ -1573,6 +1656,20 @@ async fn delete_flow(
     State(state): State<AppState>,
     Path(flow_id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // Fetch workspace_id before deleting
+    let flow = sqlx::query!(
+        r#"
+        SELECT workspace_id FROM flows
+        WHERE id = $1
+        "#,
+        flow_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let workspace_id = flow.and_then(|f| f.workspace_id);
+
     let result = sqlx::query!(
         r#"
         DELETE FROM flows
@@ -1589,6 +1686,12 @@ async fn delete_flow(
             axum::http::StatusCode::NOT_FOUND,
             "Flow not found".to_string(),
         ));
+    }
+
+    // Invalidate flow cache for this workspace
+    if let Some(ws_id) = workspace_id {
+        let cache_key = format!("flows:{}", ws_id);
+        let _ = state.cache.delete(&cache_key);
     }
 
     Ok(Json(
@@ -1853,6 +1956,46 @@ async fn webhook_receiver(
                 &[("payload", payload_str)]
             ).await;
         }
+    }
+
+    // Non-blocking ClickHouse insert for events table
+    let clickhouse_url = std::env::var("CLICKHOUSE_URL").ok();
+    let clickhouse_user = std::env::var("CLICKHOUSE_USER").ok();
+    let clickhouse_password = std::env::var("CLICKHOUSE_PASSWORD").ok();
+    let clickhouse_db = std::env::var("CLICKHOUSE_DB").ok();
+
+    if clickhouse_url.is_some() {
+        let event_id = event.id;
+        let tenant_id = event.tenant_id;
+        let now = chrono::Utc::now();
+        let payload_size = body.len() as u32;
+
+        tokio::spawn(async move {
+            if let (Some(url), Some(user), Some(password), Some(db)) = 
+                (clickhouse_url, clickhouse_user, clickhouse_password, clickhouse_db) {
+                let insert_query = format!(
+                    "INSERT INTO {}.events (event_id, tenant_id, connector, event_type, received_at, payload_size_bytes) FORMAT JSONEachRow",
+                    db
+                );
+                
+                let json_payload = serde_json::json!({
+                    "event_id": event_id,
+                    "tenant_id": tenant_id,
+                    "connector": "webhook",
+                    "event_type": "webhook.received",
+                    "received_at": now,
+                    "payload_size_bytes": payload_size
+                });
+
+                let client = reqwest::Client::new();
+                let _ = client
+                    .post(format!("{}/?query={}", url, urlencoding::encode(&insert_query)))
+                    .basic_auth(&user, Some(&password))
+                    .json(&json_payload)
+                    .send()
+                    .await;
+            }
+        });
     }
 
     Ok(Json(serde_json::json!({"success": true})))
