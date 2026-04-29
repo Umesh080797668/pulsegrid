@@ -13,12 +13,17 @@ describe('EventsGateway security', () => {
     verifyAsync: jest.fn(),
   } as any;
 
+  const mockPubSub = {
+    publish: jest.fn(),
+    subscribe: jest.fn(),
+  } as any;
+
   const mockAuthStore = {
     canAccessWorkspace: jest.fn(),
   } as any;
 
   function createGateway() {
-    return new EventsGateway(mockRedis, mockJwtService, mockAuthStore);
+    return new EventsGateway(mockRedis, mockPubSub, mockJwtService, mockAuthStore);
   }
 
   function createClient(overrides: Partial<any> = {}) {
