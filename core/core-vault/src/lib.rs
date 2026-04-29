@@ -1,7 +1,7 @@
 use hmac::{Hmac, KeyInit, Mac};
-use ring::{aead, pbkdf2, rand};
+use ring::{aead, rand};
 use sha2::Sha256;
-use std::num::NonZeroU32;
+use argon2::{Argon2, Algorithm, Params, Version};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -19,14 +19,12 @@ pub struct Vault {
 impl Vault {
     pub fn new(master_password: &str, salt: &[u8]) -> Self {
         let mut key_bytes = [0u8; 32];
-        // let salt = b"pulsegrid_salt";
-        pbkdf2::derive(
-            pbkdf2::PBKDF2_HMAC_SHA256,
-            NonZeroU32::new(100_000).unwrap(),
-            salt,
-            master_password.as_bytes(),
-            &mut key_bytes,
-        );
+        // Use Argon2id per blueprint: time=2, mem=65536 KiB, parallelism=2
+        let params = Params::new(65536, 2, 2, None).expect("invalid argon2 params");
+        let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        argon2
+            .hash_password_into(master_password.as_bytes(), salt, &mut key_bytes)
+            .expect("argon2 key derivation failed");
 
         let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes).unwrap();
         Self {
