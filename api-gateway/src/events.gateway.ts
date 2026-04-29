@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Redis } from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { validate as isUuid } from 'uuid';
+import { PubSub } from 'graphql-subscriptions';
 import { AuthStore } from './auth/auth.store';
 
 type SocketJwtPayload = {
@@ -36,6 +37,7 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    @Inject('PUB_SUB') private readonly pubSub: PubSub,
     private readonly jwtService: JwtService,
     private readonly authStore: AuthStore,
   ) {}
@@ -195,6 +197,50 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
 
             if (tenantId && tenantId.length > 0) {
               this.server.to(`workspace:${tenantId}`).emit('workspace_event', payload);
+
+              await this.pubSub.publish(`eventReceived_${tenantId}`, {
+                newEvent: payload,
+              });
+            }
+
+            const eventType = payload['event_type'];
+            const flowId = payload['flow_id'];
+            if (
+              eventType === 'flow_run_completed' &&
+              typeof flowId === 'string' &&
+              flowId.length > 0
+            ) {
+              const runData = {
+                id:
+                  typeof payload['run_id'] === 'string'
+                    ? payload['run_id']
+                    : '',
+                flow_id: flowId,
+                status:
+                  typeof payload['status'] === 'string'
+                    ? payload['status']
+                    : 'unknown',
+                duration_ms:
+                  typeof payload['duration_ms'] === 'number'
+                    ? payload['duration_ms']
+                    : 0,
+                error:
+                  typeof payload['error'] === 'string'
+                    ? payload['error']
+                    : null,
+                started_at:
+                  typeof payload['started_at'] === 'string'
+                    ? payload['started_at']
+                    : new Date().toISOString(),
+                completed_at:
+                  typeof payload['completed_at'] === 'string'
+                    ? payload['completed_at']
+                    : new Date().toISOString(),
+              };
+
+              await this.pubSub.publish(`flowRunUpdated_${flowId}`, {
+                flowRun: runData,
+              });
             }
           }
         }

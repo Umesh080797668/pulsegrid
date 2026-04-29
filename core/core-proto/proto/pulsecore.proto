@@ -17,6 +17,14 @@ service PulseCoreService {
 
   // STUB Phase 3: Pattern Detection
   rpc DetectPatterns (DetectPatternsRequest) returns (DetectPatternsResponse);
+
+  // Phase 1: Analytics
+  rpc GetWorkspaceAnalytics (WorkspaceAnalyticsRequest) returns (WorkspaceAnalyticsResponse);
+  rpc GetFlowMetrics (WorkspaceMetricsRequest) returns (FlowMetricsResponse);
+  rpc GetConnectorMetrics (WorkspaceMetricsRequest) returns (ConnectorMetricsResponse);
+  rpc GetFlowRunStats (FlowRunStatsRequest) returns (FlowRunStatsResponse);
+  rpc GetRecentErrors (RecentErrorsRequest) returns (RecentErrorsResponse);
+  rpc GetEventMetrics (EventMetricsRequest) returns (EventMetricsResponse);
 }
 
 message SetWorkspaceSecretRequest {
@@ -127,5 +135,115 @@ message DetectPatternsResponse {
   repeated DetectedPattern patterns = 2;
   string error_message = 3;
   // STUB: In Phase 3, add: int64 total_patterns_stored = 4, string last_analysis_time = 5
+}
+
+// -- Analytics Messages --
+message WorkspaceMetricsRequest {
+  string workspace_id = 1;
+}
+
+message WorkspaceAnalyticsRequest {
+  string workspace_id = 1;
+  string period = 2; // day|week|month
+}
+
+message FlowMetric {
+  string flow_id = 1;
+  string flow_name = 2;
+  int64 total_runs = 3;
+  int64 successful_runs = 4;
+  int64 failed_runs = 5;
+  double success_rate = 6;
+  double average_duration = 7;
+  string last_run = 8;
+}
+
+message ConnectorMetric {
+  string connector = 1;
+  int64 call_count = 2;
+  double success_rate = 3;
+  double average_latency = 4;
+  double error_rate = 5;
+  string last_used = 6;
+}
+
+message RecentError {
+  string flow_id = 1;
+  string error = 2;
+  string timestamp = 3;
+}
+
+message WorkspaceAnalyticsResponse {
+  string workspace_id = 1;
+  string period = 2;
+  int64 total_events = 3;
+  int64 total_flow_runs = 4;
+  int64 successful_flows = 5;
+  int64 failed_flows = 6;
+  double average_flow_duration = 7;
+  repeated ConnectorMetric connector_metrics = 8;
+  repeated FlowMetric flow_metrics = 9;
+  repeated ConnectorMetric top_connectors = 10;
+  repeated RecentError recent_errors = 11;
+}
+
+message FlowMetricsResponse {
+  repeated FlowMetric metrics = 1;
+}
+
+message ConnectorMetricsResponse {
+  repeated ConnectorMetric metrics = 1;
+}
+
+message FlowRunStatsRequest {
+  string workspace_id = 1;
+  string flow_id = 2;
+  int32 limit = 3;
+}
+
+message FlowRunStat {
+  string run_id = 1;
+  string flow_id = 2;
+  string status = 3;
+  int32 duration_ms = 4;
+  string error_message = 5;
+  string started_at = 6;
+  string completed_at = 7;
+}
+
+message FlowRunStatistics {
+  int64 total_runs = 1;
+  int64 successful_runs = 2;
+  int64 failed_runs = 3;
+  double average_duration_ms = 4;
+}
+
+message FlowRunStatsResponse {
+  repeated FlowRunStat runs = 1;
+  FlowRunStatistics statistics = 2;
+}
+
+message RecentErrorsRequest {
+  string workspace_id = 1;
+  int32 limit = 2;
+}
+
+message RecentErrorsResponse {
+  repeated RecentError errors = 1;
+}
+
+message EventMetricsRequest {
+  string workspace_id = 1;
+  string interval = 2; // hour|day|week
+  int32 limit = 3;
+}
+
+message EventMetricPoint {
+  string bucket = 1;
+  int64 count = 2;
+}
+
+message EventMetricsResponse {
+  repeated EventMetricPoint data = 1;
 }
 

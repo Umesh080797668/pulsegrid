@@ -5,9 +5,15 @@ use core_proto::pulsecore::{
     VerifyWebhookRequest, VerifyWebhookResponse, GenerateFlowRequest, GenerateFlowResponse,
     AnalyzeFailureRequest, AnalyzeFailureResponse, ListMarketTemplatesRequest,
     ListMarketTemplatesResponse, InstallTemplateRequest, InstallTemplateResponse, MarketTemplate,
-    DetectPatternsRequest, DetectPatternsResponse, DetectedPattern
+    DetectPatternsRequest, DetectPatternsResponse, DetectedPattern,
+    WorkspaceAnalyticsRequest, WorkspaceAnalyticsResponse, WorkspaceMetricsRequest,
+    FlowMetricsResponse, FlowMetric, ConnectorMetricsResponse, ConnectorMetric,
+    FlowRunStatsRequest, FlowRunStatsResponse, FlowRunStat, FlowRunStatistics,
+    RecentErrorsRequest, RecentErrorsResponse, RecentError,
+    EventMetricsRequest, EventMetricsResponse, EventMetricPoint
 };
 use core_vault::Vault;
+use chrono::{DateTime, Duration, Utc};
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
 use tonic::{Request, Response, Status};
@@ -26,10 +32,375 @@ impl MyPulseCoreService {
         let vault = std::sync::Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes()));
         Self { pg_pool, vault }
     }
+
+    async fn fetch_flow_metrics(&self, ws_id: Uuid) -> Result<Vec<FlowMetric>, Status> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                fr.flow_id,
+                COALESCE(f.name, 'Unknown Flow') AS flow_name,
+                COUNT(*)::BIGINT AS total_runs,
+                COUNT(*) FILTER (WHERE fr.status = 'success')::BIGINT AS successful_runs,
+                COUNT(*) FILTER (WHERE fr.status = 'failed')::BIGINT AS failed_runs,
+                COALESCE(AVG(fr.duration_ms), 0)::FLOAT8 AS average_duration,
+                MAX(fr.started_at) AS last_run
+            FROM flow_runs fr
+            LEFT JOIN flows f ON f.id = fr.flow_id
+            WHERE fr.workspace_id = $1
+            GROUP BY fr.flow_id, f.name
+            ORDER BY total_runs DESC
+            "#,
+        )
+        .bind(ws_id)
+        .fetch_all(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let total_runs: i64 = row.get("total_runs");
+                let successful_runs: i64 = row.get("successful_runs");
+                let failed_runs: i64 = row.get("failed_runs");
+                let success_rate = if total_runs > 0 {
+                    (successful_runs as f64 / total_runs as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                let flow_id = row
+                    .try_get::<Option<Uuid>, _>("flow_id")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+
+                let last_run = row
+                    .try_get::<Option<DateTime<Utc>>, _>("last_run")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_rfc3339())
+                    .unwrap_or_default();
+
+                FlowMetric {
+                    flow_id,
+                    flow_name: row.get::<String, _>("flow_name"),
+                    total_runs,
+                    successful_runs,
+                    failed_runs,
+                    success_rate,
+                    average_duration: row.get::<f64, _>("average_duration"),
+                    last_run,
+                }
+            })
+            .collect())
+    }
+
+    async fn fetch_recent_errors(&self, ws_id: Uuid, limit: i32) -> Result<Vec<RecentError>, Status> {
+        let safe_limit = if limit <= 0 { 20 } else { limit.min(200) };
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                flow_id,
+                COALESCE(error_message, 'Flow execution failed') AS error,
+                COALESCE(completed_at, started_at) AS ts
+            FROM flow_runs
+            WHERE workspace_id = $1
+              AND status = 'failed'
+            ORDER BY ts DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(ws_id)
+        .bind(safe_limit as i64)
+        .fetch_all(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let flow_id = row
+                    .try_get::<Option<Uuid>, _>("flow_id")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                let ts: DateTime<Utc> = row.get("ts");
+                RecentError {
+                    flow_id,
+                    error: row.get::<String, _>("error"),
+                    timestamp: ts.to_rfc3339(),
+                }
+            })
+            .collect())
+    }
 }
 
 #[tonic::async_trait]
 impl PulseCoreService for MyPulseCoreService {
+    async fn get_workspace_analytics(
+        &self,
+        request: Request<WorkspaceAnalyticsRequest>,
+    ) -> Result<Response<WorkspaceAnalyticsResponse>, Status> {
+        let req = request.into_inner();
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+
+        let period = match req.period.trim() {
+            "day" | "week" | "month" => req.period.trim().to_string(),
+            _ => "week".to_string(),
+        };
+
+        let since = match period.as_str() {
+            "day" => Utc::now() - Duration::days(1),
+            "month" => Utc::now() - Duration::days(30),
+            _ => Utc::now() - Duration::days(7),
+        };
+
+        let agg = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::BIGINT AS total_flow_runs,
+                COUNT(*) FILTER (WHERE status = 'success')::BIGINT AS successful_flows,
+                COUNT(*) FILTER (WHERE status = 'failed')::BIGINT AS failed_flows,
+                COALESCE(AVG(duration_ms), 0)::FLOAT8 AS average_flow_duration
+            FROM flow_runs
+            WHERE workspace_id = $1 AND started_at >= $2
+            "#,
+        )
+        .bind(ws_id)
+        .bind(since)
+        .fetch_one(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let events_row = sqlx::query(
+            r#"
+            SELECT COALESCE(SUM(event_count), 0)::BIGINT AS total_events
+            FROM usage_counters
+            WHERE workspace_id = $1
+              AND usage_month >= $2::date
+            "#,
+        )
+        .bind(ws_id)
+        .bind(since.date_naive())
+        .fetch_one(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let flow_metrics = self.fetch_flow_metrics(ws_id).await?;
+        let recent_errors = self.fetch_recent_errors(ws_id, 10).await?;
+
+        Ok(Response::new(WorkspaceAnalyticsResponse {
+            workspace_id: req.workspace_id,
+            period,
+            total_events: events_row.get::<i64, _>("total_events"),
+            total_flow_runs: agg.get::<i64, _>("total_flow_runs"),
+            successful_flows: agg.get::<i64, _>("successful_flows"),
+            failed_flows: agg.get::<i64, _>("failed_flows"),
+            average_flow_duration: agg.get::<f64, _>("average_flow_duration"),
+            connector_metrics: Vec::new(),
+            flow_metrics,
+            top_connectors: Vec::new(),
+            recent_errors,
+        }))
+    }
+
+    async fn get_flow_metrics(
+        &self,
+        request: Request<WorkspaceMetricsRequest>,
+    ) -> Result<Response<FlowMetricsResponse>, Status> {
+        let req = request.into_inner();
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+
+        Ok(Response::new(FlowMetricsResponse {
+            metrics: self.fetch_flow_metrics(ws_id).await?,
+        }))
+    }
+
+    async fn get_connector_metrics(
+        &self,
+        _request: Request<WorkspaceMetricsRequest>,
+    ) -> Result<Response<ConnectorMetricsResponse>, Status> {
+        Ok(Response::new(ConnectorMetricsResponse {
+            metrics: Vec::<ConnectorMetric>::new(),
+        }))
+    }
+
+    async fn get_flow_run_stats(
+        &self,
+        request: Request<FlowRunStatsRequest>,
+    ) -> Result<Response<FlowRunStatsResponse>, Status> {
+        let req = request.into_inner();
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+        let limit = if req.limit <= 0 { 10 } else { req.limit.min(200) } as i64;
+
+        let flow_filter = if req.flow_id.trim().is_empty() {
+            None
+        } else {
+            Some(
+                Uuid::parse_str(req.flow_id.trim())
+                    .map_err(|_| Status::invalid_argument("Invalid flow ID"))?,
+            )
+        };
+
+        let rows = if let Some(flow_id) = flow_filter {
+            sqlx::query(
+                r#"
+                SELECT id, flow_id, status, duration_ms, error_message, started_at, completed_at
+                FROM flow_runs
+                WHERE workspace_id = $1 AND flow_id = $2
+                ORDER BY started_at DESC
+                LIMIT $3
+                "#,
+            )
+            .bind(ws_id)
+            .bind(flow_id)
+            .bind(limit)
+            .fetch_all(&self.pg_pool)
+            .await
+            .map_err(|e| Status::internal(format!("Database error: {}", e)))?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, flow_id, status, duration_ms, error_message, started_at, completed_at
+                FROM flow_runs
+                WHERE workspace_id = $1
+                ORDER BY started_at DESC
+                LIMIT $2
+                "#,
+            )
+            .bind(ws_id)
+            .bind(limit)
+            .fetch_all(&self.pg_pool)
+            .await
+            .map_err(|e| Status::internal(format!("Database error: {}", e)))?
+        };
+
+        let runs: Vec<FlowRunStat> = rows
+            .into_iter()
+            .map(|row| {
+                let started_at: DateTime<Utc> = row.get("started_at");
+                let completed_at = row
+                    .try_get::<Option<DateTime<Utc>>, _>("completed_at")
+                    .ok()
+                    .flatten()
+                    .map(|v| v.to_rfc3339())
+                    .unwrap_or_default();
+                FlowRunStat {
+                    run_id: row.get::<Uuid, _>("id").to_string(),
+                    flow_id: row
+                        .try_get::<Option<Uuid>, _>("flow_id")
+                        .ok()
+                        .flatten()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    status: row.get::<String, _>("status"),
+                    duration_ms: row.try_get::<Option<i32>, _>("duration_ms").ok().flatten().unwrap_or(0),
+                    error_message: row.try_get::<Option<String>, _>("error_message").ok().flatten().unwrap_or_default(),
+                    started_at: started_at.to_rfc3339(),
+                    completed_at,
+                }
+            })
+            .collect();
+
+        let stats_row = if let Some(flow_id) = flow_filter {
+            sqlx::query(
+                r#"
+                SELECT
+                    COUNT(*)::BIGINT AS total_runs,
+                    COUNT(*) FILTER (WHERE status = 'success')::BIGINT AS successful_runs,
+                    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT AS failed_runs,
+                    COALESCE(AVG(duration_ms), 0)::FLOAT8 AS average_duration_ms
+                FROM flow_runs
+                WHERE workspace_id = $1 AND flow_id = $2
+                "#,
+            )
+            .bind(ws_id)
+            .bind(flow_id)
+            .fetch_one(&self.pg_pool)
+            .await
+            .map_err(|e| Status::internal(format!("Database error: {}", e)))?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT
+                    COUNT(*)::BIGINT AS total_runs,
+                    COUNT(*) FILTER (WHERE status = 'success')::BIGINT AS successful_runs,
+                    COUNT(*) FILTER (WHERE status = 'failed')::BIGINT AS failed_runs,
+                    COALESCE(AVG(duration_ms), 0)::FLOAT8 AS average_duration_ms
+                FROM flow_runs
+                WHERE workspace_id = $1
+                "#,
+            )
+            .bind(ws_id)
+            .fetch_one(&self.pg_pool)
+            .await
+            .map_err(|e| Status::internal(format!("Database error: {}", e)))?
+        };
+
+        Ok(Response::new(FlowRunStatsResponse {
+            runs,
+            statistics: Some(FlowRunStatistics {
+                total_runs: stats_row.get::<i64, _>("total_runs"),
+                successful_runs: stats_row.get::<i64, _>("successful_runs"),
+                failed_runs: stats_row.get::<i64, _>("failed_runs"),
+                average_duration_ms: stats_row.get::<f64, _>("average_duration_ms"),
+            }),
+        }))
+    }
+
+    async fn get_recent_errors(
+        &self,
+        request: Request<RecentErrorsRequest>,
+    ) -> Result<Response<RecentErrorsResponse>, Status> {
+        let req = request.into_inner();
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+
+        Ok(Response::new(RecentErrorsResponse {
+            errors: self.fetch_recent_errors(ws_id, req.limit).await?,
+        }))
+    }
+
+    async fn get_event_metrics(
+        &self,
+        request: Request<EventMetricsRequest>,
+    ) -> Result<Response<EventMetricsResponse>, Status> {
+        let req = request.into_inner();
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+        let limit = if req.limit <= 0 { 30 } else { req.limit.min(365) } as i64;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT usage_month, event_count
+            FROM usage_counters
+            WHERE workspace_id = $1
+            ORDER BY usage_month DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(ws_id)
+        .bind(limit)
+        .fetch_all(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let data = rows
+            .into_iter()
+            .map(|row| EventMetricPoint {
+                bucket: row.get::<chrono::NaiveDate, _>("usage_month").to_string(),
+                count: row.get::<i64, _>("event_count"),
+            })
+            .collect();
+
+        Ok(Response::new(EventMetricsResponse { data }))
+    }
+
     async fn generate_flow_from_prompt(
         &self,
         request: Request<GenerateFlowRequest>,
