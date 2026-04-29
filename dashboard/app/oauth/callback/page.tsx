@@ -45,7 +45,7 @@ function OAuthCallbackContent() {
     }
 
     const timer = window.setTimeout(() => {
-      router.replace(`/?tab=connectors&workspace=${encodeURIComponent(workspaceId)}`);
+      router.replace(`/connectors?workspace=${encodeURIComponent(workspaceId)}`);
     }, 900);
 
     return () => window.clearTimeout(timer);
@@ -65,7 +65,7 @@ function OAuthCallbackContent() {
           <div style={{ fontSize: 14, color: 'var(--text)' }}>{message}</div>
           <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--text-3)' }}>Flow state: {status}</div>
         </div>
-        <button onClick={() => router.replace('/')} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
+        <button onClick={() => router.replace('/flows')} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
           Return to dashboard
         </button>
       </div>

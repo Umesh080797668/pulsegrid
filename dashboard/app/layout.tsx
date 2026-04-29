@@ -1,5 +1,7 @@
 import './globals.css';
 import type { ReactNode } from 'react';
+import { AppShell } from '../components/app-shell';
+import { Suspense } from 'react';
 
 export const metadata = {
   title: 'PulseGrid Dashboard',
@@ -9,7 +11,11 @@ export const metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <Suspense fallback={<main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>Loading dashboard…</main>}>
+          <AppShell>{children}</AppShell>
+        </Suspense>
+      </body>
     </html>
   );
 }
