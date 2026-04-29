@@ -871,6 +871,10 @@ async fn start_event_listener(
                                         let mut step_outputs = std::collections::HashMap::new();
                                         let mut all_steps_succeeded = true;
                                         let mut steps_log = serde_json::json!([]);
+                                        let should_dead_letter = flow_def
+                                            .error_policy
+                                            .on_failure
+                                            .eq_ignore_ascii_case("dead_letter");
 
                                         for group in execution_order {
                                             // Spawn tasks for parallel execution
@@ -910,25 +914,27 @@ async fn start_event_listener(
                                                                 result.step_id, result.error
                                                             );
 
-                                                            let dlq_key = format!(
-                                                                "dlq:failed:{}",
-                                                                event.tenant_id
-                                                            );
-                                                            let dlq_payload = serde_json::json!({
-                                                                "workspace_id": event.tenant_id,
-                                                                "flow_id": flow.id,
-                                                                "flow_name": flow.name,
-                                                                "trigger_event_id": event.id,
-                                                                "step_id": result.step_id,
-                                                                "error": result.error,
-                                                                "failed_at": chrono::Utc::now().to_rfc3339(),
-                                                            });
-                                                            let _ = con
-                                                                .rpush::<_, _, usize>(
-                                                                    dlq_key,
-                                                                    dlq_payload.to_string(),
-                                                                )
-                                                                .await;
+                                                            if should_dead_letter {
+                                                                let dlq_key = format!(
+                                                                    "dlq:failed:{}",
+                                                                    event.tenant_id
+                                                                );
+                                                                let dlq_payload = serde_json::json!({
+                                                                    "workspace_id": event.tenant_id,
+                                                                    "flow_id": flow.id,
+                                                                    "flow_name": flow.name,
+                                                                    "trigger_event_id": event.id,
+                                                                    "step_id": result.step_id,
+                                                                    "error": result.error,
+                                                                    "failed_at": chrono::Utc::now().to_rfc3339(),
+                                                                });
+                                                                let _ = con
+                                                                    .rpush::<_, _, usize>(
+                                                                        dlq_key,
+                                                                        dlq_payload.to_string(),
+                                                                    )
+                                                                    .await;
+                                                            }
                                                         } else if result.status == "success" {
                                                             println!(
                                                                 "      ✅ Step {} completed in {}ms",
@@ -983,11 +989,32 @@ async fn start_event_listener(
                                             flow.id as _
                                         ).execute(&pg_pool).await;
 
-                                        if final_status == "failed" {
+                                        if final_status == "failed"
+                                            && flow_def
+                                                .error_policy
+                                                .on_failure
+                                                .eq_ignore_ascii_case("notify_owner")
+                                        {
+                                            let owner_email = sqlx::query_scalar::<_, String>(
+                                                r#"
+                                                SELECT u.email
+                                                FROM workspaces w
+                                                JOIN users u ON u.id = w.owner_user_id
+                                                WHERE w.id = $1
+                                                LIMIT 1
+                                                "#,
+                                            )
+                                            .bind(event.tenant_id)
+                                            .fetch_optional(&pg_pool)
+                                            .await
+                                            .ok()
+                                            .flatten();
+
                                             let notify_email = flow_def
                                                 .error_policy
                                                 .notify_email
                                                 .clone()
+                                                .or(owner_email)
                                                 .or_else(|| {
                                                     std::env::var("FLOW_FAILURE_NOTIFY_EMAIL").ok()
                                                 });
