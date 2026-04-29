@@ -67,4 +67,17 @@ class ApiService {
       rethrow;
     }
   }
+
+  Future<Map<String, dynamic>> runFlow(String flowId) async {
+    try {
+      final response = await _dio.post('/flows/$flowId/run');
+      final data = response.data;
+      if (data is Map<String, dynamic>) {
+        return data;
+      }
+      return <String, dynamic>{'data': data};
+    } catch (e) {
+      rethrow;
+    }
+  }
 }

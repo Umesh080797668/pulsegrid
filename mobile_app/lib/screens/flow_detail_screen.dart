@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../providers/flow_providers.dart';
 
 class FlowDetailScreen extends ConsumerWidget {
@@ -62,12 +63,38 @@ class FlowDetailScreen extends ConsumerWidget {
                   },
                 ),
                 const SizedBox(height: 24),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    // TODO: Trigger flow execution
-                  },
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Run Flow'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          try {
+                            await ref.read(apiServiceProvider).runFlow(flowId);
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Flow execution requested.'),
+                              ),
+                            );
+                            context.push('/events/$flowId');
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Run failed: $e')),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.play_arrow),
+                        label: const Text('Run Flow'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    OutlinedButton.icon(
+                      onPressed: () => context.push('/events/$flowId'),
+                      icon: const Icon(Icons.feed),
+                      label: const Text('Live events'),
+                    ),
+                  ],
                 ),
               ],
             ),

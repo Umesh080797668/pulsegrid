@@ -29,6 +29,8 @@
 20. [Risk Analysis](#20-risk-analysis)
 21. [Success Metrics & KPIs](#21-success-metrics--kpis)
 22. [Future Vision](#22-future-vision)
+23. [Phase 1 Connector Capability Matrix (Live)](#23-phase-1-connector-capability-matrix-live)
+24. [PulseGuard — AI Error Intelligence & Autonomous Maintenance Agent](#24-pulseguard--ai-error-intelligence--autonomous-maintenance-agent)
 
 ---
 
@@ -2092,3 +2094,841 @@ The dashboard must render connector choices from `/connectors/catalog` dynamical
 - Node edit panel that allows editing action configurations instead of just deletion
 - Visual parallel branching with auto-layouting (using Dagre) mapping out multiple child nodes
 - Loop condition configuration (add custom conditionals directly to loop nodes via edit panel)
+
+---
+
+## 24. PulseGuard — AI Error Intelligence & Autonomous Maintenance Agent
+
+> **What it is:** An always-on AI agent embedded inside PulseGrid that autonomously detects production-level bugs and errors across every layer of the stack, cross-references them against the codebase and the internet, triggers a scoped maintenance mode, and delivers industry-grade patch proposals to a developer review queue — before a human notices anything is wrong.
+
+PulseGuard is not a monitoring tool. It is an autonomous first-responder: it does the 80% of detective work that would otherwise cost a developer two hours at 3 AM, distills it into a ready-to-review patch proposal, and waits for human approval before touching anything in production.
+
+---
+
+### 24.1 Design Philosophy
+
+**Human-in-the-loop is non-negotiable.** PulseGuard detects, diagnoses, and proposes — it never auto-applies code to production. The entire value proposition is that it compresses hours of triage into seconds of review. A developer opens a GuardAlert card, reads the AI's diagnosis plus its web-sourced evidence, and decides: accept, edit, or dismiss. That boundary is what makes PulseGuard trustworthy at enterprise scale.
+
+**Severity drives scope.** Maintenance mode is not binary. PulseGuard maps error severity to the smallest possible blast radius: a connector-level error pauses only the flows using that connector, not the whole platform. A critical memory panic triggers full maintenance mode. This granularity is built on top of PulseCore's existing per-flow enable/disable mechanism — no new infrastructure required.
+
+**Context is everything.** An error message alone is nearly useless for AI diagnosis. PulseGuard enriches every GuardEvent with structured codebase context (pulled from a live index, not raw file dumps), the surrounding 50 log lines, recent deployment history, and connector health state before sending anything to the AI. The quality of the proposal is a direct function of the quality of the context.
+
+---
+
+### 24.2 Architecture Overview
+
+PulseGuard is a standalone `guard/` NestJS microservice that lives alongside the existing `api-gateway/` and `enterprise/` services. It communicates with PulseCore via a dedicated gRPC stream and writes to its own PostgreSQL schema and Redis namespace.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         SIGNAL SOURCES                              │
+│                                                                     │
+│  PulseCore (Rust)   NestJS Gateway    Spring Boot    Next.js        │
+│  tracing spans      Bull queue errors  Actuator       Error beacons  │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │  GuardEvent stream
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│               LAYER 1 — SIGNAL COLLECTOR                            │
+│  Normalizes all signals into GuardEvent struct                      │
+│  Publishes to Redis stream: guard:events                            │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│               LAYER 2 — AI TRIAGE ENGINE (Anthropic API)            │
+│  Error + stack trace + codebase index context → claude-sonnet-4    │
+│  Classifies severity · identifies root cause · decides scope       │
+└────────────────┬──────────────────────────────┬─────────────────────┘
+                 │                              │
+                 ▼                              ▼
+┌──────────────────────────┐     ┌──────────────────────────────────┐
+│  LAYER 3A                │     │  LAYER 3B                        │
+│  MAINTENANCE ORCHESTRATOR│     │  INTERNET RESEARCH               │
+│                          │     │                                  │
+│  Sets system:maintenance │     │  Web search via Anthropic        │
+│  flag in Redis           │     │  tool use API                    │
+│  Pauses affected flows   │     │  CVE databases                   │
+│  Notifies via Slack /    │     │  GitHub issues for your deps     │
+│  PagerDuty / Telegram    │     │  Framework security advisories   │
+└──────────────┬───────────┘     └────────────────┬─────────────────┘
+               │                                  │
+               └──────────────┬───────────────────┘
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│               LAYER 4 — DEVELOPER REVIEW PANEL (Angular admin)      │
+│                                                                     │
+│  GuardAlert card:                                                   │
+│  · Original error + full stack trace                               │
+│  · AI diagnosis with confidence score                              │
+│  · Web-sourced CVE / issue context                                 │
+│  · Diff-ready code suggestion for affected file(s)                 │
+│  · One-click: create GitHub issue + branch via GitHub connector     │
+│  · Accept / Edit / Dismiss actions                                  │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │  Developer review
+                               ▼
+                       Human approval required
+                       before any code change
+```
+
+---
+
+### 24.3 Core Data Structures
+
+#### GuardEvent (Rust struct — shared via core-proto)
+
+```rust
+pub struct GuardEvent {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub source: GuardSource,       // PulseCore | NestJS | SpringBoot | Dashboard
+    pub severity: Severity,        // Warning | Error | Critical
+    pub category: ErrorCategory,   // Panic | Timeout | ConnectorFailure | AuthFailure | OOM | UnhandledException
+    pub message: String,
+    pub stack_trace: Option<String>,
+    pub surrounding_logs: Vec<LogLine>,  // ±50 lines of context
+    pub affected_connector: Option<ConnectorId>,
+    pub affected_flow_ids: Vec<Uuid>,
+    pub deployment_sha: String,    // git commit at time of error
+    pub received_at: DateTime<Utc>,
+    pub metadata: serde_json::Value,
+}
+
+pub enum Severity {
+    Warning,   // Log only, no action
+    Error,     // Pause affected flows only
+    Critical,  // Full maintenance mode
+}
+
+pub enum GuardSource {
+    PulseCore,
+    NestJSGateway,
+    SpringBootEnterprise,
+    NextJSDashboard,
+}
+```
+
+#### GuardAlert (PostgreSQL — guard schema)
+
+```sql
+CREATE TABLE guard.alerts (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL,
+    guard_event_id  UUID NOT NULL,
+    severity        VARCHAR(20) NOT NULL,
+    source          VARCHAR(50) NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'open',
+                    -- open | acknowledged | resolved | dismissed
+    ai_diagnosis    TEXT,
+    ai_confidence   DECIMAL(4,3),
+    web_sources     JSONB,          -- array of URLs + summaries from internet research
+    code_suggestion JSONB,          -- { file_path, original, suggested, explanation }
+    maintenance_scope JSONB,        -- which flows/connectors were paused
+    github_issue_url TEXT,
+    resolved_by     UUID REFERENCES users(id),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ
+);
+
+CREATE TABLE guard.codebase_index (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    file_path       TEXT NOT NULL,
+    language        VARCHAR(20) NOT NULL,
+    function_sigs   JSONB,          -- parsed function signatures via tree-sitter
+    error_patterns  TEXT[],         -- known error strings associated with this file
+    last_indexed_at TIMESTAMPTZ DEFAULT NOW(),
+    git_sha         VARCHAR(40) NOT NULL
+);
+```
+
+#### Redis Keys (guard namespace)
+
+```
+guard:events                          → Redis Stream (GuardEvent source)
+guard:consumer:triage                 → Consumer group for AI triage worker
+guard:maintenance:{tenant_id}         → Current maintenance state + scope (TTL: 24h)
+guard:index:rebuilt_at                → Timestamp of last codebase index rebuild
+guard:alert:{id}:status               → Real-time alert status for WebSocket push
+```
+
+---
+
+### 24.4 Layer 1 — Signal Collector
+
+The signal collector is a NestJS consumer group worker that subscribes to error events from every service layer and normalizes them into `GuardEvent` structs.
+
+#### PulseCore integration (Rust — new gRPC stream)
+
+Add a `GuardStream` RPC to `core-proto`:
+
+```protobuf
+// core-proto/src/guard.proto
+syntax = "proto3";
+
+service GuardService {
+    rpc StreamGuardEvents(GuardStreamRequest) returns (stream GuardEventProto);
+    rpc ReportMaintenanceState(MaintenanceStateRequest) returns (MaintenanceStateResponse);
+}
+
+message GuardEventProto {
+    string id = 1;
+    string tenant_id = 2;
+    string severity = 3;
+    string category = 4;
+    string message = 5;
+    string stack_trace = 6;
+    repeated string surrounding_logs = 7;
+    string deployment_sha = 8;
+    int64 received_at_unix_ms = 9;
+}
+```
+
+In `core-engine`, hook the `tracing` subscriber to emit `GuardEvent` on panic, OOM, and unhandled errors:
+
+```rust
+// core-engine/src/guard_emitter.rs
+use tracing::subscriber::set_global_default;
+
+pub struct GuardEventLayer {
+    guard_tx: mpsc::Sender<GuardEventProto>,
+}
+
+impl<S: Subscriber> Layer<S> for GuardEventLayer {
+    fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        if *event.metadata().level() <= Level::ERROR {
+            let guard_event = GuardEventProto::from_tracing_event(event);
+            let _ = self.guard_tx.try_send(guard_event);
+        }
+    }
+}
+```
+
+#### NestJS Bull queue errors
+
+```typescript
+// guard/src/collectors/nestjs.collector.ts
+@Injectable()
+export class NestJSSignalCollector implements OnModuleInit {
+  constructor(
+    @InjectQueue('actions') private actionsQueue: Queue,
+    private guardPublisher: GuardEventPublisher,
+  ) {}
+
+  onModuleInit() {
+    this.actionsQueue.on('failed', async (job, error) => {
+      await this.guardPublisher.publish({
+        source: GuardSource.NestJSGateway,
+        severity: job.attemptsMade >= job.opts.attempts ? Severity.Error : Severity.Warning,
+        category: ErrorCategory.UnhandledException,
+        message: error.message,
+        stackTrace: error.stack,
+        affectedFlowIds: [job.data.flowId],
+        metadata: { jobId: job.id, jobName: job.name, attemptsMade: job.attemptsMade },
+      });
+    });
+  }
+}
+```
+
+#### Spring Boot Actuator polling
+
+```typescript
+// guard/src/collectors/spring.collector.ts
+@Injectable()
+export class SpringActuatorCollector {
+  @Cron('*/30 * * * * *')  // every 30 seconds
+  async pollActuatorHealth() {
+    const health = await this.http.get(
+      `${process.env.SPRING_INTERNAL_URL}/actuator/health`
+    );
+    if (health.data.status !== 'UP') {
+      await this.guardPublisher.publish({
+        source: GuardSource.SpringBootEnterprise,
+        severity: Severity.Error,
+        category: ErrorCategory.ServiceDown,
+        message: `Spring Boot health check failed: ${health.data.status}`,
+        metadata: health.data.components,
+      });
+    }
+  }
+}
+```
+
+#### Next.js browser error beacons
+
+Add a client-side error boundary in `dashboard/app/error.tsx` that POSTs to the guard ingest endpoint:
+
+```typescript
+// dashboard/app/error.tsx
+'use client';
+
+export default function ErrorBoundary({ error, reset }: ErrorBoundaryProps) {
+  useEffect(() => {
+    fetch('/api/guard/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'dashboard',
+        message: error.message,
+        stack: error.stack,
+        url: window.location.href,
+        userAgent: navigator.userAgent,
+      }),
+    });
+  }, [error]);
+
+  return (
+    <div>
+      <h2>Something went wrong.</h2>
+      <button onClick={reset}>Try again</button>
+    </div>
+  );
+}
+```
+
+---
+
+### 24.5 Layer 2 — AI Triage Engine
+
+The triage engine is a Redis Streams consumer that reads from `guard:events`, enriches each event with codebase context, and calls the Anthropic API for diagnosis.
+
+#### Codebase Indexer
+
+A Rust background job (runs in `core-engine` on startup and every 15 minutes) uses `tree-sitter` to parse the codebase and populate `guard.codebase_index`:
+
+```rust
+// core-engine/src/guard_indexer.rs
+use tree_sitter::{Language, Parser};
+
+pub async fn rebuild_codebase_index(pool: &PgPool) -> Result<()> {
+    let git_sha = get_current_git_sha()?;
+    let files = walk_source_files(&["core/", "api-gateway/src/", "enterprise/src/"])?;
+
+    for file in files {
+        let content = fs::read_to_string(&file.path)?;
+        let language = detect_language(&file.path);
+        let sigs = extract_function_signatures(&content, language)?;
+        let error_patterns = extract_error_strings(&content)?;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO guard.codebase_index
+                (file_path, language, function_sigs, error_patterns, git_sha)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (file_path) DO UPDATE SET
+                function_sigs = EXCLUDED.function_sigs,
+                error_patterns = EXCLUDED.error_patterns,
+                last_indexed_at = NOW(),
+                git_sha = EXCLUDED.git_sha
+            "#,
+            file.path.to_str().unwrap(),
+            language.to_string(),
+            serde_json::to_value(&sigs)?,
+            &error_patterns,
+            &git_sha
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+```
+
+#### Context builder
+
+Before calling the AI, the triage engine fetches the most relevant code context:
+
+```typescript
+// guard/src/triage/context-builder.service.ts
+@Injectable()
+export class ContextBuilderService {
+  async buildContext(event: GuardEvent): Promise<TriageContext> {
+    // Find files most likely related to this error via error_patterns similarity
+    const relevantFiles = await this.db.query<CodebaseIndexRow>(`
+      SELECT file_path, function_sigs, language
+      FROM guard.codebase_index
+      WHERE error_patterns && $1
+         OR file_path ILIKE ANY(
+              SELECT '%' || unnest($2::text[]) || '%'
+            )
+      LIMIT 5
+    `, [
+      [event.message.substring(0, 100)],
+      this.extractFileHints(event.stackTrace),
+    ]);
+
+    // Fetch recent deployments (last 3)
+    const recentDeploys = await this.getRecentDeployments(3);
+
+    // Connector health snapshot
+    const connectorHealth = event.affectedConnector
+      ? await this.getConnectorHealthSnapshot(event.affectedConnector)
+      : null;
+
+    return {
+      event,
+      relevantFiles,
+      recentDeploys,
+      connectorHealth,
+      surroundingLogs: event.surroundingLogs,
+    };
+  }
+}
+```
+
+#### Anthropic API call — triage prompt
+
+```typescript
+// guard/src/triage/ai-triage.service.ts
+@Injectable()
+export class AITriageService {
+  async triage(ctx: TriageContext): Promise<TriageResult> {
+    const systemPrompt = `
+You are PulseGuard, the AI error intelligence agent for PulseGrid — a Rust-powered
+automation platform. You receive production error events enriched with codebase context.
+
+Your job:
+1. Identify the root cause of the error with high precision.
+2. Determine severity scope: Warning (log only) | Error (pause affected flows) | Critical (full maintenance mode).
+3. Suggest an industry-grade code fix appropriate for developer review.
+4. Output strictly valid JSON — no prose outside the JSON object.
+
+Output format:
+{
+  "root_cause": "concise root cause description (max 100 chars)",
+  "explanation": "full technical explanation of why this error occurs",
+  "confidence": 0.0–1.0,
+  "severity_recommendation": "Warning|Error|Critical",
+  "maintenance_scope": "none|flows_only|full",
+  "affected_file_path": "path/to/affected/file.rs or null",
+  "code_suggestion": {
+    "file_path": "string",
+    "original_snippet": "the problematic code",
+    "suggested_snippet": "the fixed code",
+    "explanation": "why this fix resolves the root cause"
+  },
+  "search_queries": ["query1 for CVE lookup", "query2 for GitHub issues"]
+}`;
+
+    const userMessage = `
+## Error Event
+Source: ${ctx.event.source}
+Severity: ${ctx.event.severity}
+Category: ${ctx.event.category}
+Message: ${ctx.event.message}
+
+## Stack Trace
+\`\`\`
+${ctx.event.stackTrace ?? 'Not available'}
+\`\`\`
+
+## Surrounding Logs (±50 lines)
+\`\`\`
+${ctx.event.surroundingLogs.map(l => `[${l.timestamp}] ${l.level} ${l.message}`).join('\n')}
+\`\`\`
+
+## Relevant Codebase Context
+${ctx.relevantFiles.map(f => `### ${f.filePath}\nFunctions: ${JSON.stringify(f.functionSigs, null, 2)}`).join('\n\n')}
+
+## Recent Deployments
+${ctx.recentDeploys.map(d => `- ${d.sha.substring(0, 8)}: ${d.message} (${d.deployedAt})`).join('\n')}
+
+## Connector Health (if applicable)
+${ctx.connectorHealth ? JSON.stringify(ctx.connectorHealth, null, 2) : 'N/A'}`;
+
+    const response = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    });
+
+    const raw = response.content[0].type === 'text' ? response.content[0].text : '';
+    return JSON.parse(raw) as TriageResult;
+  }
+}
+```
+
+---
+
+### 24.6 Layer 3A — Maintenance Mode Orchestrator
+
+The orchestrator maps triage results to the minimum scope of maintenance action required.
+
+```typescript
+// guard/src/maintenance/orchestrator.service.ts
+@Injectable()
+export class MaintenanceOrchestratorService {
+  async execute(event: GuardEvent, triage: TriageResult): Promise<MaintenanceResult> {
+    switch (triage.maintenanceScope) {
+      case 'none':
+        // Warning: log the alert, notify dev channel, no service impact
+        await this.notifyDeveloper(event, triage, 'low');
+        return { scope: 'none', pausedFlows: [] };
+
+      case 'flows_only':
+        // Error: pause only the flows affected by this connector/error
+        const pausedFlows = await this.pauseAffectedFlows(event.affectedFlowIds);
+        await this.redis.set(
+          `guard:maintenance:${event.tenantId}:flows`,
+          JSON.stringify({ pausedFlows, reason: triage.rootCause, since: new Date() }),
+          'EX', 86400
+        );
+        await this.notifyDeveloper(event, triage, 'medium');
+        return { scope: 'flows_only', pausedFlows };
+
+      case 'full':
+        // Critical: full maintenance mode
+        await this.redis.set(
+          `guard:maintenance:${event.tenantId}`,
+          JSON.stringify({ reason: triage.rootCause, since: new Date() }),
+          'EX', 86400
+        );
+        await this.pauseAllNonCriticalFlows(event.tenantId);
+        await this.setMaintenancePage(event.tenantId, true);
+        await this.notifyDeveloper(event, triage, 'critical');
+        return { scope: 'full', pausedFlows: [] };
+    }
+  }
+
+  private async pauseAffectedFlows(flowIds: string[]): Promise<string[]> {
+    // Uses existing PulseCore flow enable/disable mechanism
+    const paused: string[] = [];
+    for (const flowId of flowIds) {
+      await this.grpc.disableFlow({ flowId, reason: 'PulseGuard: automatic maintenance pause' });
+      paused.push(flowId);
+    }
+    return paused;
+  }
+
+  private async notifyDeveloper(event: GuardEvent, triage: TriageResult, urgency: string) {
+    // Fires a PulseGrid Flow — uses your existing Slack/PagerDuty/Telegram connectors
+    await this.flowRunner.triggerInternalFlow('guard:notify', {
+      urgency,
+      rootCause: triage.rootCause,
+      confidence: triage.confidence,
+      affectedScope: triage.maintenanceScope,
+      source: event.source,
+      alertUrl: `${process.env.ADMIN_URL}/guard/alerts/${event.id}`,
+    });
+  }
+}
+```
+
+---
+
+### 24.7 Layer 3B — Internet Research Engine
+
+After initial triage, PulseGuard uses the Anthropic web search tool to cross-reference the error against live internet sources.
+
+```typescript
+// guard/src/research/internet-research.service.ts
+@Injectable()
+export class InternetResearchService {
+  async research(event: GuardEvent, triage: TriageResult): Promise<ResearchResult> {
+    const response = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      system: `You are researching a production error for the PulseGuard system.
+Search for CVEs, known bugs, and patches related to this error.
+Focus on: security vulnerabilities, dependency version issues, known workarounds.
+Return a JSON object: { "sources": [{ "url": "...", "relevance": "...", "summary": "..." }], "cve_ids": [], "recommended_dep_versions": {} }`,
+      messages: [{
+        role: 'user',
+        content: `Research these queries for a production ${event.source} error:
+
+Error: ${event.message}
+Queries to investigate:
+${triage.searchQueries.map(q => `- ${q}`).join('\n')}
+
+Dependencies in play (from affected files):
+${await this.getDependencyVersions(triage.affectedFilePath)}`,
+      }],
+    });
+
+    // Extract text from potentially multi-turn tool-use response
+    const finalText = response.content
+      .filter(b => b.type === 'text')
+      .map(b => (b as TextBlock).text)
+      .join('');
+
+    return JSON.parse(finalText) as ResearchResult;
+  }
+}
+```
+
+---
+
+### 24.8 Layer 4 — Developer Review Panel
+
+GuardAlert cards appear in the Angular admin at `/admin/guard`. Each card surfaces the full diagnostic picture and the proposed fix.
+
+#### Angular component structure
+
+```typescript
+// admin/src/app/guard/guard-alert-card.component.ts
+@Component({
+  selector: 'app-guard-alert-card',
+  template: `
+    <div class="guard-card" [class]="'severity-' + alert.severity.toLowerCase()">
+
+      <div class="guard-header">
+        <span class="severity-badge">{{ alert.severity }}</span>
+        <span class="source-tag">{{ alert.source }}</span>
+        <span class="timestamp">{{ alert.createdAt | date:'medium' }}</span>
+        <span class="confidence">AI confidence: {{ (alert.aiConfidence * 100).toFixed(0) }}%</span>
+      </div>
+
+      <h3 class="root-cause">{{ alert.aiDiagnosis?.root_cause }}</h3>
+
+      <div class="explanation">{{ alert.aiDiagnosis?.explanation }}</div>
+
+      <!-- Web-sourced context -->
+      <div class="web-sources" *ngIf="alert.webSources?.sources?.length">
+        <h4>Internet research</h4>
+        <div *ngFor="let source of alert.webSources.sources" class="source-item">
+          <a [href]="source.url" target="_blank">{{ source.url }}</a>
+          <p>{{ source.summary }}</p>
+        </div>
+        <div *ngIf="alert.webSources.cve_ids?.length" class="cve-list">
+          CVEs: {{ alert.webSources.cve_ids.join(', ') }}
+        </div>
+      </div>
+
+      <!-- Code suggestion diff -->
+      <div class="code-suggestion" *ngIf="alert.codeSuggestion">
+        <h4>Suggested fix — {{ alert.codeSuggestion.file_path }}</h4>
+        <div class="diff-viewer">
+          <pre class="diff-remove">{{ alert.codeSuggestion.original_snippet }}</pre>
+          <pre class="diff-add">{{ alert.codeSuggestion.suggested_snippet }}</pre>
+        </div>
+        <p class="diff-explanation">{{ alert.codeSuggestion.explanation }}</p>
+      </div>
+
+      <!-- Maintenance scope -->
+      <div class="maintenance-info" *ngIf="alert.maintenanceScope">
+        <strong>Maintenance action taken:</strong>
+        {{ formatMaintenanceScope(alert.maintenanceScope) }}
+      </div>
+
+      <!-- Actions -->
+      <div class="guard-actions">
+        <button class="btn-primary" (click)="createGithubIssue(alert)">
+          Create GitHub issue + branch
+        </button>
+        <button class="btn-secondary" (click)="acknowledge(alert)">
+          Acknowledge
+        </button>
+        <button class="btn-resolve" (click)="resolve(alert)">
+          Mark resolved
+        </button>
+        <button class="btn-dismiss" (click)="dismiss(alert)">
+          Dismiss
+        </button>
+      </div>
+
+    </div>
+  `,
+})
+export class GuardAlertCardComponent {
+  @Input() alert!: GuardAlert;
+
+  async createGithubIssue(alert: GuardAlert) {
+    // Triggers PulseGrid's existing GitHub connector
+    await this.guardService.createGithubIssueFromAlert(alert.id);
+  }
+}
+```
+
+#### GitHub issue creation via existing connector
+
+```typescript
+// guard/src/actions/github-action.service.ts
+@Injectable()
+export class GuardGithubActionService {
+  async createIssueAndBranch(alert: GuardAlert): Promise<string> {
+    // Uses PulseGrid's own GitHub connector — no new integration needed
+    const issueResult = await this.connectorRuntime.execute({
+      connector: 'github',
+      action: 'create_issue',
+      credentials: await this.vault.getSystemCredentials('github'),
+      input: {
+        owner: process.env.GITHUB_ORG,
+        repo: process.env.GITHUB_REPO,
+        title: `[PulseGuard] ${alert.severity}: ${alert.aiDiagnosis.root_cause}`,
+        body: this.formatIssueBody(alert),
+        labels: ['pulseguard', `severity:${alert.severity.toLowerCase()}`, 'bug'],
+      },
+    });
+
+    return issueResult.html_url;
+  }
+
+  private formatIssueBody(alert: GuardAlert): string {
+    return `
+## PulseGuard Automatic Report
+
+**Source:** ${alert.source}
+**Severity:** ${alert.severity}
+**AI Confidence:** ${(alert.aiConfidence * 100).toFixed(0)}%
+**Detected at:** ${alert.createdAt.toISOString()}
+
+## Root Cause
+${alert.aiDiagnosis.explanation}
+
+## Suggested Fix
+**File:** \`${alert.codeSuggestion?.file_path}\`
+
+\`\`\`diff
+- ${alert.codeSuggestion?.original_snippet}
++ ${alert.codeSuggestion?.suggested_snippet}
+\`\`\`
+
+**Rationale:** ${alert.codeSuggestion?.explanation}
+
+## Internet Research
+${alert.webSources?.sources?.map(s => `- [${s.url}](${s.url}): ${s.summary}`).join('\n') ?? 'No sources found.'}
+
+${alert.webSources?.cve_ids?.length ? `**CVEs:** ${alert.webSources.cve_ids.join(', ')}` : ''}
+
+## Maintenance Action
+${JSON.stringify(alert.maintenanceScope, null, 2)}
+
+---
+*Auto-generated by PulseGuard. Human review required before applying any fix.*
+    `;
+  }
+}
+```
+
+---
+
+### 24.9 API Endpoints (guard/ microservice)
+
+```
+GET    /guard/alerts                   List all GuardAlerts (paginated, filterable by severity/status)
+GET    /guard/alerts/:id               Full alert detail including AI diagnosis and web sources
+PATCH  /guard/alerts/:id/acknowledge   Acknowledge an alert (sets status: acknowledged)
+PATCH  /guard/alerts/:id/resolve       Mark resolved (sets status: resolved, records resolver)
+PATCH  /guard/alerts/:id/dismiss       Dismiss (sets status: dismissed)
+POST   /guard/alerts/:id/github        Create GitHub issue + branch from alert
+GET    /guard/maintenance              Current maintenance state for tenant
+DELETE /guard/maintenance              Manually clear maintenance mode (with reason)
+GET    /guard/health                   PulseGuard service health
+GET    /guard/index/status             Codebase index status (last rebuilt, file count)
+POST   /guard/index/rebuild            Trigger manual codebase index rebuild
+WS     /guard/stream                   Real-time GuardAlert stream for admin panel
+```
+
+---
+
+### 24.10 Integration Into the Development Roadmap
+
+PulseGuard is designed to be integrated progressively. It does not require the full platform to be built before providing value.
+
+#### Phase 2 entry point (recommended first integration)
+
+Wire PulseGuard against the NestJS gateway only. This immediately gives you AI-powered error triage for Bull queue failures and API errors — the most common production pain points — with zero dependency on PulseCore gRPC changes.
+
+**Phase 2 PulseGuard deliverables (2 weeks of effort):**
+- `guard/` NestJS microservice deployed alongside `api-gateway/`
+- NestJS Bull queue error collector live
+- Spring Boot Actuator polling collector live
+- Next.js error boundary beacon live
+- AI triage engine wired to Anthropic API
+- Internet research engine live
+- GuardAlert table + basic Angular admin page at `/admin/guard`
+- Slack/Telegram notification on every Error or Critical event
+
+#### Phase 3 extension
+
+Extend into PulseCore via the `GuardStream` gRPC definition. This brings in Rust-level panics, OOM events, and timeout signals — the deepest and most dangerous class of production errors.
+
+**Phase 3 PulseGuard additions (2 weeks of effort):**
+- `GuardStream` gRPC added to `core-proto`
+- `GuardEventLayer` tracing subscriber in `core-engine`
+- Codebase indexer (Rust + tree-sitter) running on startup and every 15 minutes
+- Context builder with similarity lookup against `guard.codebase_index`
+- GitHub issue + branch creation action live
+- Full diff viewer in Angular GuardAlert card
+- Maintenance mode with granular flow-level scope live
+
+#### Phase 4 / Enterprise additions
+
+- Tenant-scoped GuardAlert dashboards (enterprise workspaces get their own view)
+- Immutable audit trail of every PulseGuard action and every AI suggestion shown
+- On-premise inference option: route triage through `core-ai` (ONNX) for orgs that cannot send code to external APIs
+- GuardAlert webhook: fire a custom Flow when a Critical alert is created (users can build their own incident response pipelines on top of PulseGuard)
+- SLA integration: if a GuardAlert remains unresolved past the tenant's SLA threshold, automatically escalate via PagerDuty
+
+---
+
+### 24.11 Repository Structure Addition
+
+```
+pulsegrid/
+├── guard/                             # NEW — PulseGuard microservice (NestJS)
+│   ├── src/
+│   │   ├── collectors/                # Signal collectors per source
+│   │   │   ├── nestjs.collector.ts    # Bull queue error listener
+│   │   │   ├── spring.collector.ts    # Actuator health poller
+│   │   │   ├── pulsecore.collector.ts # gRPC GuardStream consumer
+│   │   │   └── dashboard.collector.ts # Next.js error beacon receiver
+│   │   ├── triage/
+│   │   │   ├── ai-triage.service.ts   # Anthropic API triage call
+│   │   │   └── context-builder.service.ts  # Codebase context enrichment
+│   │   ├── research/
+│   │   │   └── internet-research.service.ts # Web search via Anthropic tools
+│   │   ├── maintenance/
+│   │   │   └── orchestrator.service.ts # Maintenance mode logic
+│   │   ├── actions/
+│   │   │   └── github-action.service.ts # GitHub issue + branch creation
+│   │   ├── guard.module.ts
+│   │   ├── guard.controller.ts
+│   │   └── guard.gateway.ts           # WebSocket gateway for real-time alerts
+│   └── test/
+│
+├── core/
+│   ├── core-engine/
+│   │   └── src/
+│   │       ├── guard_emitter.rs        # NEW — tracing Layer that emits GuardEvents
+│   │       └── guard_indexer.rs        # NEW — tree-sitter codebase indexer
+│   └── core-proto/
+│       └── src/
+│           └── guard.proto             # NEW — GuardStream gRPC definition
+│
+└── admin/
+    └── src/app/
+        └── guard/                     # NEW — GuardAlert Angular module
+            ├── guard.module.ts
+            ├── guard-alert-list.component.ts
+            ├── guard-alert-card.component.ts
+            └── guard-maintenance.component.ts
+```
+
+---
+
+### 24.12 Security Considerations
+
+**PulseGuard never sends full source files to the Anthropic API.** It sends only the output of the codebase indexer: parsed function signatures and error pattern strings. Raw business logic, credential handling code, and encryption implementation details are excluded from the index by a blocklist:
+
+```rust
+// core-engine/src/guard_indexer.rs
+const INDEX_EXCLUDE_PATTERNS: &[&str] = &[
+    "core-vault/",        // Encryption implementation
+    "core/src/auth/",     // Authentication logic
+    "**/*secret*",        // Any file with 'secret' in name
+    "**/*credential*",    // Any credential handling file
+    ".env*",              // Environment files
+];
+```
+
+**All GuardAlert data is tenant-isolated.** The `guard.alerts` table includes `tenant_id` and every query is scoped to the authenticated workspace. Enterprise tenants can enable on-premise inference to prevent any code context from leaving their network.
+
+**Maintenance mode can always be manually overridden.** The `DELETE /guard/maintenance` endpoint allows a developer to immediately clear any PulseGuard-triggered maintenance state with a required reason string, which is written to the audit log.
+
+---
+
+*PulseGuard — Built on PulseCore's event bus. Powered by Anthropic. Reviewed by humans.*

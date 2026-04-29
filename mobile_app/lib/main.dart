@@ -4,6 +4,10 @@ import 'package:go_router/go_router.dart';
 import 'screens/home_screen.dart';
 import 'screens/flow_list_screen.dart';
 import 'screens/flow_detail_screen.dart';
+import 'screens/builder_screen.dart';
+import 'screens/devices_screen.dart';
+import 'screens/event_feed_screen.dart';
+import 'screens/settings_screen.dart';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
@@ -21,14 +25,33 @@ class MyApp extends ConsumerWidget {
           builder: (context, state) => const HomeScreen(),
         ),
         GoRoute(
+          path: '/settings',
+          builder: (context, state) => const SettingsScreen(),
+        ),
+        GoRoute(
+          path: '/devices',
+          builder: (context, state) => const DevicesScreen(),
+        ),
+        GoRoute(
           path: '/flows',
           builder: (context, state) => const FlowListScreen(),
+        ),
+        GoRoute(
+          path: '/flows/create',
+          builder: (context, state) => const BuilderScreen(),
         ),
         GoRoute(
           path: '/flows/:id',
           builder: (context, state) {
             final id = state.pathParameters['id']!;
             return FlowDetailScreen(flowId: id);
+          },
+        ),
+        GoRoute(
+          path: '/events/:flowId',
+          builder: (context, state) {
+            final flowId = state.pathParameters['flowId']!;
+            return EventFeedScreen(flowId: flowId);
           },
         ),
       ],
