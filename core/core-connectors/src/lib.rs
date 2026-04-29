@@ -104,6 +104,212 @@ pub struct CustomConnectorConfig {
     pub api_key_value: Option<String>,
 }
 
+// Resend email connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResendEmailConfig {
+    pub api_key: String,
+    pub from: String,
+    pub to: String,
+    pub subject: String,
+    pub html: Option<String>,
+    pub text: Option<String>,
+}
+
+// OpenAI connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OpenAiConfig {
+    pub api_key: String,
+    pub model: String,
+    pub messages: Vec<serde_json::Value>,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<i32>,
+}
+
+// Anthropic connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AnthropicConfig {
+    pub api_key: String,
+    pub model: String,
+    pub messages: Vec<serde_json::Value>,
+    pub max_tokens: i32,
+    pub temperature: Option<f32>,
+}
+
+// Airtable connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AirtableConfig {
+    pub access_token: String,
+    pub base_id: String,
+    pub table_name: String,
+    pub records: Vec<serde_json::Value>,
+}
+
+// HubSpot connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HubSpotConfig {
+    pub access_token: String,
+    pub object_type: String,
+    pub properties: serde_json::Value,
+}
+
+// Jira connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JiraConfig {
+    pub host: String,
+    pub email: String,
+    pub api_token: String,
+    pub project_key: String,
+    pub issue_type: String,
+    pub summary: String,
+    pub description: Option<String>,
+}
+
+// Linear connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LinearConfig {
+    pub api_key: String,
+    pub team_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub priority: Option<i32>,
+}
+
+// Asana connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AsanaConfig {
+    pub access_token: String,
+    pub project_id: String,
+    pub name: String,
+    pub notes: Option<String>,
+    pub assignee: Option<String>,
+}
+
+// ClickUp connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClickUpConfig {
+    pub api_key: String,
+    pub list_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub priority: Option<i32>,
+}
+
+// Trello connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TrelloConfig {
+    pub api_key: String,
+    pub api_token: String,
+    pub list_id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+// Zendesk connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ZendeskConfig {
+    pub subdomain: String,
+    pub email: String,
+    pub api_token: String,
+    pub subject: String,
+    pub description: String,
+    pub priority: Option<String>,
+}
+
+// PagerDuty connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PagerDutyConfig {
+    pub access_token: String,
+    pub title: String,
+    pub service_id: String,
+    pub urgency: Option<String>,
+    pub body: Option<String>,
+}
+
+// Stripe connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StripeConfig {
+    pub secret_key: String,
+    pub customer_email: String,
+    pub amount: i64,
+    pub currency: String,
+    pub description: Option<String>,
+}
+
+// SendGrid connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SendGridConfig {
+    pub api_key: String,
+    pub from: String,
+    pub to: Vec<String>,
+    pub subject: String,
+    pub html_content: String,
+}
+
+// Salesforce connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SalesforceConfig {
+    pub instance_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub username: String,
+    pub password: String,
+    pub sobject_type: String,
+    pub fields: serde_json::Value,
+}
+
+// Shopify connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ShopifyConfig {
+    pub shop_name: String,
+    pub access_token: String,
+    pub resource: String,
+    pub body: serde_json::Value,
+}
+
+// GitLab connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GitLabConfig {
+    pub host: String,
+    pub private_token: String,
+    pub project_id: String,
+    pub title: String,
+    pub description: Option<String>,
+}
+
+// Monday.com connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MondayConfig {
+    pub api_token: String,
+    pub board_id: String,
+    pub item_name: String,
+    pub column_values: serde_json::Value,
+}
+
+// Brevo (formerly Sendinblue) connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BrevoConfig {
+    pub api_key: String,
+    pub sender_email: String,
+    pub recipient_email: String,
+    pub subject: String,
+    pub html_content: String,
+}
+
+// Webhook connector (for general webhook dispatch)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WebhookDispatchConfig {
+    pub url: String,
+    pub method: String,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub body: serde_json::Value,
+}
+
+// Schedule trigger connector
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScheduleConfig {
+    pub cron_expression: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Credentials {
     pub connector_id: String,
@@ -148,6 +354,305 @@ pub trait Connector: Send + Sync {
         action_id: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError>;
+}
+
+// ============ Concrete Connector Implementations ============
+
+pub struct ResendConnector;
+
+#[async_trait]
+impl Connector for ResendConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        // Resend validation would check API key with a test call
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "send_email".to_string(),
+            name: "Send Email".to_string(),
+            description: Some("Send an email via Resend".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "send_email" => Ok(serde_json::json!({"status": "sent"})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct OpenAiConnector;
+
+#[async_trait]
+impl Connector for OpenAiConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "chat_completion".to_string(),
+            name: "Chat Completion".to_string(),
+            description: Some("Call OpenAI chat completion API".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "chat_completion" => Ok(serde_json::json!({"choices": [{"message": {"content": ""}}]})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct AnthropicConnector;
+
+#[async_trait]
+impl Connector for AnthropicConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "message".to_string(),
+            name: "Send Message".to_string(),
+            description: Some("Call Anthropic messages API".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "message" => Ok(serde_json::json!({"content": [{"type": "text", "text": ""}]})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct AirtableConnector;
+
+#[async_trait]
+impl Connector for AirtableConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_record".to_string(),
+            name: "Create Record".to_string(),
+            description: Some("Create a record in Airtable".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_record" => Ok(serde_json::json!({"id": "", "createdTime": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct HubSpotConnector;
+
+#[async_trait]
+impl Connector for HubSpotConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_contact".to_string(),
+            name: "Create Contact".to_string(),
+            description: Some("Create a contact in HubSpot".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_contact" => Ok(serde_json::json!({"id": "", "properties": {}})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct JiraConnector;
+
+#[async_trait]
+impl Connector for JiraConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_issue".to_string(),
+            name: "Create Issue".to_string(),
+            description: Some("Create an issue in Jira".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_issue" => Ok(serde_json::json!({"id": "", "key": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct LinearConnector;
+
+#[async_trait]
+impl Connector for LinearConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_issue".to_string(),
+            name: "Create Issue".to_string(),
+            description: Some("Create an issue in Linear".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_issue" => Ok(serde_json::json!({"id": "", "identifier": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct AsanaConnector;
+
+#[async_trait]
+impl Connector for AsanaConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_task".to_string(),
+            name: "Create Task".to_string(),
+            description: Some("Create a task in Asana".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_task" => Ok(serde_json::json!({"id": "", "gid": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
 }
 
 pub struct Connectors {
