@@ -10,6 +10,8 @@ use rhai::{Dynamic, Engine};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub struct FlowExecutor {
@@ -291,13 +293,40 @@ impl FlowExecutor {
                 }
                 let input = serde_json::Value::Object(input_obj);
                 let connectors = self.connectors.clone();
+                let max_attempts = (step.retry_policy.max_retries + 1).max(1) as usize;
+                let base_delay_ms = if step.retry_policy.initial_backoff_ms > 0 {
+                    step.retry_policy.initial_backoff_ms as u64
+                } else {
+                    1000
+                };
 
-                let exec_result = self
-                    .dispatch_connector_action(&connectors, &connector_name, &action_name, &input)
-                    .await;
+                let mut output_value: Option<Value> = None;
+                let mut last_error: Option<String> = None;
 
-                match exec_result {
-                    Ok(value) => json!({
+                for attempt in 0..max_attempts {
+                    let exec_result = self
+                        .dispatch_connector_action(&connectors, &connector_name, &action_name, &input)
+                        .await;
+
+                    match exec_result {
+                        Ok(value) => {
+                            output_value = Some(value);
+                            break;
+                        }
+                        Err(err) => {
+                            last_error = Some(err);
+
+                            if attempt + 1 < max_attempts {
+                                let sleep_ms = base_delay_ms
+                                    .saturating_mul(2u64.saturating_pow(attempt as u32));
+                                sleep(Duration::from_millis(sleep_ms)).await;
+                            }
+                        }
+                    }
+                }
+
+                match output_value {
+                    Some(value) => json!({
                         "step_id": step.id,
                         "connector": step.connector,
                         "action": step.action,
@@ -305,12 +334,12 @@ impl FlowExecutor {
                         "output": value,
                         "status": "executed"
                     }),
-                    Err(err) => {
+                    None => {
                         return StepExecutionResult {
                             step_id: step.id.clone(),
                             status: "failed".to_string(),
                             output: Value::Null,
-                            error: Some(err),
+                            error: last_error,
                             duration_ms: started.elapsed().as_millis() as i32,
                         };
                     }
