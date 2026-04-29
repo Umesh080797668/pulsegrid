@@ -318,7 +318,9 @@ async fn detect_workspace_patterns(
     pool: &sqlx::PgPool,
     workspace_id: uuid::Uuid,
 ) -> Result<Vec<AIPatternRecord>, (axum::http::StatusCode, String)> {
-    let rows = sqlx::query!(
+    // STUB: Pattern detection analysis - uses runtime queries since tables might not exist at compile time
+    // TODO Phase 3: Replace with actual ML model inference
+    let rows = sqlx::query(
         r#"
         SELECT fr.id, fr.flow_id, fr.started_at, fr.status, f.name AS flow_name
         FROM flow_runs fr
@@ -327,8 +329,8 @@ async fn detect_workspace_patterns(
           AND fr.started_at >= NOW() - INTERVAL '30 days'
         ORDER BY fr.started_at ASC
         "#,
-        workspace_id
     )
+    .bind(workspace_id)
     .fetch_all(pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -343,10 +345,12 @@ async fn detect_workspace_patterns(
     let mut ordered: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>, String, String)> = Vec::new();
 
     for row in rows {
-        let Some(flow_id) = row.flow_id else { continue };
-        let started_at = row.started_at;
-        let status = row.status;
-        let flow_name = row.flow_name.as_ref().map(|n| n.clone()).unwrap_or_else(|| "Unnamed flow".to_string());
+        let flow_id: Option<uuid::Uuid> = row.get("flow_id");
+        let Some(flow_id) = flow_id else { continue };
+        let started_at: chrono::DateTime<chrono::Utc> = row.get("started_at");
+        let status: String = row.get("status");
+        let flow_name: Option<String> = row.get("flow_name");
+        let flow_name = flow_name.unwrap_or_else(|| "Unnamed flow".to_string());
         ordered.push((flow_id, started_at, status.clone(), flow_name.clone()));
         by_flow.entry(flow_id).or_default().push((started_at, status, flow_name));
     }
@@ -1904,12 +1908,12 @@ async fn get_detected_patterns(
 // STUB: This endpoint validates Stripe webhook signatures and processes subscription events.
 // TODO: Add actual Stripe secret verification, implement subscription create/cancel/expire lifecycle
 async fn stripe_webhook_handler(
-    State(state): State<AppState>,
+    _state: State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     // STUB: Parse Stripe webhook signature and event
     // In production, verify signature using Stripe secret from environment
-    let stripe_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
+    let _stripe_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
         .unwrap_or_else(|_| "whsec_test".to_string());
     
     let body_str = String::from_utf8(body.to_vec())
