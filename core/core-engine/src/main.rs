@@ -733,6 +733,9 @@ async fn start_event_listener(
     vault: std::sync::Arc<core_vault::Vault>,
     event_tx: broadcast::Sender<String>,
 ) {
+    const STREAM_KEY: &str = "stream:events:global";
+    const CONSUMER_GROUP: &str = "pulsegrid-workers";
+
     let redis_url = "redis://127.0.0.1:6379/";
     let client = match redis::Client::open(redis_url) {
         Ok(c) => c,
@@ -753,27 +756,46 @@ async fn start_event_listener(
 
     println!("Connected to Redis. Listening for inbound PulseEvents...");
 
-    // We start listening from the latest message ('$')
-    let mut last_id = String::from("$");
+    // Ensure consumer group exists (idempotent)
+    if let Err(e) = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(STREAM_KEY)
+        .arg(CONSUMER_GROUP)
+        .arg("$")
+        .arg("MKSTREAM")
+        .query_async::<()>(&mut con)
+        .await
+    {
+        let err = e.to_string();
+        if !err.contains("BUSYGROUP") {
+            eprintln!("Failed to create Redis consumer group: {}", err);
+            return;
+        }
+    }
+
+    let consumer_name = format!("consumer-{}", uuid::Uuid::new_v4());
+    println!(
+        "Using Redis consumer group '{}' with consumer '{}'",
+        CONSUMER_GROUP, consumer_name
+    );
 
     let opts = StreamReadOptions::default()
+        .group(CONSUMER_GROUP, &consumer_name)
         .block(5000) // Block for 5 seconds waiting for events
         .count(10); // Read up to 10 events per batch
 
     let executor = Arc::new(FlowExecutor::new(pg_pool.clone(), vault.clone()));
 
     loop {
-        // XREAD block from our blueprint's stream key
+        // XREADGROUP for at-least-once delivery
         let result: Result<StreamReadReply, redis::RedisError> = con
-            .xread_options(&["stream:events:global"], &[&last_id], &opts)
+            .xread_options(&[STREAM_KEY], &[">"], &opts)
             .await;
 
         match result {
             Ok(reply) => {
                 for key in reply.keys {
                     for node in key.ids {
-                        last_id = node.id.clone();
-
                         // Grab the actual event payload (we assume it's stored under a 'payload' field)
                         if let Some(redis::Value::BulkString(data)) = node.map.get("payload") {
                             let payload_str = String::from_utf8_lossy(data);
@@ -781,7 +803,7 @@ async fn start_event_listener(
                             // Try parsing into our structural PulseEvent model
                             match serde_json::from_str::<PulseEvent>(&payload_str) {
                                 Ok(event) => {
-                                    println!("🔥 Received PulseEvent (ID: {})", last_id);
+                                    println!("🔥 Received PulseEvent (ID: {})", node.id);
                                     let _ = event_tx.send(payload_str.to_string());
 
                                     // BILLING: Increment event count
@@ -1043,11 +1065,25 @@ async fn start_event_listener(
                                             final_status
                                         );
                                     }
+
+                                    // Acknowledge only after successful processing
+                                    if let Err(e) = redis::cmd("XACK")
+                                        .arg(STREAM_KEY)
+                                        .arg(CONSUMER_GROUP)
+                                        .arg(&node.id)
+                                        .query_async::<i32>(&mut con)
+                                        .await
+                                    {
+                                        eprintln!(
+                                            "Failed to ACK message {} in group {}: {}",
+                                            node.id, CONSUMER_GROUP, e
+                                        );
+                                    }
                                 }
                                 Err(err) => {
                                     println!(
                                         "⚠️ Raw message received (ID: {}). Parsing to PulseEvent failed: {}",
-                                        last_id, err
+                                        node.id, err
                                     );
                                     println!("   Raw Data: {}", payload_str);
                                 }
