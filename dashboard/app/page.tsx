@@ -951,7 +951,7 @@ export default function HomePage() {
                       <div className="card">
                         <div className="card-hd"><div className="card-title"><Ic n="grid" s={13} />Visual Canvas</div></div>
                         <div style={{ padding: 14 }}>
-                          <FlowCanvas definitionJson={definitionJson} onDefinitionJsonChange={setDefinitionJson} connectors={connectors} />
+                          <FlowCanvas definitionJson={definitionJson} onDefinitionJsonChange={setDefinitionJson} catalog={connectors} />
                         </div>
                       </div>
                       <div className="card">

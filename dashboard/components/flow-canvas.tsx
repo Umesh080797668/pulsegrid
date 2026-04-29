@@ -90,18 +90,28 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
 export function FlowCanvas({
   definitionJson,
   onDefinitionJsonChange,
-  connectors,
+  catalog,
 }: {
   definitionJson: string;
   onDefinitionJsonChange: (value: string) => void;
-  connectors: ConnectorCatalogItem[];
+  catalog: ConnectorCatalogItem[];
 }) {
   const [selectedStepId, setSelectedStepId] = useState('');
+
+  const connectorOptions = useMemo(
+    () => Array.from(new Set(catalog.map((item) => item.connector))),
+    [catalog]
+  );
   
   // Add step state
-  const [newConnector, setNewConnector] = useState(() => connectors[0]?.connector || 'custom');
-  const [newAction, setNewAction] = useState(() => connectors[0]?.action || 'call_api');
+  const [newConnector, setNewConnector] = useState(() => connectorOptions[0] || 'custom');
+  const [newAction, setNewAction] = useState('call_api');
   const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'loop' | 'sub_flow'>('action');
+
+  const actionOptions = useMemo(
+    () => catalog.filter((item) => item.connector === newConnector).map((item) => item.action),
+    [catalog, newConnector]
+  );
   
   // Edit step state
   const [editAction, setEditAction] = useState('');
@@ -128,6 +138,29 @@ export function FlowCanvas({
       setEditCondition(selectedStep.condition || '');
     }
   }, [selectedStepId, selectedStep]);
+
+  useEffect(() => {
+    if (connectorOptions.length === 0) {
+      setNewConnector('custom');
+      setNewAction('call_api');
+      return;
+    }
+
+    if (!connectorOptions.includes(newConnector)) {
+      setNewConnector(connectorOptions[0]);
+    }
+  }, [connectorOptions, newConnector]);
+
+  useEffect(() => {
+    if (actionOptions.length === 0) {
+      setNewAction('call_api');
+      return;
+    }
+
+    if (!actionOptions.includes(newAction)) {
+      setNewAction(actionOptions[0]);
+    }
+  }, [actionOptions, newAction]);
 
   function updateDefinition(next: FlowDefinition) {
     onDefinitionJsonChange(JSON.stringify(next, null, 2));
@@ -348,20 +381,22 @@ export function FlowCanvas({
                 <option value="sub_flow">Sub-Flow</option>
               </select>
               <select value={newConnector} onChange={(e) => setNewConnector(e.target.value)} style={{ padding: '8px', flex: 1 }}>
-                {connectors.length === 0 ? <option value="custom">custom</option> : null}
-                {connectors.map((item) => (
-                  <option key={`${item.connector}:${item.action}`} value={item.connector}>
-                    {item.connector}
+                {connectorOptions.length === 0 ? <option value="custom">custom</option> : null}
+                {connectorOptions.map((connector) => (
+                  <option key={connector} value={connector}>
+                    {connector}
                   </option>
                 ))}
               </select>
             </div>
-            <input
-              style={{ padding: '8px' }}
-              value={newAction}
-              onChange={(e) => setNewAction(e.target.value)}
-              placeholder="Action name"
-            />
+            <select value={newAction} onChange={(e) => setNewAction(e.target.value)} style={{ padding: '8px', flex: 1 }}>
+              {actionOptions.length === 0 ? <option value="call_api">call_api</option> : null}
+              {actionOptions.map((action) => (
+                <option key={action} value={action}>
+                  {action}
+                </option>
+              ))}
+            </select>
             <button onClick={addStep} disabled={!canEdit} style={{ padding: '8px', backgroundColor: '#7c9cff', color: '#000', fontWeight: 'bold' }}>
               Add Step
             </button>
