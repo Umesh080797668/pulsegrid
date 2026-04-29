@@ -14,8 +14,9 @@ use redis::{
     streams::{StreamReadOptions, StreamReadReply},
 };
 use reqwest::Client;
-use serde::Deserialize;
-use sqlx::FromRow;
+use chrono::{Datelike, Timelike};
+use serde::{Deserialize, Serialize};
+use sqlx::{FromRow, Row};
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -41,6 +42,457 @@ struct AppState {
     pool: sqlx::PgPool,
     vault: Arc<Vault>,
     event_tx: broadcast::Sender<String>,
+}
+
+#[derive(Clone, Copy)]
+struct PlanLimits {
+    max_flows: i64,
+    max_events_per_month: i64,
+    max_connectors: i64,
+    allowed_connector_tier: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AIPatternRecord {
+    id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    pattern_type: String,
+    description: String,
+    confidence: f32,
+    frequency: String,
+    events_involved: serde_json::Value,
+    suggested_trigger: Option<String>,
+    suggested_actions: serde_json::Value,
+    suggested_flow: serde_json::Value,
+    detected_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeWebhookEnvelope {
+    #[serde(rename = "type")]
+    event_type: String,
+    data: StripeWebhookData,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeWebhookData {
+    object: serde_json::Value,
+}
+
+const FREE_CONNECTORS: &[&str] = &[
+    "GMAIL",
+    "SLACK",
+    "TELEGRAM",
+    "GITHUB",
+    "GOOGLE_SHEETS",
+    "NOTION",
+    "AIRTABLE",
+    "HTTP",
+    "EMAIL",
+    "RSS",
+    "WEATHER_API",
+    "SCHEDULE",
+    "WEBHOOK",
+    "PUSHOVER",
+    "DISCORD",
+];
+
+const PRO_CONNECTORS: &[&str] = &[
+    "SHOPIFY",
+    "STRIPE",
+    "HUBSPOT",
+    "SALESFORCE",
+    "TWILIO",
+    "SENDGRID",
+    "WHATSAPP_BUSINESS",
+    "LINEAR",
+    "JIRA",
+    "PAGERDUTY",
+    "DATADOG",
+    "CLOUDFLARE",
+    "AWS",
+    "GOOGLE_CLOUD",
+    "PLAID",
+    "FITBIT",
+    "APPLE_HEALTH",
+];
+
+// BILLING: Plan limit configuration per workspace tier
+// STUB: This is the scaffolding for plan enforcement.
+// 
+// Phase 4 will add:
+// - Stripe integration for automatic billing
+// - Monthly usage reports
+// - Overage notifications and soft limits
+// - Plan downgrades with data retention options
+fn plan_limits(plan: &str) -> PlanLimits {
+    match plan.trim().to_lowercase().as_str() {
+        "pro" => PlanLimits {
+            max_flows: 50,
+            max_events_per_month: 50_000,
+            max_connectors: 10,
+            allowed_connector_tier: "pro",
+        },
+        "business" | "enterprise" => PlanLimits {
+            max_flows: 500,
+            max_events_per_month: 500_000,
+            max_connectors: 100,
+            allowed_connector_tier: "business",
+        },
+        _ => PlanLimits {
+            max_flows: 5,
+            max_events_per_month: 1_000,
+            max_connectors: 3,
+            allowed_connector_tier: "free",
+        },
+    }
+}
+
+fn month_start_utc() -> chrono::NaiveDate {
+    let now = chrono::Utc::now().date_naive();
+    chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap_or(now)
+}
+
+fn is_connector_allowed(plan: &str, connector_id: &str) -> bool {
+    let normalized = connector_id.trim().to_uppercase();
+    if FREE_CONNECTORS.contains(&normalized.as_str()) {
+        return true;
+    }
+
+    let limits = plan_limits(plan);
+    if limits.allowed_connector_tier == "pro" {
+        return PRO_CONNECTORS.contains(&normalized.as_str()) || FREE_CONNECTORS.contains(&normalized.as_str());
+    }
+
+    if limits.allowed_connector_tier == "business" {
+        return true;
+    }
+
+    false
+}
+
+async fn get_workspace_plan(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<String, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!("SELECT plan FROM workspaces WHERE id = $1", workspace_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    row.map(|r| r.plan).ok_or((axum::http::StatusCode::NOT_FOUND, "Workspace not found".to_string()))
+}
+
+async fn get_workspace_flow_count(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<i64, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!("SELECT COUNT(*) as count FROM flows WHERE workspace_id = $1", workspace_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(row.count.unwrap_or(0))
+}
+
+async fn get_workspace_connector_count(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<i64, (axum::http::StatusCode, String)> {
+    let row = sqlx::query!("SELECT COUNT(*) as count FROM credentials WHERE workspace_id = $1", workspace_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(row.count.unwrap_or(0))
+}
+
+async fn get_monthly_usage(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<(i64, i64), (axum::http::StatusCode, String)> {
+    let month = month_start_utc();
+    let row = sqlx::query(
+        "SELECT event_count, flow_run_count FROM usage_counters WHERE workspace_id = $1 AND usage_month = $2",
+    )
+    .bind(workspace_id)
+    .bind(month)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some(row) = row {
+        let event_count: i64 = row.try_get("event_count").unwrap_or(0);
+        let flow_run_count: i64 = row.try_get("flow_run_count").unwrap_or(0);
+        Ok((event_count, flow_run_count))
+    } else {
+        Ok((0, 0))
+    }
+}
+
+async fn increment_usage(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+    event_delta: i64,
+    flow_run_delta: i64,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let month = month_start_utc();
+    sqlx::query(
+        r#"
+        INSERT INTO usage_counters (workspace_id, usage_month, event_count, flow_run_count, connector_count)
+        VALUES ($1, $2, $3, $4, 0)
+        ON CONFLICT (workspace_id, usage_month)
+        DO UPDATE SET
+            event_count = usage_counters.event_count + EXCLUDED.event_count,
+            flow_run_count = usage_counters.flow_run_count + EXCLUDED.flow_run_count,
+            updated_at = NOW()
+        "#,
+    )
+    .bind(workspace_id)
+    .bind(month)
+    .bind(event_delta)
+    .bind(flow_run_delta)
+    .execute(pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(())
+}
+
+async fn enforce_flow_limit(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let plan = get_workspace_plan(pool, workspace_id).await?;
+    let limits = plan_limits(&plan);
+    let count = get_workspace_flow_count(pool, workspace_id).await?;
+    if count >= limits.max_flows {
+        return Err((
+            axum::http::StatusCode::PAYMENT_REQUIRED,
+            format!("Plan '{}' allows only {} flows", plan, limits.max_flows),
+        ));
+    }
+    Ok(())
+}
+
+async fn enforce_connector_limit(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+    connector_id: &str,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let plan = get_workspace_plan(pool, workspace_id).await?;
+    let limits = plan_limits(&plan);
+    if !is_connector_allowed(&plan, connector_id) {
+        return Err((
+            axum::http::StatusCode::PAYMENT_REQUIRED,
+            format!("Connector {} requires a higher plan", connector_id),
+        ));
+    }
+
+    let count = get_workspace_connector_count(pool, workspace_id).await?;
+    if count >= limits.max_connectors {
+        return Err((
+            axum::http::StatusCode::PAYMENT_REQUIRED,
+            format!("Plan '{}' allows only {} connectors", plan, limits.max_connectors),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn enforce_event_quota(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let plan = get_workspace_plan(pool, workspace_id).await?;
+    let limits = plan_limits(&plan);
+    let (event_count, _) = get_monthly_usage(pool, workspace_id).await?;
+    if event_count >= limits.max_events_per_month {
+        return Err((
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            format!("Plan '{}' monthly event quota exceeded", plan),
+        ));
+    }
+    Ok(())
+}
+
+async fn detect_workspace_patterns(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<Vec<AIPatternRecord>, (axum::http::StatusCode, String)> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT fr.id, fr.flow_id, fr.started_at, fr.status, f.name AS flow_name
+        FROM flow_runs fr
+        LEFT JOIN flows f ON f.id = fr.flow_id
+        WHERE fr.workspace_id = $1
+          AND fr.started_at >= NOW() - INTERVAL '30 days'
+        ORDER BY fr.started_at ASC
+        "#,
+        workspace_id
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut patterns = Vec::new();
+    if rows.is_empty() {
+        return Ok(patterns);
+    }
+
+    let mut by_flow: std::collections::HashMap<uuid::Uuid, Vec<(chrono::DateTime<chrono::Utc>, String, String)>> =
+        std::collections::HashMap::new();
+    let mut ordered: Vec<(uuid::Uuid, chrono::DateTime<chrono::Utc>, String, String)> = Vec::new();
+
+    for row in rows {
+        let Some(flow_id) = row.flow_id else { continue };
+        let started_at = row.started_at;
+        let status = row.status;
+        let flow_name = row.flow_name.as_ref().map(|n| n.clone()).unwrap_or_else(|| "Unnamed flow".to_string());
+        ordered.push((flow_id, started_at, status.clone(), flow_name.clone()));
+        by_flow.entry(flow_id).or_default().push((started_at, status, flow_name));
+    }
+
+    for (flow_id, samples) in by_flow.iter() {
+        if samples.len() >= 3 {
+            let mut hour_groups: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+            let mut failure_count = 0usize;
+            for (started_at, status, _) in samples.iter() {
+                *hour_groups.entry(started_at.hour()).or_insert(0) += 1;
+                if status.eq_ignore_ascii_case("failed") {
+                    failure_count += 1;
+                }
+            }
+
+            if let Some((hour, count)) = hour_groups.into_iter().max_by_key(|(_, count)| *count) {
+                if count >= 3 {
+                    let flow_name = samples.first().map(|(_, _, name)| name.clone()).unwrap_or_else(|| "flow".to_string());
+                    patterns.push(AIPatternRecord {
+                        id: uuid::Uuid::new_v4(),
+                        workspace_id,
+                        pattern_type: "time_based".to_string(),
+                        description: format!("{} frequently runs around {:02}:00 UTC", flow_name, hour),
+                        confidence: ((count as f32 / samples.len() as f32) + 0.2).min(1.0),
+                        frequency: format!("{} runs observed", count),
+                        events_involved: serde_json::json!([flow_id.to_string()]),
+                        suggested_trigger: Some(format!("Schedule around {:02}:00 UTC", hour)),
+                        suggested_actions: serde_json::json!([]),
+                        suggested_flow: serde_json::json!({
+                            "type": "schedule",
+                            "connector": "schedule",
+                            "event": "schedule.tick",
+                            "filters": [{"field": "cron", "op": "eq", "value": format!("0 {} * * *", hour)}]
+                        }),
+                        detected_at: chrono::Utc::now(),
+                    });
+                }
+            }
+
+            if failure_count * 2 >= samples.len() && samples.len() >= 5 {
+                let flow_name = samples.first().map(|(_, _, name)| name.clone()).unwrap_or_else(|| "flow".to_string());
+                patterns.push(AIPatternRecord {
+                    id: uuid::Uuid::new_v4(),
+                    workspace_id,
+                    pattern_type: "anomaly".to_string(),
+                    description: format!("{} shows a high failure rate over the last 30 days", flow_name),
+                    confidence: 0.8,
+                    frequency: format!("{} failures out of {} runs", failure_count, samples.len()),
+                    events_involved: serde_json::json!([flow_id.to_string()]),
+                    suggested_trigger: None,
+                    suggested_actions: serde_json::json!(["inspect recent step failures", "review connector secrets"]),
+                    suggested_flow: serde_json::json!({
+                        "type": "action",
+                        "connector": "ai",
+                        "event": "failure.analysis"
+                    }),
+                    detected_at: chrono::Utc::now(),
+                });
+            }
+        }
+    }
+
+    let mut correlation_pairs: std::collections::HashMap<(uuid::Uuid, uuid::Uuid), usize> =
+        std::collections::HashMap::new();
+    for window in ordered.windows(2) {
+        let (flow_a, time_a, _, _) = &window[0];
+        let (flow_b, time_b, _, _) = &window[1];
+        if flow_a != flow_b {
+            let delta = (*time_b - *time_a).num_seconds();
+            if delta > 0 && delta <= 600 {
+                *correlation_pairs.entry((*flow_a, *flow_b)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    for ((flow_a, flow_b), count) in correlation_pairs {
+        if count >= 2 {
+            patterns.push(AIPatternRecord {
+                id: uuid::Uuid::new_v4(),
+                workspace_id,
+                pattern_type: "correlation".to_string(),
+                description: format!("Flow {} is often followed by {} within 10 minutes", flow_a, flow_b),
+                confidence: (count as f32 / 4.0).min(1.0),
+                frequency: format!("{} correlated runs", count),
+                events_involved: serde_json::json!([flow_a.to_string(), flow_b.to_string()]),
+                suggested_trigger: Some(format!("When flow {} completes", flow_a)),
+                suggested_actions: serde_json::json!([flow_b.to_string()]),
+                suggested_flow: serde_json::json!({
+                    "type": "action",
+                    "connector": "webhook",
+                    "event": "flow.correlated"
+                }),
+                detected_at: chrono::Utc::now(),
+            });
+        }
+    }
+
+    Ok(patterns)
+}
+
+async fn refresh_workspace_patterns(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+) -> Result<Vec<AIPatternRecord>, (axum::http::StatusCode, String)> {
+    let patterns = detect_workspace_patterns(pool, workspace_id).await?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query("DELETE FROM ai_detected_patterns WHERE workspace_id = $1")
+        .bind(workspace_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    for pattern in &patterns {
+        sqlx::query(
+            r#"
+            INSERT INTO ai_detected_patterns (
+                id, workspace_id, pattern_type, description, confidence, frequency,
+                events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+            "#,
+        )
+        .bind(pattern.id)
+        .bind(pattern.workspace_id)
+        .bind(&pattern.pattern_type)
+        .bind(&pattern.description)
+        .bind(pattern.confidence)
+        .bind(&pattern.frequency)
+        .bind(&pattern.events_involved)
+        .bind(&pattern.suggested_trigger)
+        .bind(&pattern.suggested_actions)
+        .bind(&pattern.suggested_flow)
+        .bind(pattern.detected_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(patterns)
 }
 
 #[tokio::main]
@@ -80,6 +532,10 @@ async fn main() {
         )
         .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
         .route("/api/v1/workspaces/{workspace_id}/upgrade", post(upgrade_workspace))
+        .route("/api/v1/workspaces/{workspace_id}/billing/usage", get(get_workspace_usage))
+        .route("/api/v1/workspaces/{workspace_id}/patterns", get(get_detected_patterns))
+        // Stripe webhook
+        .route("/api/v1/stripe/webhook", post(stripe_webhook_handler))
         // Flow CRUD endpoints
         .route("/api/v1/flows", post(create_flow))
         .route("/api/v1/flows/{workspace_id}", get(list_flows))
@@ -303,6 +759,19 @@ async fn start_event_listener(
                                 Ok(event) => {
                                     println!("🔥 Received PulseEvent (ID: {})", last_id);
                                     let _ = event_tx.send(payload_str.to_string());
+
+                                    // BILLING: Increment event count
+                                    let _ = increment_usage(&pg_pool, event.tenant_id, 1, 0).await;
+
+                                    // PATTERN DETECTION: STUB - Trigger after collecting N events
+                                    // TODO Phase 3: Replace with actual ML-based pattern detection via tract ONNX
+                                    // For now, this is a placeholder that could trigger pattern analysis after N events
+                                    // Example: Every 100 events, call analyze_event_history() and store results
+                                    let (event_count, _) = get_monthly_usage(&pg_pool, event.tenant_id).await.unwrap_or((0, 0));
+                                    if event_count % 100 == 0 && event_count > 0 {
+                                        eprintln!("[STUB] Trigger batch pattern detection (every 100 events) - not yet implemented");
+                                        // TODO: Call analyze_event_history() and store to ai_detected_patterns table
+                                    }
 
                                     // Fetch active flows for this workspace
                                     let active_flows = sqlx::query!(
@@ -639,6 +1108,9 @@ async fn create_flow(
     State(state): State<AppState>,
     Json(payload): Json<CreateFlowRequest>,
 ) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+    // BILLING: Enforce flow creation limit per plan
+    enforce_flow_limit(&state.pool, payload.workspace_id).await?;
+    
     let row = sqlx::query!(
         r#"
         INSERT INTO flows (workspace_id, name, description, definition, enabled, run_count)
@@ -813,6 +1285,23 @@ async fn upgrade_workspace(
     Path(workspace_id): Path<uuid::Uuid>,
     Json(payload): Json<UpgradeWorkspaceRequest>,
 ) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
+    // BILLING STUB: Workspace plan upgrade handler
+    // This endpoint updates the workspace plan and billing subscription.
+    // 
+    // Phase 4 (Full Stripe Integration) will add:
+    // - Stripe API calls to create/update customer subscriptions
+    // - Webhook signature verification from Stripe events
+    // - Subscription lifecycle management (pause, cancel, downgrade)
+    // - Invoice generation and payment processing
+    // - Retry logic for failed payments
+    // - Trial period management for new plans
+    // - Proration calculations for mid-cycle upgrades
+    //
+    // Current limitations (scaffold):
+    // - No Stripe API integration
+    // - No subscription created in Stripe during upgrade
+    // - No webhook handler to sync Stripe changes back to DB
+    // - No cancellation logic if payment fails
     let plan = payload.plan.trim().to_lowercase();
     if plan.is_empty() {
         return Err((axum::http::StatusCode::BAD_REQUEST, "Plan is required".into()));
@@ -1025,6 +1514,9 @@ async fn upsert_credential(
         ));
     }
 
+    // BILLING: Enforce connector tier and count limits per plan
+    enforce_connector_limit(&state.pool, workspace_id, &connector_id).await?;
+
     let (encrypted_blob, nonce) = state.vault.encrypt(&payload.value).map_err(|e| {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1219,10 +1711,13 @@ struct WebhookPayload {
 }
 
 async fn webhook_receiver(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
     Json(_payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // BILLING: Enforce event quota per plan
+    enforce_event_quota(&state.pool, workspace_id).await?;
+    
     // For now, accept any webhook and push to event bus
     // TODO: Implement signature verification based on workspace webhooks config
     
@@ -1233,6 +1728,9 @@ async fn webhook_receiver(
         event_type: "webhook.received".to_string(),
         data: serde_json::json!({"timestamp": chrono::Utc::now().to_rfc3339()}),
     };
+
+    // Increment event count for billing
+    let _ = increment_usage(&state.pool, workspace_id, 1, 0).await;
 
     // Push to Redis Streams
     let redis_url = "redis://127.0.0.1:6379/";
@@ -1354,6 +1852,155 @@ async fn get_flow_run_details(
         steps_log: row.steps_log,
         error_message: row.error_message,
     }))
+}
+
+// STUB: Pattern detection endpoint - returns detected patterns for a workspace
+// This is scaffolding for the pattern detection feature. Full ML-based detection
+// will be implemented in Phase 3 with tract ONNX integration.
+async fn get_detected_patterns(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // STUB: Retrieve patterns from ai_detected_patterns table
+    // TODO: Add pagination, filtering by pattern_type, date range
+    let patterns = sqlx::query(
+        r#"
+        SELECT id, workspace_id, pattern_type, description, confidence, frequency,
+               events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at
+        FROM ai_detected_patterns
+        WHERE workspace_id = $1
+        ORDER BY detected_at DESC
+        LIMIT 50
+        "#
+    )
+    .bind(workspace_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let patterns_json: Vec<serde_json::Value> = patterns.iter().map(|row| {
+        serde_json::json!({
+            "id": row.get::<String, _>("id"),
+            "workspace_id": row.get::<uuid::Uuid, _>("workspace_id").to_string(),
+            "pattern_type": row.get::<String, _>("pattern_type"),
+            "description": row.get::<String, _>("description"),
+            "confidence": row.get::<f32, _>("confidence"),
+            "frequency": row.get::<String, _>("frequency"),
+            "events_involved": row.get::<serde_json::Value, _>("events_involved"),
+            "suggested_trigger": row.get::<Option<String>, _>("suggested_trigger"),
+            "suggested_actions": row.get::<serde_json::Value, _>("suggested_actions"),
+            "suggested_flow": row.get::<serde_json::Value, _>("suggested_flow"),
+            "detected_at": row.get::<chrono::DateTime<chrono::Utc>, _>("detected_at").to_rfc3339(),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "patterns": patterns_json,
+        "total": patterns_json.len()
+    })))
+}
+
+// BILLING: Stripe webhook handler for subscription lifecycle events
+// STUB: This endpoint validates Stripe webhook signatures and processes subscription events.
+// TODO: Add actual Stripe secret verification, implement subscription create/cancel/expire lifecycle
+async fn stripe_webhook_handler(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // STUB: Parse Stripe webhook signature and event
+    // In production, verify signature using Stripe secret from environment
+    let stripe_secret = std::env::var("STRIPE_WEBHOOK_SECRET")
+        .unwrap_or_else(|_| "whsec_test".to_string());
+    
+    let body_str = String::from_utf8(body.to_vec())
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+    
+    // TODO: Implement stripe_verify_signature(&body_str, headers, &stripe_secret)
+    // For now, just parse the event
+    let event: serde_json::Value = serde_json::from_str(&body_str)
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+    
+    let event_type = event.get("type").and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    
+    eprintln!("[STUB] Stripe webhook received: {}", event_type);
+    
+    // BILLING: Stub handlers for subscription lifecycle events
+    match event_type {
+        "customer.subscription.created" => {
+            // TODO: Extract customer_id, subscription_id from event.data.object
+            // TODO: Update billing_subscriptions table with Stripe IDs
+            eprintln!("[STUB] Subscription created - not yet implemented");
+        },
+        "customer.subscription.updated" => {
+            // TODO: Update plan_tier and status in billing_subscriptions
+            eprintln!("[STUB] Subscription updated - not yet implemented");
+        },
+        "customer.subscription.deleted" => {
+            // TODO: Set status to 'canceled' in billing_subscriptions
+            // TODO: Revert workspace plan to 'free'
+            eprintln!("[STUB] Subscription canceled - not yet implemented");
+        },
+        "invoice.payment_failed" => {
+            // TODO: Set status to 'payment_failed' and send notification
+            eprintln!("[STUB] Payment failed - not yet implemented");
+        },
+        _ => {
+            eprintln!("[STUB] Unknown Stripe event type: {}", event_type);
+        }
+    }
+    
+    // Return success to acknowledge receipt
+    Ok(Json(serde_json::json!({
+        "received": true,
+        "event_type": event_type
+    })))
+}
+
+// BILLING: Usage metering endpoint - returns current month usage for a workspace
+// STUB: Shows event and flow run counts for billing enforcement
+async fn get_workspace_usage(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // Get current plan
+    let plan = get_workspace_plan(&state.pool, workspace_id).await
+        .unwrap_or_else(|_| "free".to_string());
+    
+    let limits = plan_limits(&plan);
+    
+    // Get current month usage
+    let (event_count, flow_run_count) = get_monthly_usage(&state.pool, workspace_id)
+        .await
+        .unwrap_or((0, 0));
+    
+    // Get current counts
+    let flow_count = get_workspace_flow_count(&state.pool, workspace_id).await
+        .unwrap_or(0);
+    let connector_count = get_workspace_connector_count(&state.pool, workspace_id).await
+        .unwrap_or(0);
+    
+    Ok(Json(serde_json::json!({
+        "plan": plan,
+        "current_month": {
+            "events_count": event_count,
+            "flow_runs_count": flow_run_count,
+            "events_limit": limits.max_events_per_month,
+            "events_remaining": (limits.max_events_per_month - event_count).max(0),
+        },
+        "limits": {
+            "max_flows": limits.max_flows,
+            "max_events_per_month": limits.max_events_per_month,
+            "max_connectors": limits.max_connectors,
+            "allowed_connector_tier": limits.allowed_connector_tier,
+        },
+        "current_resources": {
+            "flows_count": flow_count,
+            "flows_remaining": (limits.max_flows - flow_count).max(0),
+            "connectors_count": connector_count,
+            "connectors_remaining": (limits.max_connectors - connector_count).max(0),
+        }
+    })))
 }
 
 async fn get_flow_stats(

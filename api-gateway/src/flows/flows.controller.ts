@@ -193,6 +193,43 @@ export class FlowsController {
   }
 
   /**
+   * Run a flow immediately
+   * POST /flows/:id/run
+   */
+  @Post(':id/run')
+  async runFlow(
+    @Param('id') id: string,
+    @Body() body: { workspaceId?: string; input?: Record<string, any> },
+    @Request() req: ExpressRequest,
+  ) {
+    try {
+      const workspaceId = this.extractWorkspaceId(req);
+      if (body.workspaceId && body.workspaceId !== workspaceId) {
+        throw new BadRequestException(
+          'Run workspace does not match authenticated workspace',
+        );
+      }
+
+      this.logger.log(`Running flow ${id} in workspace ${workspaceId}`);
+
+      const result = await this.flowsService.runFlow(
+        id,
+        workspaceId,
+        body.input || {},
+      );
+
+      return {
+        statusCode: 200,
+        message: 'Flow run started successfully',
+        data: result,
+      };
+    } catch (error) {
+      this.logger.error(`Error running flow ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Extract workspace ID from JWT token in request
    * Throws BadRequestException if workspace not found in token
    */

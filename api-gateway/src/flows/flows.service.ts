@@ -51,12 +51,19 @@ interface DeleteFlowRequest {
   workspaceId: string;
 }
 
+interface RunFlowRequest {
+  id: string;
+  workspaceId: string;
+  input?: Record<string, any>;
+}
+
 interface FlowServiceClient {
   listFlows(request: ListFlowsRequest): any;
   getFlow(request: GetFlowRequest): any;
   createFlow(request: CreateFlowRequest): any;
   updateFlow(request: UpdateFlowRequest): any;
   deleteFlow(request: DeleteFlowRequest): any;
+  triggerFlow(request: RunFlowRequest): any;
 }
 
 @Injectable()
@@ -209,6 +216,26 @@ export class FlowsService {
       return deployedFlow;
     } catch (error) {
       this.logger.error(`Failed to deploy flow ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Run a flow immediately
+   */
+  async runFlow(
+    id: string,
+    workspaceId: string,
+    input: Record<string, any> = {},
+  ): Promise<any> {
+    try {
+      this.logger.log(`Running flow ${id}`);
+      const response = await firstValueFrom(
+        this.flowService.triggerFlow({ id, workspaceId, input }),
+      );
+      return response;
+    } catch (error) {
+      this.logger.error(`Failed to run flow ${id}:`, error);
       throw error;
     }
   }

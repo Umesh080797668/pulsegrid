@@ -1,8 +1,7 @@
-import { Resolver, Query, Mutation, Args, ID, Context } from '@nestjs/graphql';
 import { Inject, Logger } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
+import { Args, Context, ID, Mutation, Query, Resolver, Subscription } from '@nestjs/graphql';
 import { Flow, FlowRun, EventData, EventPattern, Workspace } from './types';
-import { DataLoaders } from './dataloaders';
 
 @Resolver(() => Flow)
 export class FlowResolver {
@@ -16,9 +15,7 @@ export class FlowResolver {
   ): Promise<Flow[]> {
     try {
       const flowService: any = this.client.getService('FlowService');
-      const response = await flowService
-        .listFlows({ workspace_id: workspaceId })
-        .toPromise?.();
+      const response = await flowService.listFlows({ workspace_id: workspaceId }).toPromise?.();
       return response?.flows || [];
     } catch (error) {
       this.logger.error(`Error fetching flows for workspace ${workspaceId}:`, error);
@@ -28,14 +25,12 @@ export class FlowResolver {
 
   @Query(() => Flow, { nullable: true })
   async flow(
-    @Context('dataloaders') dataloaders: DataLoaders,
+    @Context('dataloaders') _dataloaders: any,
     @Args('id', { type: () => ID }) id: string,
   ): Promise<Flow | null> {
     try {
       const flowService: any = this.client.getService('FlowService');
-      const response = await flowService
-        .getFlow({ id })
-        .toPromise?.();
+      const response = await flowService.getFlow({ id }).toPromise?.();
       return response || null;
     } catch (error) {
       this.logger.error(`Error fetching flow ${id}:`, error);
@@ -49,9 +44,7 @@ export class FlowResolver {
   ): Promise<FlowRun[]> {
     try {
       const flowService: any = this.client.getService('FlowService');
-      const response = await flowService
-        .getFlowRuns({ flow_id: flowId, limit: 10 })
-        .toPromise?.();
+      const response = await flowService.getFlowRuns({ flow_id: flowId, limit: 10 }).toPromise?.();
       return response?.runs || [];
     } catch (error) {
       this.logger.error(`Error fetching flow runs for flow ${flowId}:`, error);
@@ -94,9 +87,7 @@ export class FlowResolver {
       if (name) payload.name = name;
       if (description) payload.description = description;
 
-      const response = await flowService
-        .updateFlow(payload)
-        .toPromise?.();
+      const response = await flowService.updateFlow(payload).toPromise?.();
       return response || ({} as Flow);
     } catch (error) {
       this.logger.error(`Error updating flow ${id}:`, error);
@@ -115,6 +106,14 @@ export class FlowResolver {
       return false;
     }
   }
+
+  @Subscription(() => FlowRun)
+  flowRunUpdated(
+    @Args('flowId', { type: () => ID }) flowId: string,
+    @Context() context: any,
+  ) {
+    return context.pubSub.asyncIterator([`flowRunUpdated_${flowId}`]);
+  }
 }
 
 @Resolver(() => EventData)
@@ -130,33 +129,32 @@ export class EventResolver {
   ): Promise<EventData[]> {
     try {
       const eventService: any = this.client.getService('EventService');
-      const response = await eventService
-        .listEvents({ workspace_id: workspaceId, limit })
-        .toPromise?.();
+      const response = await eventService.listEvents({ workspace_id: workspaceId, limit }).toPromise?.();
       return response?.events || [];
     } catch (error) {
-      this.logger.error(
-        `Error fetching events for workspace ${workspaceId}:`,
-        error,
-      );
+      this.logger.error(`Error fetching events for workspace ${workspaceId}:`, error);
       return [];
     }
   }
 
   @Query(() => EventData, { nullable: true })
-  async event(
-    @Args('id', { type: () => ID }) id: string,
-  ): Promise<EventData | null> {
+  async event(@Args('id', { type: () => ID }) id: string): Promise<EventData | null> {
     try {
       const eventService: any = this.client.getService('EventService');
-      const response = await eventService
-        .getEvent({ id })
-        .toPromise?.();
+      const response = await eventService.getEvent({ id }).toPromise?.();
       return response || null;
     } catch (error) {
       this.logger.error(`Error fetching event ${id}:`, error);
       return null;
     }
+  }
+
+  @Subscription(() => EventData)
+  eventReceived(
+    @Args('workspaceId', { type: () => ID }) workspaceId: string,
+    @Context() context: any,
+  ) {
+    return context.pubSub.asyncIterator([`eventReceived_${workspaceId}`]);
   }
 }
 
@@ -164,26 +162,18 @@ export class EventResolver {
 export class PatternResolver {
   private logger = new Logger('PatternResolver');
 
-  constructor(
-    @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
-  ) {}
+  constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
 
   @Query(() => [EventPattern])
   async detectedPatterns(
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
   ): Promise<EventPattern[]> {
     try {
-      // Call core-ai service for pattern detection via PULSECORE gRPC proxy
       const patternService: any = this.client.getService('PatternService');
-      const response = await patternService
-        .detectPatterns({ workspace_id: workspaceId })
-        .toPromise?.();
+      const response = await patternService.detectPatterns({ workspace_id: workspaceId }).toPromise?.();
       return response?.patterns || [];
     } catch (error) {
-      this.logger.error(
-        `Error detecting patterns for workspace ${workspaceId}:`,
-        error,
-      );
+      this.logger.error(`Error detecting patterns for workspace ${workspaceId}:`, error);
       return [];
     }
   }
@@ -193,21 +183,15 @@ export class PatternResolver {
     @Args('patternId') patternId: string,
   ): Promise<Flow | null> {
     try {
-      // First, get pattern details from core-ai service
       const patternService: any = this.client.getService('PatternService');
-      const patternResponse = await patternService
-        .getPattern({ id: patternId })
-        .toPromise?.();
+      const patternResponse = await patternService.getPattern({ id: patternId }).toPromise?.();
 
       if (!patternResponse) {
         return null;
       }
 
-      // Then generate flow suggestion from pattern
       const suggestionService: any = this.client.getService('SuggestionService');
-      const flowResponse = await suggestionService
-        .suggestFlow({ pattern: patternResponse })
-        .toPromise?.();
+      const flowResponse = await suggestionService.suggestFlow({ pattern: patternResponse }).toPromise?.();
 
       return flowResponse || null;
     } catch (error) {
@@ -227,9 +211,7 @@ export class WorkspaceResolver {
   async workspaces(): Promise<Workspace[]> {
     try {
       const workspaceService: any = this.client.getService('WorkspaceService');
-      const response = await workspaceService
-        .listWorkspaces({})
-        .toPromise?.();
+      const response = await workspaceService.listWorkspaces({}).toPromise?.();
       return response?.workspaces || [];
     } catch (error) {
       this.logger.error('Error fetching workspaces:', error);
@@ -238,14 +220,10 @@ export class WorkspaceResolver {
   }
 
   @Query(() => Workspace, { nullable: true })
-  async workspace(
-    @Args('id', { type: () => ID }) id: string,
-  ): Promise<Workspace | null> {
+  async workspace(@Args('id', { type: () => ID }) id: string): Promise<Workspace | null> {
     try {
       const workspaceService: any = this.client.getService('WorkspaceService');
-      const response = await workspaceService
-        .getWorkspace({ id })
-        .toPromise?.();
+      const response = await workspaceService.getWorkspace({ id }).toPromise?.();
       return response || null;
     } catch (error) {
       this.logger.error(`Error fetching workspace ${id}:`, error);
@@ -257,9 +235,7 @@ export class WorkspaceResolver {
   async createWorkspace(@Args('name') name: string): Promise<Workspace> {
     try {
       const workspaceService: any = this.client.getService('WorkspaceService');
-      const response = await workspaceService
-        .createWorkspace({ name })
-        .toPromise?.();
+      const response = await workspaceService.createWorkspace({ name }).toPromise?.();
       return response || ({} as Workspace);
     } catch (error) {
       this.logger.error(`Error creating workspace: ${name}`, error);
@@ -267,4 +243,3 @@ export class WorkspaceResolver {
     }
   }
 }
-

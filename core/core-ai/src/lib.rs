@@ -47,6 +47,23 @@ pub mod pattern_detection {
     }
 
     /// Analyzes event history for patterns (placeholder for tract ONNX integration)
+    ///
+    /// STUB: This implementation uses statistical analysis only.
+    /// Phase 3 will integrate tract ONNX for ML-based time-series detection.
+    ///
+    /// TODO Phase 3:
+    /// - Replace statistical functions with ONNX model inference
+    /// - Add tract crate dependency: `tract = "0.21"`
+    /// - Load ONNX model from bytes/file
+    /// - Implement recurrent neural network for sequence detection
+    /// - Add confidence scoring based on model output probabilities
+    /// - Support multiple model architectures (LSTM, GRU, Transformer)
+    ///
+    /// Current limitations:
+    /// - Only groups events by time-of-day (hour)
+    /// - Anomalies detected via standard deviation only
+    /// - No temporal dependencies between event sequences
+    /// - No learned patterns from historical data
     pub fn analyze_event_history(
         tenant_id: uuid::Uuid,
         events: Vec<EventEntry>,
