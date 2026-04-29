@@ -655,6 +655,302 @@ impl Connector for AsanaConnector {
     }
 }
 
+pub struct ClickUpConnector;
+
+#[async_trait]
+impl Connector for ClickUpConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_task".to_string(),
+            name: "Create Task".to_string(),
+            description: Some("Create a task in ClickUp".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_task" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct TrelloConnector;
+
+#[async_trait]
+impl Connector for TrelloConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_card".to_string(),
+            name: "Create Card".to_string(),
+            description: Some("Create a card in Trello".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_card" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct ZendeskConnector;
+
+#[async_trait]
+impl Connector for ZendeskConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_ticket".to_string(),
+            name: "Create Ticket".to_string(),
+            description: Some("Create a ticket in Zendesk".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_ticket" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct PagerDutyConnector;
+
+#[async_trait]
+impl Connector for PagerDutyConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_incident".to_string(),
+            name: "Create Incident".to_string(),
+            description: Some("Create an incident in PagerDuty".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_incident" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct StripeConnector;
+
+#[async_trait]
+impl Connector for StripeConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_payment_intent".to_string(),
+            name: "Create Payment Intent".to_string(),
+            description: Some("Create a payment intent in Stripe".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_payment_intent" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct SendGridConnector;
+
+#[async_trait]
+impl Connector for SendGridConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "send_email".to_string(),
+            name: "Send Email".to_string(),
+            description: Some("Send an email via SendGrid".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "send_email" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct SalesforceConnector;
+
+#[async_trait]
+impl Connector for SalesforceConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_record".to_string(),
+            name: "Create Record".to_string(),
+            description: Some("Create a record in Salesforce".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_record" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct ShopifyConnector;
+
+#[async_trait]
+impl Connector for ShopifyConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_product".to_string(),
+            name: "Create Product".to_string(),
+            description: Some("Create a product in Shopify".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_product" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
 pub struct Connectors {
     http_client: Client,
 }
