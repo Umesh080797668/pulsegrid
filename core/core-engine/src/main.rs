@@ -8,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use core_vault::Vault;
+use futures_util::future::join_all;
 use futures_util::{SinkExt, StreamExt};
 use redis::{
     AsyncCommands,
@@ -582,8 +583,12 @@ async fn main() {
     let pool_clone = pool.clone();
     let vault_clone = state.vault.clone();
     let event_tx_clone = event_tx.clone();
-    tokio::spawn(async move {
-        start_event_listener(pool_clone, vault_clone, event_tx_clone).await;
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build event listener runtime");
+        rt.block_on(start_event_listener(pool_clone, vault_clone, event_tx_clone));
     });
 
     // Start gRPC server
@@ -601,42 +606,52 @@ async fn main() {
 
     // Spawn our background worker for cron/scheduled flows
     let cron_pool = pool.clone();
-    tokio::spawn(async move {
-        
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            
-            let rows = sqlx::query!(
-                r#"SELECT id, workspace_id, definition, last_run_at FROM flows WHERE enabled = true"#
-            ).fetch_all(&cron_pool).await.unwrap_or_default();
-            
-            for row in rows {
-                let def: crate::models::FlowDefinition = match serde_json::from_value(row.definition) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-                
-                if def.trigger.connector == "schedule" {
-                    let cron_val = def.trigger.filters.iter().find(|f| f.field == "cron").map(|f| &f.value);
-                    if let Some(serde_json::Value::String(cron_expr)) = cron_val {
-                        let last = row.last_run_at.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
-                        // parse cron and see if past due
-                        if let Ok(schedule) = cron::Schedule::from_str(cron_expr) {
-                            if let Some(next) = schedule.after(&last).next() {
-                                if chrono::Utc::now() >= next {
-                                    // Emit event to Redis
-                                    let event = crate::models::PulseEvent {
-                                        id: uuid::Uuid::new_v4(),
-                                        tenant_id: row.workspace_id.unwrap_or_default(),
-                                        source: Some("schedule".into()),
-                                        event_type: def.trigger.event.clone(),
-                                        data: serde_json::json!({ "triggered_at": chrono::Utc::now().to_rfc3339() }),
-                                    };
-                                    
-                                    let redis_url = "redis://127.0.0.1:6379/";
-                                    if let Ok(client) = redis::Client::open(redis_url) {
-                                        if let Ok(mut con) = client.get_multiplexed_async_connection().await {
-                                            let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, "stream:events:global", "*", &[("payload", serde_json::to_string(&event).unwrap())]).await;
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build cron runtime");
+
+        rt.block_on(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+                let rows = sqlx::query!(
+                    r#"SELECT id, workspace_id, definition, last_run_at FROM flows WHERE enabled = true"#
+                )
+                .fetch_all(&cron_pool)
+                .await
+                .unwrap_or_default();
+
+                for row in rows {
+                    let def: crate::models::FlowDefinition = match serde_json::from_value(row.definition) {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+
+                    if def.trigger.connector == "schedule" {
+                        let cron_val = def.trigger.filters.iter().find(|f| f.field == "cron").map(|f| &f.value);
+                        if let Some(serde_json::Value::String(cron_expr)) = cron_val {
+                            let last = row.last_run_at.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
+                            // parse cron and see if past due
+                            if let Ok(schedule) = cron::Schedule::from_str(cron_expr) {
+                                if let Some(next) = schedule.after(&last).next() {
+                                    if chrono::Utc::now() >= next {
+                                        // Emit event to Redis
+                                        let event = crate::models::PulseEvent {
+                                            id: uuid::Uuid::new_v4(),
+                                            tenant_id: row.workspace_id.unwrap_or_default(),
+                                            source: Some("schedule".into()),
+                                            event_type: def.trigger.event.clone(),
+                                            data: serde_json::json!({ "triggered_at": chrono::Utc::now().to_rfc3339() }),
+                                            sub_flow_depth: None,
+                                        };
+
+                                        let redis_url = "redis://127.0.0.1:6379/";
+                                        if let Ok(client) = redis::Client::open(redis_url) {
+                                            if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                                                let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, "stream:events:global", "*", &[("payload", serde_json::to_string(&event).unwrap())]).await;
+                                            }
                                         }
                                     }
                                 }
@@ -645,7 +660,7 @@ async fn main() {
                     }
                 }
             }
-        }
+        });
     });
 
     let listener = TcpListener::bind(&addr).await.unwrap();
@@ -877,8 +892,10 @@ async fn start_event_listener(
                                             .eq_ignore_ascii_case("dead_letter");
 
                                         for group in execution_order {
-                                            // Spawn tasks for parallel execution
-                                            let mut tasks = vec![];
+                                            use std::future::Future;
+                                            use std::pin::Pin;
+
+                                            let mut futures_vec: Vec<Pin<Box<dyn Future<Output = models::StepExecutionResult> + '_>>> = Vec::new();
 
                                             for step_id in &group {
                                                 if let Some(step) =
@@ -889,7 +906,7 @@ async fn start_event_listener(
                                                     let event_clone = event.clone();
                                                     let outputs_snapshot = step_outputs.clone();
 
-                                                    let task = tokio::spawn(async move {
+                                                    let fut = Box::pin(async move {
                                                         execute_step_with_retry(
                                                             executor_clone,
                                                             &step_clone,
@@ -899,75 +916,66 @@ async fn start_event_listener(
                                                         )
                                                         .await
                                                     });
-                                                    tasks.push(task);
+
+                                                    futures_vec.push(fut);
                                                 }
                                             }
 
-                                            // Wait for all tasks in this group to complete
-                                            for task in tasks {
-                                                match task.await {
-                                                    Ok(result) => {
-                                                        if result.status == "failed" {
-                                                            all_steps_succeeded = false;
-                                                            println!(
-                                                                "      ❌ Step {} failed: {:?}",
-                                                                result.step_id, result.error
-                                                            );
+                                            let results = join_all(futures_vec).await;
 
-                                                            if should_dead_letter {
-                                                                let dlq_key = format!(
-                                                                    "dlq:failed:{}",
-                                                                    event.tenant_id
-                                                                );
-                                                                let dlq_payload = serde_json::json!({
-                                                                    "workspace_id": event.tenant_id,
-                                                                    "flow_id": flow.id,
-                                                                    "flow_name": flow.name,
-                                                                    "trigger_event_id": event.id,
-                                                                    "step_id": result.step_id,
-                                                                    "error": result.error,
-                                                                    "failed_at": chrono::Utc::now().to_rfc3339(),
-                                                                });
-                                                                let _ = con
-                                                                    .rpush::<_, _, usize>(
-                                                                        dlq_key,
-                                                                        dlq_payload.to_string(),
-                                                                    )
-                                                                    .await;
-                                                            }
-                                                        } else if result.status == "success" {
-                                                            println!(
-                                                                "      ✅ Step {} completed in {}ms",
-                                                                result.step_id, result.duration_ms
-                                                            );
-                                                        } else if result.status == "skipped" {
-                                                            println!(
-                                                                "      ⏭️  Step {} skipped (condition not met)",
-                                                                result.step_id
-                                                            );
-                                                        }
+                                            for result in results {
+                                                if result.status == "failed" {
+                                                    all_steps_succeeded = false;
+                                                    println!(
+                                                        "      ❌ Step {} failed: {:?}",
+                                                        result.step_id, result.error
+                                                    );
 
-                                                        step_outputs.insert(
-                                                            result.step_id.clone(),
-                                                            result.output.clone(),
+                                                    if should_dead_letter {
+                                                        let dlq_key = format!(
+                                                            "dlq:failed:{}",
+                                                            event.tenant_id
                                                         );
-                                                        steps_log.as_array_mut().unwrap().push(
-                                                            serde_json::json!({
-                                                                "step_id": result.step_id,
-                                                                "status": result.status,
-                                                                "duration_ms": result.duration_ms,
-                                                                "error": result.error
-                                                            }),
-                                                        );
+                                                        let dlq_payload = serde_json::json!({
+                                                            "workspace_id": event.tenant_id,
+                                                            "flow_id": flow.id,
+                                                            "flow_name": flow.name,
+                                                            "trigger_event_id": event.id,
+                                                            "step_id": result.step_id,
+                                                            "error": result.error,
+                                                            "failed_at": chrono::Utc::now().to_rfc3339(),
+                                                        });
+                                                        let _ = con
+                                                            .rpush::<_, _, usize>(
+                                                                dlq_key,
+                                                                dlq_payload.to_string(),
+                                                            )
+                                                            .await;
                                                     }
-                                                    Err(e) => {
-                                                        eprintln!(
-                                                            "      ❌ Task join error: {}",
-                                                            e
-                                                        );
-                                                        all_steps_succeeded = false;
-                                                    }
+                                                } else if result.status == "success" {
+                                                    println!(
+                                                        "      ✅ Step {} completed in {}ms",
+                                                        result.step_id, result.duration_ms
+                                                    );
+                                                } else if result.status == "skipped" {
+                                                    println!(
+                                                        "      ⏭️  Step {} skipped (condition not met)",
+                                                        result.step_id
+                                                    );
                                                 }
+
+                                                step_outputs.insert(
+                                                    result.step_id.clone(),
+                                                    result.output.clone(),
+                                                );
+                                                steps_log.as_array_mut().unwrap().push(
+                                                    serde_json::json!({
+                                                        "step_id": result.step_id,
+                                                        "status": result.status,
+                                                        "duration_ms": result.duration_ms,
+                                                        "error": result.error
+                                                    }),
+                                                );
                                             }
                                         }
 
@@ -1763,6 +1771,7 @@ async fn webhook_receiver(
         source: Some("webhook".to_string()),
         event_type: "webhook.received".to_string(),
         data: serde_json::json!({"timestamp": chrono::Utc::now().to_rfc3339()}),
+        sub_flow_depth: None,
     };
 
     // Increment event count for billing

@@ -1,6 +1,7 @@
 use crate::models::{
-    FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition,
+    FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition, FlowDefinition,
 };
+use futures_util::future::join_all;
 use core_connectors::{
     Connectors, CustomConnectorConfig, DiscordConfig, GithubIssueConfig, GmailSendConfig,
     GoogleSheetsAppendConfig, HttpConfig, NotionCreatePageConfig, TelegramConfig, Credentials,
@@ -160,6 +161,179 @@ impl FlowExecutor {
         }
 
         Ok(groups)
+    }
+
+    pub async fn execute_flow(
+        &self,
+        flow_def: &FlowDefinition,
+        event: &PulseEvent,
+        depth: i32,
+    ) -> Result<std::collections::HashMap<String, Value>, String> {
+        if depth > 3 {
+            return Err("sub-flow depth exceeded".to_string());
+        }
+
+        let execution_order = self.resolve_execution_order(&flow_def.steps)?;
+        let mut step_outputs: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+
+        for group in execution_order {
+            use std::pin::Pin;
+            let mut futures_vec: Vec<Pin<Box<dyn std::future::Future<Output = StepExecutionResult> + '_>>> = Vec::new();
+
+            for step_id in &group {
+                if let Some(step) = flow_def.steps.iter().find(|s| &s.id == step_id) {
+                    let step_clone = step.clone();
+                    let event_clone = event.clone();
+                    let outputs_snapshot = step_outputs.clone();
+
+                    let fut = Box::pin(async move {
+                        // sub_flow special-case
+                        if step_clone.r#type == "sub_flow" {
+                            let sub_flow_id = step_clone.sub_flow_id.clone().unwrap_or_default();
+                            if sub_flow_id.is_empty() {
+                                return StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "failed".to_string(),
+                                    output: Value::Null,
+                                    error: Some("sub_flow step missing id".to_string()),
+                                    duration_ms: 0,
+                                };
+                            }
+
+                            let sub_uuid = match uuid::Uuid::parse_str(&sub_flow_id) {
+                                Ok(u) => u,
+                                Err(e) => {
+                                    return StepExecutionResult {
+                                        step_id: step_clone.id.clone(),
+                                        status: "failed".to_string(),
+                                        output: Value::Null,
+                                        error: Some(format!("invalid sub_flow_id: {}", e)),
+                                        duration_ms: 0,
+                                    };
+                                }
+                            };
+
+                            let def_val: Option<serde_json::Value> = match sqlx::query_scalar("SELECT definition FROM flows WHERE id = $1 AND workspace_id = $2")
+                                .bind(sub_uuid)
+                                .bind(event_clone.tenant_id)
+                                .fetch_optional(&self.pool)
+                                .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    return StepExecutionResult {
+                                        step_id: step_clone.id.clone(),
+                                        status: "failed".to_string(),
+                                        output: Value::Null,
+                                        error: Some(e.to_string()),
+                                        duration_ms: 0,
+                                    };
+                                }
+                            };
+
+                            let def_val = match def_val {
+                                Some(v) => v,
+                                None => {
+                                    return StepExecutionResult {
+                                        step_id: step_clone.id.clone(),
+                                        status: "failed".to_string(),
+                                        output: Value::Null,
+                                        error: Some(format!("sub_flow not found: {}", sub_flow_id)),
+                                        duration_ms: 0,
+                                    };
+                                }
+                            };
+
+                            let sub_def: FlowDefinition = match serde_json::from_value(def_val) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    return StepExecutionResult {
+                                        step_id: step_clone.id.clone(),
+                                        status: "failed".to_string(),
+                                        output: Value::Null,
+                                        error: Some(format!("failed to parse sub_flow definition: {}", e)),
+                                        duration_ms: 0,
+                                    };
+                                }
+                            };
+
+                            let current_depth = event_clone.sub_flow_depth.unwrap_or(0);
+                            if current_depth + 1 > 3 {
+                                return StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "failed".to_string(),
+                                    output: Value::Null,
+                                    error: Some("sub-flow max depth exceeded".to_string()),
+                                    duration_ms: 0,
+                                };
+                            }
+
+                            let mut nested_event = event_clone.clone();
+                            nested_event.sub_flow_depth = Some(current_depth + 1);
+
+                            match self.execute_flow(&sub_def, &nested_event, current_depth + 1).await {
+                                Ok(outputs) => StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "success".to_string(),
+                                    output: Value::Object(serde_json::Map::from_iter(outputs.iter().map(|(k,v)| (k.clone(), v.clone())))),
+                                    error: None,
+                                    duration_ms: 0,
+                                },
+                                Err(e) => StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "failed".to_string(),
+                                    output: Value::Null,
+                                    error: Some(e),
+                                    duration_ms: 0,
+                                },
+                            }
+                        } else {
+                            // normal step with retry
+                            let input = self.render_input_mapping(&step_clone, &outputs_snapshot, &event_clone);
+                            let max_attempts = (step_clone.retry_policy.max_retries + 1).max(1) as usize;
+                            let base_delay_ms = if step_clone.retry_policy.initial_backoff_ms > 0 {
+                                step_clone.retry_policy.initial_backoff_ms as u64
+                            } else { 500 };
+
+                            let mut last_err: Option<String> = None;
+                            for attempt in 0..max_attempts {
+                                let res = self.execute_step(&step_clone, input.clone(), &outputs_snapshot, &event_clone).await;
+                                if res.status != "failed" {
+                                    return res;
+                                }
+                                last_err = res.error.clone();
+                                if attempt + 1 < max_attempts {
+                                    let sleep_ms = base_delay_ms.saturating_mul(2u64.saturating_pow(attempt as u32));
+                                    tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                                }
+                            }
+
+                            StepExecutionResult {
+                                step_id: step_clone.id.clone(),
+                                status: "failed".to_string(),
+                                output: Value::Null,
+                                error: last_err,
+                                duration_ms: 0,
+                            }
+                        }
+                    });
+
+                    futures_vec.push(fut);
+                }
+            }
+
+            // run the group concurrently within this task
+            let results = join_all(futures_vec).await;
+
+            for result in results {
+                if result.status == "failed" {
+                    return Err(result.error.unwrap_or_else(|| "step failed".to_string()));
+                }
+                step_outputs.insert(result.step_id.clone(), result.output.clone());
+            }
+        }
+
+        Ok(step_outputs)
     }
 
     pub fn transform_data(
@@ -463,11 +637,96 @@ impl FlowExecutor {
                     };
                 }
 
-                json!({
-                    "status": "sub_flow_invoked",
-                    "sub_flow_id": sub_flow_id,
-                    "note": "Sub-flow execution would be implemented by fetching flow definition and executing it",
-                })
+                // parse uuid
+                let sub_uuid = match uuid::Uuid::parse_str(sub_flow_id) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(format!("invalid sub_flow_id: {}", e)),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                };
+
+                // fetch definition from DB
+                let def_val: Option<serde_json::Value> = match sqlx::query_scalar("SELECT definition FROM flows WHERE id = $1 AND workspace_id = $2")
+                    .bind(sub_uuid)
+                    .bind(event.tenant_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| e.to_string()) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            return StepExecutionResult {
+                                step_id: step.id.clone(),
+                                status: "failed".to_string(),
+                                output: Value::Null,
+                                error: Some("db error fetching sub_flow".to_string()),
+                                duration_ms: started.elapsed().as_millis() as i32,
+                            };
+                        }
+                    };
+
+                let def_val = match def_val {
+                    Some(v) => v,
+                    None => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(format!("sub_flow not found: {}", sub_flow_id)),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                };
+
+                let sub_def: FlowDefinition = match serde_json::from_value(def_val) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(format!("failed to parse sub_flow definition: {}", e)),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                };
+
+                // depth guard via event.sub_flow_depth
+                let current_depth = event.sub_flow_depth.unwrap_or(0);
+                if current_depth + 1 > 3 {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("sub-flow max depth exceeded".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
+
+                let mut nested_event = event.clone();
+                nested_event.sub_flow_depth = Some(current_depth + 1);
+
+                match self.execute_flow(&sub_def, &nested_event, current_depth + 1).await {
+                    Ok(outputs) => json!({
+                        "status": "sub_flow_executed",
+                        "sub_flow_id": sub_flow_id,
+                        "outputs": outputs,
+                    }),
+                    Err(e) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(e),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                }
             }
             "filter" => {
                 let filter_cond = step.filter_condition.as_deref().unwrap_or("");
@@ -890,6 +1149,7 @@ mod tests {
             source: Some("shopify".to_string()),
             event_type: "order.created".to_string(),
             data: json!({"order": {"total_price": 150}}),
+            sub_flow_depth: None,
         };
 
         assert!(executor.matches_trigger(&trigger, &event));
@@ -988,6 +1248,7 @@ mod tests {
             source: Some("github".into()),
             event_type: "push".into(),
             data: json!({"user": {"email": "TEST@EXAMPLE.COM"}}),
+            sub_flow_depth: None,
         };
         let outputs =
             HashMap::from([("step1".to_string(), json!({"profile": {"name": "Imantha"}}))]);

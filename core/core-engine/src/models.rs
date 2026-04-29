@@ -69,6 +69,8 @@ pub struct PulseEvent {
     pub source: Option<String>,
     pub event_type: String,
     pub data: Value,
+    #[serde(default)]
+    pub sub_flow_depth: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -185,6 +187,7 @@ mod tests {
             source: Some("shopify".to_string()),
             event_type: "order.created".to_string(),
             data: serde_json::json!({"order_id": "123", "total": 99.99}),
+            sub_flow_depth: None,
         };
 
         let json = serde_json::to_string(&event).unwrap();

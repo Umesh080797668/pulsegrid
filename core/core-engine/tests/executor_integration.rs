@@ -110,13 +110,14 @@ async fn trigger_condition_matching_works() {
         }],
     };
 
-    let event = PulseEvent {
-        id: Uuid::new_v4(),
-        tenant_id: Uuid::new_v4(),
-        source: Some("shopify".into()),
-        event_type: "order.created".into(),
-        data: json!({"order": {"total_price": 120}}),
-    };
+        let event = PulseEvent {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            source: Some("shopify".into()),
+            event_type: "order.created".into(),
+            data: json!({"order": {"total_price": 120}}),
+            sub_flow_depth: None,
+        };
 
     assert!(executor.matches_trigger(&trigger, &event));
 }
@@ -150,13 +151,14 @@ async fn step_condition_can_skip_execution() {
             delay_ms: None,
     };
 
-    let event = PulseEvent {
-        id: Uuid::new_v4(),
-        tenant_id: Uuid::new_v4(),
-        source: Some("shopify".into()),
-        event_type: "order.created".into(),
-        data: json!({}),
-    };
+        let event = PulseEvent {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            source: Some("shopify".into()),
+            event_type: "order.created".into(),
+            data: json!({}),
+            sub_flow_depth: None,
+        };
 
     let result = executor
         .execute_step(&step, json!({}), &HashMap::new(), &event)
@@ -176,6 +178,7 @@ async fn data_transformation_resolves_templates() {
         source: Some("github".into()),
         event_type: "push".into(),
         data: json!({"user": {"email": "TEST@EXAMPLE.COM"}}),
+        sub_flow_depth: None,
     };
 
     let outputs = HashMap::from([("step1".to_string(), json!({"profile": {"name": "Imantha"}}))]);
@@ -286,6 +289,7 @@ async fn schedule_connector_step_returns_next_run() {
         source: Some("schedule".into()),
         event_type: "tick".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -335,6 +339,7 @@ async fn resend_connector_requires_api_key() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -390,6 +395,7 @@ async fn jira_connector_requires_access_token() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -442,6 +448,7 @@ async fn stripe_connector_requires_api_key() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -514,6 +521,7 @@ async fn wat_script_step_executes_in_sandbox() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({"payload": "hello"}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -564,6 +572,7 @@ async fn sendgrid_connector_requires_api_key() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -623,6 +632,7 @@ async fn salesforce_connector_requires_access_token() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -681,6 +691,7 @@ async fn shopify_connector_requires_access_token() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -733,6 +744,7 @@ async fn gitlab_connector_requires_access_token() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -785,6 +797,7 @@ async fn monday_connector_requires_api_key() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
@@ -839,6 +852,7 @@ async fn brevo_connector_requires_api_key() {
         source: Some("manual".into()),
         event_type: "trigger".into(),
         data: json!({}),
+        sub_flow_depth: None,
     };
 
     let result = executor
