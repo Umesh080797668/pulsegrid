@@ -14,7 +14,7 @@ export class FlowResolver {
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
   ): Promise<Flow[]> {
     try {
-      const flowService: any = this.client.getService('FlowService');
+      const flowService: any = this.client.getService('PulseCoreService');
       const response = await flowService.listFlows({ workspace_id: workspaceId }).toPromise?.();
       return response?.flows || [];
     } catch (error) {
@@ -29,7 +29,7 @@ export class FlowResolver {
     @Args('id', { type: () => ID }) id: string,
   ): Promise<Flow | null> {
     try {
-      const flowService: any = this.client.getService('FlowService');
+      const flowService: any = this.client.getService('PulseCoreService');
       const response = await flowService.getFlow({ id }).toPromise?.();
       return response || null;
     } catch (error) {
@@ -43,7 +43,7 @@ export class FlowResolver {
     @Args('flowId', { type: () => ID }) flowId: string,
   ): Promise<FlowRun[]> {
     try {
-      const flowService: any = this.client.getService('FlowService');
+      const flowService: any = this.client.getService('PulseCoreService');
       const response = await flowService.getFlowRuns({ flow_id: flowId, limit: 10 }).toPromise?.();
       return response?.runs || [];
     } catch (error) {
@@ -59,7 +59,7 @@ export class FlowResolver {
     @Args('description', { nullable: true }) description?: string,
   ): Promise<Flow> {
     try {
-      const flowService: any = this.client.getService('FlowService');
+      const flowService: any = this.client.getService('PulseCoreService');
       const response = await flowService
         .createFlow({
           workspace_id: workspaceId,
@@ -82,7 +82,7 @@ export class FlowResolver {
     @Args('description', { nullable: true }) description?: string,
   ): Promise<Flow> {
     try {
-      const flowService: any = this.client.getService('FlowService');
+      const flowService: any = this.client.getService('PulseCoreService');
       const payload: any = { id };
       if (name) payload.name = name;
       if (description) payload.description = description;
@@ -98,7 +98,7 @@ export class FlowResolver {
   @Mutation(() => Boolean)
   async deleteFlow(@Args('id', { type: () => ID }) id: string): Promise<boolean> {
     try {
-      const flowService: any = this.client.getService('FlowService');
+      const flowService: any = this.client.getService('PulseCoreService');
       await flowService.deleteFlow({ id }).toPromise?.();
       return true;
     } catch (error) {
@@ -128,7 +128,7 @@ export class EventResolver {
     @Args('limit', { type: () => Number, defaultValue: 50 }) limit: number,
   ): Promise<EventData[]> {
     try {
-      const eventService: any = this.client.getService('EventService');
+      const eventService: any = this.client.getService('PulseCoreService');
       const response = await eventService.listEvents({ workspace_id: workspaceId, limit }).toPromise?.();
       return response?.events || [];
     } catch (error) {
@@ -140,7 +140,7 @@ export class EventResolver {
   @Query(() => EventData, { nullable: true })
   async event(@Args('id', { type: () => ID }) id: string): Promise<EventData | null> {
     try {
-      const eventService: any = this.client.getService('EventService');
+      const eventService: any = this.client.getService('PulseCoreService');
       const response = await eventService.getEvent({ id }).toPromise?.();
       return response || null;
     } catch (error) {
@@ -169,7 +169,7 @@ export class PatternResolver {
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
   ): Promise<EventPattern[]> {
     try {
-      const patternService: any = this.client.getService('PatternService');
+      const patternService: any = this.client.getService('PulseCoreService');
       const response = await patternService.detectPatterns({ workspace_id: workspaceId }).toPromise?.();
       return response?.patterns || [];
     } catch (error) {
@@ -183,14 +183,14 @@ export class PatternResolver {
     @Args('patternId') patternId: string,
   ): Promise<Flow | null> {
     try {
-      const patternService: any = this.client.getService('PatternService');
+      const patternService: any = this.client.getService('PulseCoreService');
       const patternResponse = await patternService.getPattern({ id: patternId }).toPromise?.();
 
       if (!patternResponse) {
         return null;
       }
 
-      const suggestionService: any = this.client.getService('SuggestionService');
+      const suggestionService: any = this.client.getService('PulseCoreService');
       const flowResponse = await suggestionService.suggestFlow({ pattern: patternResponse }).toPromise?.();
 
       return flowResponse || null;
@@ -210,7 +210,7 @@ export class WorkspaceResolver {
   @Query(() => [Workspace])
   async workspaces(): Promise<Workspace[]> {
     try {
-      const workspaceService: any = this.client.getService('WorkspaceService');
+      const workspaceService: any = this.client.getService('PulseCoreService');
       const response = await workspaceService.listWorkspaces({}).toPromise?.();
       return response?.workspaces || [];
     } catch (error) {
@@ -222,7 +222,7 @@ export class WorkspaceResolver {
   @Query(() => Workspace, { nullable: true })
   async workspace(@Args('id', { type: () => ID }) id: string): Promise<Workspace | null> {
     try {
-      const workspaceService: any = this.client.getService('WorkspaceService');
+      const workspaceService: any = this.client.getService('PulseCoreService');
       const response = await workspaceService.getWorkspace({ id }).toPromise?.();
       return response || null;
     } catch (error) {
@@ -234,7 +234,7 @@ export class WorkspaceResolver {
   @Mutation(() => Workspace)
   async createWorkspace(@Args('name') name: string): Promise<Workspace> {
     try {
-      const workspaceService: any = this.client.getService('WorkspaceService');
+      const workspaceService: any = this.client.getService('PulseCoreService');
       const response = await workspaceService.createWorkspace({ name }).toPromise?.();
       return response || ({} as Workspace);
     } catch (error) {

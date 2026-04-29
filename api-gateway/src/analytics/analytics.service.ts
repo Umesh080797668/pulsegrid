@@ -53,7 +53,7 @@ export class AnalyticsService {
     period: 'day' | 'week' | 'month' = 'week',
   ): Promise<WorkspaceAnalytics> {
     try {
-      const analyticsService: any = this.client.getService('AnalyticsService');
+      const analyticsService: any = this.client.getService('PulseCoreService');
       const response = await analyticsService
         .getWorkspaceAnalytics({ workspace_id: workspaceId, period })
         .toPromise?.();
@@ -73,7 +73,7 @@ export class AnalyticsService {
    */
   async getFlowMetrics(workspaceId: string): Promise<FlowMetrics[]> {
     try {
-      const analyticsService: any = this.client.getService('AnalyticsService');
+      const analyticsService: any = this.client.getService('PulseCoreService');
       const response = await analyticsService
         .getFlowMetrics({ workspace_id: workspaceId })
         .toPromise?.();
@@ -93,7 +93,7 @@ export class AnalyticsService {
    */
   async getConnectorMetrics(workspaceId: string): Promise<ConnectorMetrics[]> {
     try {
-      const analyticsService: any = this.client.getService('AnalyticsService');
+      const analyticsService: any = this.client.getService('PulseCoreService');
       const response = await analyticsService
         .getConnectorMetrics({ workspace_id: workspaceId })
         .toPromise?.();
@@ -117,7 +117,7 @@ export class AnalyticsService {
     limit: number = 10,
   ): Promise<any> {
     try {
-      const analyticsService: any = this.client.getService('AnalyticsService');
+      const analyticsService: any = this.client.getService('PulseCoreService');
       const payload: any = { workspace_id: workspaceId, limit };
       if (flowId) {
         payload.flow_id = flowId;
@@ -142,7 +142,7 @@ export class AnalyticsService {
    */
   async getRecentErrors(workspaceId: string, limit: number = 20): Promise<any[]> {
     try {
-      const analyticsService: any = this.client.getService('AnalyticsService');
+      const analyticsService: any = this.client.getService('PulseCoreService');
       const response = await analyticsService
         .getRecentErrors({ workspace_id: workspaceId, limit })
         .toPromise?.();
@@ -166,7 +166,7 @@ export class AnalyticsService {
     limit: number = 30,
   ): Promise<any> {
     try {
-      const analyticsService: any = this.client.getService('AnalyticsService');
+      const analyticsService: any = this.client.getService('PulseCoreService');
       const response = await analyticsService
         .getEventMetrics({ workspace_id: workspaceId, interval, limit })
         .toPromise?.();

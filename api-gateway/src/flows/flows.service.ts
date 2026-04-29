@@ -75,7 +75,7 @@ export class FlowsService {
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
     private validationService: FlowValidationService,
   ) {
-    this.flowService = this.client.getService<FlowServiceClient>('FlowService');
+    this.flowService = this.client.getService<FlowServiceClient>('PulseCoreService');
   }
 
   /**

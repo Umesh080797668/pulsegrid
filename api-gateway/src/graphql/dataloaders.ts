@@ -16,7 +16,7 @@ export class DataLoaders {
     // Batch load flows by ID via gRPC
     this.flowLoader = new DataLoader(async (flowIds: readonly string[]) => {
       try {
-        const flowService: any = this.client.getService('FlowService');
+        const flowService: any = this.client.getService('PulseCoreService');
         const result = await flowService.getFlows({ ids: Array.from(flowIds) }).toPromise?.();
         
         const flowMap = new Map(result?.flows?.map((f: any) => [f.id, f]) || []);
@@ -30,7 +30,7 @@ export class DataLoaders {
     // Batch load events by ID via gRPC
     this.eventLoader = new DataLoader(async (eventIds: readonly string[]) => {
       try {
-        const eventService: any = this.client.getService('EventService');
+        const eventService: any = this.client.getService('PulseCoreService');
         const result = await eventService.getEvents({ ids: Array.from(eventIds) }).toPromise?.();
         
         const eventMap = new Map(result?.events?.map((e: any) => [e.id, e]) || []);
@@ -44,7 +44,7 @@ export class DataLoaders {
     // Batch load flow runs by flow ID via gRPC
     this.flowRunsLoader = new DataLoader(async (flowIds: readonly string[]) => {
       try {
-        const flowService: any = this.client.getService('FlowService');
+        const flowService: any = this.client.getService('PulseCoreService');
         const result = await flowService
           .getFlowRuns({ 
             flow_ids: Array.from(flowIds),
@@ -71,7 +71,7 @@ export class DataLoaders {
     // Batch load workspaces by ID via gRPC
     this.workspaceLoader = new DataLoader(async (workspaceIds: readonly string[]) => {
       try {
-        const workspaceService: any = this.client.getService('WorkspaceService');
+        const workspaceService: any = this.client.getService('PulseCoreService');
         const result = await workspaceService
           .getWorkspaces({ ids: Array.from(workspaceIds) })
           .toPromise?.();
