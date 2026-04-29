@@ -1016,6 +1016,26 @@ async fn start_event_listener(
                                             flow_run_id as _
                                         ).execute(&pg_pool).await;
 
+                                        // Push run-completion event for realtime dashboard updates
+                                        let workspace_stream = format!("stream:events:{}", event.tenant_id);
+                                        let completion_payload = serde_json::json!({
+                                            "event_type": "flow_run_completed",
+                                            "tenant_id": event.tenant_id,
+                                            "flow_id": flow.id,
+                                            "status": final_status,
+                                            "run_id": flow_run_id,
+                                            "completed_at": chrono::Utc::now().to_rfc3339(),
+                                        });
+                                        let completion_payload_str = serde_json::to_string(&completion_payload)
+                                            .unwrap_or_else(|_| "{}".to_string());
+                                        let _ = con
+                                            .xadd::<_, _, _, _, ()>(
+                                                &workspace_stream,
+                                                "*",
+                                                &[("payload", completion_payload_str)],
+                                            )
+                                            .await;
+
                                         let _ = sqlx::query!(
                                             r#"UPDATE flows SET run_count = run_count + 1, last_run_at = NOW() WHERE id = $1"#,
                                             flow.id as _
