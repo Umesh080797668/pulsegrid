@@ -22,7 +22,6 @@ type OAuthConnectionMap = Record<string, OAuthConnection>;
 
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:3000';
 const LS_ACCESS = 'pulsegrid.accessToken';
-const LS_REFRESH = 'pulsegrid.refreshToken';
 const LS_WORKSPACE = 'pulsegrid.workspaceId';
 
 /* ─── Framer variants ─── */
@@ -104,7 +103,6 @@ export default function HomePage() {
   const [password, setPassword]             = useState('');
   const [name, setName]                     = useState('');
   const [token, setToken]                   = useState('');
-  const [refreshToken, setRefreshToken]     = useState('');
   const [workspaceId, setWorkspaceId]       = useState('');
   const [workspaces, setWorkspaces]         = useState<WorkspaceItem[]>([]);
   const [flows, setFlows]                   = useState<Flow[]>([]);
@@ -143,9 +141,8 @@ export default function HomePage() {
 
   useEffect(() => {
     const access = localStorage.getItem(LS_ACCESS) || '';
-    const refresh = localStorage.getItem(LS_REFRESH) || '';
     const saved   = localStorage.getItem(LS_WORKSPACE) || '';
-    setToken(access); setRefreshToken(refresh); setWorkspaceId(saved);
+    setToken(access); setWorkspaceId(saved);
   }, []);
 
   useEffect(() => { if (workspaceId) localStorage.setItem(LS_WORKSPACE, workspaceId); }, [workspaceId]);
@@ -186,13 +183,13 @@ export default function HomePage() {
   }, [workspaceId, token, wsUrl]);
 
   useEffect(() => {
-    if (token && refreshToken) { void loadConnectors(); void loadWorkspaces(); }
-  }, [token, refreshToken]);
+    if (token) { void loadConnectors(); void loadWorkspaces(); }
+  }, [token]);
 
   useEffect(() => { if (!definitionJson) setDefinitionJson(JSON.stringify(buildFlowDefinition(), null, 2)); }, []);
 
   useEffect(() => {
-    if (!token || !refreshToken || !workspaceId) return;
+    if (!token || !workspaceId) return;
     if (activeTab === 'flows')       void loadFlows();
     if (activeTab === 'credentials') void loadCredentials();
     if (activeTab === 'connectors')  void loadConnectors();
@@ -204,14 +201,14 @@ export default function HomePage() {
   const successRate  = runs.length > 0 ? Math.round((successRuns / runs.length) * 100) : 0;
 
   async function authenticatedFetch(input: string, init: RequestInit = {}) {
-    let res = await fetch(input, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
-    if (res.status !== 401 || !refreshToken) return res;
-    const rr = await fetch(`${apiBase}/auth/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken }) });
+    let res = await fetch(input, { ...init, credentials: 'include', headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } });
+    if (res.status !== 401) return res;
+    const rr = await fetch(`${apiBase}/auth/refresh`, { method: 'POST', credentials: 'include' });
     if (!rr.ok) return res;
-    const rd = await rr.json() as { accessToken: string; refreshToken: string };
-    setToken(rd.accessToken); setRefreshToken(rd.refreshToken);
-    localStorage.setItem(LS_ACCESS, rd.accessToken); localStorage.setItem(LS_REFRESH, rd.refreshToken);
-    return fetch(input, { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${rd.accessToken}` } });
+    const rd = await rr.json() as { accessToken: string };
+    setToken(rd.accessToken);
+    localStorage.setItem(LS_ACCESS, rd.accessToken);
+    return fetch(input, { ...init, credentials: 'include', headers: { ...(init.headers || {}), Authorization: `Bearer ${rd.accessToken}` } });
   }
 
   async function onAuthSubmit() {
@@ -219,7 +216,7 @@ export default function HomePage() {
     if (!email || !password) { setAuthMsg('Email and password are required'); return; }
     const endpoint = authMode === 'register' ? '/auth/register' : '/auth/login';
     const payload  = authMode === 'register' ? { email, password, name: name || undefined } : { email, password };
-    const res = await fetch(`${apiBase}${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const res = await fetch(`${apiBase}${endpoint}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await res.json().catch(() => ({} as Record<string, unknown>));
 
     if (!res.ok) {
@@ -230,35 +227,33 @@ export default function HomePage() {
 
     if (authMode === 'register') {
       setToken('');
-      setRefreshToken('');
       localStorage.removeItem(LS_ACCESS);
-      localStorage.removeItem(LS_REFRESH);
       setAuthMode('login');
       setPassword('');
       setAuthMsg(typeof data.message === 'string' ? data.message : 'Account created. Please verify your email before signing in.');
       return;
     }
 
-    const loginData = data as { accessToken?: string; refreshToken?: string };
-    if (!loginData.accessToken || !loginData.refreshToken) {
-      setAuthMsg('Authentication succeeded but tokens were not returned');
+    const loginData = data as { accessToken?: string };
+    if (!loginData.accessToken) {
+      setAuthMsg('Authentication succeeded but access token was not returned');
       return;
     }
 
-    setToken(loginData.accessToken); setRefreshToken(loginData.refreshToken);
-    localStorage.setItem(LS_ACCESS, loginData.accessToken); localStorage.setItem(LS_REFRESH, loginData.refreshToken);
+    setToken(loginData.accessToken);
+    localStorage.setItem(LS_ACCESS, loginData.accessToken);
     setAuthMsg('Signed in successfully');
   }
 
   async function onLogout() {
-    if (refreshToken) await fetch(`${apiBase}/auth/logout`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken }) });
-    setToken(''); setRefreshToken('');
-    localStorage.removeItem(LS_ACCESS); localStorage.removeItem(LS_REFRESH);
+    await fetch(`${apiBase}/auth/logout`, { method: 'POST', credentials: 'include' });
+    setToken('');
+    localStorage.removeItem(LS_ACCESS);
   }
 
   async function loadFlows() {
     setError('');
-    if (!workspaceId || !token || !refreshToken) { setError('Select a workspace first'); return; }
+    if (!workspaceId || !token) { setError('Select a workspace first'); return; }
     const [fr, rr] = await Promise.all([
       authenticatedFetch(`${apiBase}/flows?workspaceId=${workspaceId}`),
       authenticatedFetch(`${apiBase}/flow-runs?workspaceId=${workspaceId}`),
@@ -270,7 +265,7 @@ export default function HomePage() {
   }
 
   async function loadWorkspaces() {
-    if (!token || !refreshToken) return;
+    if (!token) return;
     const res = await authenticatedFetch(`${apiBase}/workspaces`);
     if (!res.ok) return;
     const data = (await res.json()) as WorkspaceItem[];
@@ -297,7 +292,7 @@ export default function HomePage() {
   }
 
   async function loadConnectors() {
-    if (!token || !refreshToken) return;
+    if (!token) return;
     const res = await authenticatedFetch(`${apiBase}/connectors/catalog`);
     if (!res.ok) return;
     const data = await res.json() as { items?: ConnectorCatalogItem[] };
@@ -309,14 +304,14 @@ export default function HomePage() {
   }
 
   async function loadCredentials() {
-    if (!workspaceId || !managementApiKey || !token || !refreshToken) return;
+    if (!workspaceId || !managementApiKey || !token) return;
     const res = await authenticatedFetch(`${apiBase}/workspaces/${workspaceId}/credentials`, { headers: { 'x-management-api-key': managementApiKey } });
     if (!res.ok) return;
     setCredentials((await res.json()) as WorkspaceCredential[]);
   }
 
   async function loadMarketTemplates() {
-    if (!token || !refreshToken) return;
+    if (!token) return;
     const res = await authenticatedFetch(`${apiBase}/market/templates`);
     if (!res.ok) { setError(`Failed to load templates (${res.status})`); return; }
     const data = await res.json() as { templates: MarketTemplate[] };
@@ -374,7 +369,7 @@ export default function HomePage() {
   }, [oauthConnections]);
 
   async function installMarketTemplate(templateId: string) {
-    if (!workspaceId || !token || !refreshToken) { setError('Select a workspace first'); return; }
+    if (!workspaceId || !token) { setError('Select a workspace first'); return; }
     const res = await authenticatedFetch(`${apiBase}/market/install`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceId, templateId })
@@ -385,7 +380,7 @@ export default function HomePage() {
   }
 
   async function upgradePlan(wsId: string, plan: string) {
-    if (!token || !refreshToken) return;
+    if (!token) return;
     const res = await authenticatedFetch(`${apiBase}/workspaces/${wsId}/upgrade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -462,7 +457,7 @@ export default function HomePage() {
   }
 
   /* ─────────────────────────── AUTH SCREEN ─────────────────────────────── */
-  if (!token || !refreshToken) {
+  if (!token) {
     return (
       <div className="auth-screen">
         <div className="auth-bg" />
