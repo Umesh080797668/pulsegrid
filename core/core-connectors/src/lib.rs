@@ -1620,6 +1620,34 @@ impl Connectors {
 
         Ok(())
     }
+
+    /// Get a connector instance by name (returns as Box<dyn Connector>)
+    pub fn get_connector(&self, connector_name: &str) -> Option<Box<dyn Connector>> {
+        match connector_name.to_lowercase().as_str() {
+            "resend" => Some(Box::new(ResendConnector)),
+            "openai" => Some(Box::new(OpenAiConnector)),
+            "anthropic" => Some(Box::new(AnthropicConnector)),
+            "airtable" => Some(Box::new(AirtableConnector)),
+            "hubspot" => Some(Box::new(HubSpotConnector)),
+            "jira" => Some(Box::new(JiraConnector)),
+            "linear" => Some(Box::new(LinearConnector)),
+            "asana" => Some(Box::new(AsanaConnector)),
+            "clickup" => Some(Box::new(ClickUpConnector)),
+            "trello" => Some(Box::new(TrelloConnector)),
+            "zendesk" => Some(Box::new(ZendeskConnector)),
+            "pagerduty" => Some(Box::new(PagerDutyConnector)),
+            "stripe" => Some(Box::new(StripeConnector)),
+            "sendgrid" => Some(Box::new(SendGridConnector)),
+            "salesforce" => Some(Box::new(SalesforceConnector)),
+            "shopify" => Some(Box::new(ShopifyConnector)),
+            "gitlab" => Some(Box::new(GitLabConnector)),
+            "monday" => Some(Box::new(MondayConnector)),
+            "brevo" => Some(Box::new(BrevoConnector)),
+            "webhook" => Some(Box::new(WebhookConnector)),
+            "schedule" => Some(Box::new(ScheduleConnector)),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
