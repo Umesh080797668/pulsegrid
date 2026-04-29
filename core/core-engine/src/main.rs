@@ -1,8 +1,10 @@
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
+    http::HeaderMap,
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -1793,20 +1795,27 @@ struct WebhookPayload {
 async fn webhook_receiver(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
-    Json(_payload): Json<serde_json::Value>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    verify_workspace_webhook_signature(&state, workspace_id, &headers, &body).await?;
+
     // BILLING: Enforce event quota per plan
     enforce_event_quota(&state.pool, workspace_id).await?;
-    
-    // For now, accept any webhook and push to event bus
-    // TODO: Implement signature verification based on workspace webhooks config
+
+    let payload_value = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_else(|_| {
+        serde_json::json!({ "raw": String::from_utf8_lossy(&body).to_string() })
+    });
     
     let event = PulseEvent {
         id: uuid::Uuid::new_v4(),
         tenant_id: workspace_id,
         source: Some("webhook".to_string()),
         event_type: "webhook.received".to_string(),
-        data: serde_json::json!({"timestamp": chrono::Utc::now().to_rfc3339()}),
+        data: serde_json::json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "payload": payload_value
+        }),
         sub_flow_depth: None,
     };
 
@@ -1832,7 +1841,11 @@ async fn webhook_receiver(
 async fn flow_webhook_receiver(
     State(state): State<AppState>,
     Path((workspace_id, flow_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    verify_workspace_webhook_signature(&state, workspace_id, &headers, &body).await?;
+
     // Verify flow exists and is enabled
     let _flow = sqlx::query!("SELECT id FROM flows WHERE id = $1 AND workspace_id = $2", flow_id, workspace_id)
         .fetch_optional(&state.pool)
@@ -1854,6 +1867,78 @@ async fn flow_webhook_receiver(
         "success": true,
         "flow_run_id": run_id.id
     })))
+}
+
+async fn verify_workspace_webhook_signature(
+    state: &AppState,
+    workspace_id: uuid::Uuid,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let signature = headers
+        .get("x-signature")
+        .or_else(|| headers.get("x-webhook-signature"))
+        .or_else(|| headers.get("x-hub-signature-256"))
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Missing webhook signature header".to_string(),
+        ))?;
+
+    let row = sqlx::query(
+        r#"
+        SELECT encrypted_blob, nonce
+        FROM credentials
+        WHERE workspace_id = $1 AND LOWER(connector_id) = 'webhook'
+        LIMIT 1
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((
+        axum::http::StatusCode::UNAUTHORIZED,
+        "Webhook secret not configured".to_string(),
+    ))?;
+
+    let encrypted_blob: Vec<u8> = row
+        .try_get("encrypted_blob")
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let nonce: Vec<u8> = row
+        .try_get("nonce")
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let secret = state
+        .vault
+        .decrypt(&encrypted_blob, &nonce)
+        .map_err(|_| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to decrypt webhook secret".to_string(),
+            )
+        })?;
+
+    let payload = std::str::from_utf8(body).map_err(|_| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            "Webhook payload is not valid UTF-8".to_string(),
+        )
+    })?;
+
+    if !state
+        .vault
+        .verify_webhook_signature(payload, signature, &secret)
+    {
+        return Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Invalid webhook signature".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 // Flow run history endpoints
