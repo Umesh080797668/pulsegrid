@@ -951,6 +951,192 @@ impl Connector for ShopifyConnector {
     }
 }
 
+pub struct GitLabConnector;
+
+#[async_trait]
+impl Connector for GitLabConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_issue".to_string(),
+            name: "Create Issue".to_string(),
+            description: Some("Create an issue in GitLab".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_issue" => Ok(serde_json::json!({"id": "", "iid": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct MondayConnector;
+
+#[async_trait]
+impl Connector for MondayConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "create_item".to_string(),
+            name: "Create Item".to_string(),
+            description: Some("Create an item in monday.com".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "create_item" => Ok(serde_json::json!({"id": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct BrevoConnector;
+
+#[async_trait]
+impl Connector for BrevoConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "send_email".to_string(),
+            name: "Send Email".to_string(),
+            description: Some("Send email via Brevo".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "send_email" => Ok(serde_json::json!({"messageId": ""})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct WebhookConnector;
+
+#[async_trait]
+impl Connector for WebhookConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![TriggerDefinition {
+            trigger_id: "webhook".to_string(),
+            name: "Webhook Trigger".to_string(),
+            description: Some("Trigger flow when webhook is called".to_string()),
+            payload_schema: None,
+        }]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![ActionDefinition {
+            action_id: "dispatch".to_string(),
+            name: "Dispatch Webhook".to_string(),
+            description: Some("Send payload to webhook URL".to_string()),
+            input_schema: None,
+            output_schema: None,
+        }]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        match action_id {
+            "dispatch" => Ok(serde_json::json!({"status": "dispatched"})),
+            _ => Err(ConnectorError::InvalidConfig(
+                format!("unknown action: {}", action_id),
+            )),
+        }
+    }
+}
+
+pub struct ScheduleConnector;
+
+#[async_trait]
+impl Connector for ScheduleConnector {
+    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
+        Ok(())
+    }
+
+    fn supported_triggers(&self) -> Vec<TriggerDefinition> {
+        vec![TriggerDefinition {
+            trigger_id: "schedule".to_string(),
+            name: "Schedule Trigger".to_string(),
+            description: Some("Trigger flow on a schedule (cron)".to_string()),
+            payload_schema: None,
+        }]
+    }
+
+    fn supported_actions(&self) -> Vec<ActionDefinition> {
+        vec![]
+    }
+
+    async fn execute_action(
+        &self,
+        _credentials: &Credentials,
+        _action_id: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, ConnectorError> {
+        Err(ConnectorError::InvalidConfig(
+            "schedule connector has no actions".to_string(),
+        ))
+    }
+}
+
 pub struct Connectors {
     http_client: Client,
 }
