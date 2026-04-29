@@ -2,7 +2,7 @@ import { Injectable, BadRequestException, UnauthorizedException } from '@nestjs/
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
-import { AuthTokens, AuthUser, JwtPayload } from './auth.types';
+import { AuthTokens, AuthUser, JwtPayload, LoginResult } from './auth.types';
 import { AuthStore } from './auth.store';
 
 @Injectable()
@@ -37,7 +37,7 @@ export class AuthService {
     });
   }
 
-  async login(email: string, password: string): Promise<AuthTokens> {
+  async login(email: string, password: string): Promise<LoginResult> {
     const normalizedEmail = email.trim().toLowerCase();
     const row = await this.authStore.findUserByEmail(normalizedEmail);
     const user = row ? this.toAuthUser(row) : null;
@@ -52,6 +52,24 @@ export class AuthService {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const mfa = await this.authStore.getMfaByUserId(user.id);
+    if (mfa?.enabled) {
+      return {
+        mfa_required: true,
+        mfa_token: await this.jwtService.signAsync(
+          {
+            sub: user.id,
+            email: user.email,
+            purpose: 'mfa',
+          },
+          {
+            secret: process.env.JWT_MFA_SECRET || process.env.JWT_SECRET || 'pulsegrid-dev-mfa-secret',
+            expiresIn: Number(process.env.JWT_MFA_TTL_SECONDS || 300),
+          },
+        ),
+      };
     }
 
     return this.issueTokens(user);
@@ -175,6 +193,20 @@ export class AuthService {
   async getUserByEmail(email: string): Promise<AuthUser | null> {
     const row = await this.authStore.findUserByEmail(email.trim().toLowerCase());
     return row ? this.toAuthUser(row) : null;
+  }
+
+  async getUserById(userId: string): Promise<AuthUser | null> {
+    const row = await this.authStore.findUserById(userId);
+    return row ? this.toAuthUser(row) : null;
+  }
+
+  async issueTokensForUserId(userId: string): Promise<AuthTokens> {
+    const user = await this.getUserById(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return this.issueTokens(user);
   }
 
 }

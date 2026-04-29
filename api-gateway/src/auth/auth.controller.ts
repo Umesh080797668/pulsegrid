@@ -5,6 +5,7 @@ import { EmailService } from '../email/email.service';
 import { SendVerificationEmailDto, VerifyEmailDto } from '../dto';
 import { Request, Response } from 'express';
 import { RateLimitService } from '../rate-limit.service';
+import { AuthTokens } from './auth.types';
 
 class RegisterDto {
   @IsEmail()
@@ -57,7 +58,13 @@ export class AuthController {
   @Post('login')
   async login(@Body() body: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     await this.checkAuthRateLimit(req, 'login', Number(process.env.RATE_LIMIT_LOGIN_PER_MINUTE || 30));
-    const tokens = await this.authService.login(body.email, body.password);
+    const result = await this.authService.login(body.email, body.password);
+
+    if ((result as any).mfa_required) {
+      return result;
+    }
+
+    const tokens = result as AuthTokens;
     res.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
     return { accessToken: tokens.accessToken };
   }

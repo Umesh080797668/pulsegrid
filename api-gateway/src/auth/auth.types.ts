@@ -17,3 +17,15 @@ export interface AuthTokens {
   accessToken: string;
   refreshToken: string;
 }
+
+export interface MfaLoginChallenge {
+  mfa_required: true;
+  mfa_token: string;
+}
+
+export type LoginResult = AuthTokens | MfaLoginChallenge;
+
+export interface MfaSetupResult {
+  secret: string;
+  otpauthUrl: string;
+}

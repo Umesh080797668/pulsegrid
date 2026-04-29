@@ -5,6 +5,8 @@ import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AuthStore } from './auth.store';
 import { EmailModule } from '../email/email.module';
+import { MfaController } from './mfa.controller';
+import { MfaService } from './mfa.service';
 
 @Module({
   imports: [
@@ -16,8 +18,8 @@ import { EmailModule } from '../email/email.module';
     }),
     EmailModule,
   ],
-  controllers: [AuthController],
-  providers: [AuthStore, AuthService, JwtAuthGuard],
-  exports: [AuthService, JwtAuthGuard, AuthStore, JwtModule],
+  controllers: [AuthController, MfaController],
+  providers: [AuthStore, AuthService, MfaService, JwtAuthGuard],
+  exports: [AuthService, MfaService, JwtAuthGuard, AuthStore, JwtModule],
 })
 export class AuthModule {}

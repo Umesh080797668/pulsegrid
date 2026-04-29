@@ -10,6 +10,12 @@ interface DbUserRow {
   created_at: Date;
 }
 
+interface DbMfaRow {
+  user_id: string;
+  totp_secret: string;
+  enabled: boolean;
+}
+
 @Injectable()
 export class AuthStore implements OnModuleDestroy {
   private readonly pool: Pool;
@@ -178,6 +184,41 @@ export class AuthStore implements OnModuleDestroy {
     return result.rows[0]?.email_verified === true;
   }
 
+  async getMfaByUserId(userId: string): Promise<DbMfaRow | null> {
+    const result = await this.pool.query<DbMfaRow>(
+      `SELECT user_id, totp_secret, enabled
+       FROM user_mfa
+       WHERE user_id = $1`,
+      [userId],
+    );
+
+    return result.rows[0] ?? null;
+  }
+
+  async upsertMfaSecret(params: {
+    userId: string;
+    totpSecret: string;
+    enabled?: boolean;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO user_mfa (user_id, totp_secret, enabled)
+       VALUES ($1, $2, COALESCE($3, false))
+       ON CONFLICT (user_id)
+       DO UPDATE SET totp_secret = EXCLUDED.totp_secret,
+                     enabled = EXCLUDED.enabled`,
+      [params.userId, params.totpSecret, params.enabled ?? false],
+    );
+  }
+
+  async enableMfa(userId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE user_mfa
+       SET enabled = true
+       WHERE user_id = $1`,
+      [userId],
+    );
+  }
+
   private async ensureAuthSchema(): Promise<void> {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
@@ -200,6 +241,12 @@ export class AuthStore implements OnModuleDestroy {
 
       CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_user_id
       ON email_verification_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS user_mfa (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        totp_secret TEXT NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT false
+      );
 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
     `);
