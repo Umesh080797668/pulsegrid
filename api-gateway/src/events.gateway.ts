@@ -156,7 +156,7 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
 
         const args: Array<string> = ['XREAD', 'BLOCK', '5000', 'COUNT', '25', 'STREAMS', ...streams, ...lastIds];
 
-        const reply = await (this.streamReader as Redis).call(...args) as unknown;
+        const reply = await (this.streamReader as unknown as any).call(...args) as unknown;
 
         if (!reply || !Array.isArray(reply)) {
           continue;
