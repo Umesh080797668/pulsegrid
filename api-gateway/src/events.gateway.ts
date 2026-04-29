@@ -31,6 +31,8 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EventsGateway.name);
   private streamReader?: Redis;
   private shouldRun = true;
+  private activeWorkspaces = new Set<string>();
+  private streamLastIds = new Map<string, string>();
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
@@ -114,6 +116,12 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
     }
 
     client.join(`workspace:${workspaceId}`);
+    // Track active workspace for stream relay
+    const streamKey = `stream:events:${workspaceId}`;
+    if (!this.activeWorkspaces.has(workspaceId)) {
+      this.activeWorkspaces.add(workspaceId);
+      this.streamLastIds.set(streamKey, '$');
+    }
     return { ok: true, workspaceId };
   }
 
@@ -128,24 +136,27 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
     }
 
     client.leave(`workspace:${workspaceId}`);
+    // Stop tracking workspace stream when no clients remain
+    this.activeWorkspaces.delete(workspaceId);
+    this.streamLastIds.delete(`stream:events:${workspaceId}`);
     return { ok: true, workspaceId };
   }
 
   private async startRelayLoop(): Promise<void> {
-    let lastId = '$';
-
     while (this.shouldRun) {
       try {
-        const reply = await (this.streamReader as Redis).call(
-          'XREAD',
-          'BLOCK',
-          '5000',
-          'COUNT',
-          '25',
-          'STREAMS',
-          'stream:events:global',
-          lastId,
-        ) as unknown;
+        if (this.streamLastIds.size === 0) {
+          // No active workspaces subscribed; sleep briefly
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+
+        const streams = Array.from(this.streamLastIds.keys());
+        const lastIds = Array.from(this.streamLastIds.values());
+
+        const args: Array<string> = ['XREAD', 'BLOCK', '5000', 'COUNT', '25', 'STREAMS', ...streams, ...lastIds];
+
+        const reply = await (this.streamReader as Redis).call(...args) as unknown;
 
         if (!reply || !Array.isArray(reply)) {
           continue;
@@ -156,9 +167,12 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
             continue;
           }
 
+          const streamName = streamData[0] as string;
           const entries = streamData[1] as Array<[string, string[]]>;
           for (const [entryId, fields] of entries) {
-            lastId = entryId;
+            // update last id for this stream
+            this.streamLastIds.set(streamName, entryId);
+
             const payloadIndex = fields.findIndex((item) => item === 'payload');
             if (payloadIndex === -1 || payloadIndex + 1 >= fields.length) {
               continue;
@@ -174,8 +188,12 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
 
             this.server.emit('event', payload);
 
-            const tenantId = payload['tenant_id'];
-            if (typeof tenantId === 'string' && tenantId.length > 0) {
+            // Emit to workspace room based on payload tenant_id or derive from stream name
+            const tenantId = payload['tenant_id'] && typeof payload['tenant_id'] === 'string'
+              ? (payload['tenant_id'] as string)
+              : streamName.replace(/^stream:events:/, '');
+
+            if (tenantId && tenantId.length > 0) {
               this.server.to(`workspace:${tenantId}`).emit('workspace_event', payload);
             }
           }

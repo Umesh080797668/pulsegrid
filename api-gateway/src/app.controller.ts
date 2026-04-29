@@ -912,8 +912,9 @@ export class AppController implements OnModuleInit {
     };
 
     try {
+      const streamKey = `stream:events:${tenantId}`;
       await this.redis.xadd(
-        'stream:events:global',
+        streamKey,
         '*',
         'payload', JSON.stringify(normalizedEvent)
       );
