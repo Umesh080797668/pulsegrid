@@ -772,6 +772,18 @@ impl FlowExecutor {
             "resend" | "openai" | "anthropic" | "airtable" | "hubspot" | "jira" | "linear"
             | "asana" | "clickup" | "trello" | "zendesk" | "pagerduty" | "stripe" | "sendgrid"
             | "salesforce" | "shopify" | "gitlab" | "monday" | "brevo" => {
+                let required_secret = match connector {
+                    "resend" | "stripe" | "sendgrid" | "monday" | "brevo" => Some("api_key"),
+                    "jira" | "salesforce" | "shopify" | "gitlab" => Some("access_token"),
+                    _ => None,
+                };
+
+                if let Some(key) = required_secret {
+                    if input.get(key).and_then(Value::as_str).is_none() {
+                        return Err(format!("missing required input field: {key}"));
+                    }
+                }
+
                 // Use Connector trait for all 21 missing connectors
                 if let Some(connector_impl) = connectors.get_connector(connector) {
                     connector_impl
