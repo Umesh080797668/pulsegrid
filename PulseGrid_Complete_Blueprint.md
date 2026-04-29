@@ -42,7 +42,7 @@
 **Core Engine Language:** Rust  
 **Primary Model:** Freemium SaaS + Marketplace + API Billing  
 
-PulseGrid is a universal real-time automation and intelligence platform. At its core sits **PulseCore** — a high-performance event processing engine written entirely in Rust — surrounded by a complete full-stack ecosystem: a Next.js web dashboard, an Angular enterprise admin panel, a NestJS API gateway, Spring Boot enterprise services, a Flutter mobile app, an embeddable Vue SDK, and a Rust-powered CLI.
+PulseGrid is a universal real-time automation and intelligence platform. At its core sits **PulseCore** — a high-performance event processing engine written entirely in Rust — surrounded by a complete full-stack ecosystem: a Next.js web dashboard, an Angular enterprise admin panel, a NestJS API gateway, Spring Boot enterprise services, a Flutter mobile app, a React Native companion app, an embeddable Vue SDK, and a Rust-powered CLI.
 
 Users connect any digital service, physical device, or data source to PulseGrid and build intelligent automations — called **Flows** — that respond in real time. A flow can be as simple as "send me a Telegram message when my server CPU exceeds 90%" or as complex as "when a new Shopify order comes in, check inventory levels, update the Airtable tracker, charge the customer via Stripe, assign a delivery driver via the logistics API, and post a Slack update to the fulfilment team."
 
@@ -226,7 +226,7 @@ Large organizations needing compliant, auditable, high-throughput automation at 
 │                      PULSEGRID PLATFORM                     │
 │                                                             │
 │  ┌──────────┐ ┌─────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ Next.js  │ │Angular  │ │   Vue    │ │   Flutter      │  │
+│  │ Next.js  │ │Angular  │ │   Vue    │ │ Flutter / RN   │  │
 │  │Dashboard │ │Enterprise│ │Embed SDK │ │  Mobile Apps   │  │
 │  └──────────┘ └─────────┘ └──────────┘ └────────────────┘  │
 │                       ▼                                     │
@@ -355,11 +355,21 @@ Single codebase for iOS and Android with native performance. Flutter's widget sy
 - `socket_io_client` — real-time event feed
 - `flutter_blue_plus` — Bluetooth Low Energy for IoT device pairing
 - `local_auth` — biometric authentication
-- `flutter_local_notifications` — rich push notifications (daily digest, critical alerts)
-- `home_widget` — iOS/Android home screen widget (event feed, flow health, quick-run)
+- `flutter_local_notifications` — rich push notifications
+- `home_widget` — iOS/Android home screen widget
 - `flutter_ffi` — FFI bridge to Rust for on-device crypto operations
-- `share_plus` — iOS share sheet + Android share extension (pipe any content into a Flow)
-- `shorebird` — OTA code push for Flutter (ship fixes without App Store review)
+
+#### React Native + Expo (Companion App)
+
+**Why React Native/Expo alongside Flutter:**
+The Expo companion app is a fast-shipping, lightweight app focused on quick actions and daily digest — not the full automation builder. OTA (over-the-air) updates via Expo EAS allow pushing fixes without app store review. Sharing team members who know React can contribute here without learning Dart.
+
+**Key packages:**
+- `expo-router` — file-based routing
+- `expo-notifications` — push notifications
+- `expo-secure-store` — secure credential storage
+- `@tanstack/react-query` — server state
+- `react-native-reanimated` — smooth animations
 
 #### Docker + Kubernetes
 
@@ -815,21 +825,23 @@ pulse flow deploy --workspace prod --file ./flow.json
 - **Devices:** IoT device management — scan BLE devices, configure Matter home devices
 - **Market:** Browse and install templates
 - **Settings:** Workspace, notifications, biometric auth, VaultGuard
-- **Daily Digest:** Morning push notification with yesterday's automation summary; tapping opens a dedicated digest screen
-- **Approvals:** Approve/reject human-in-the-loop flow pauses inline, with full context
-- **Quick Triggers:** One-tap manual flow launcher, surfaced on the home screen and as a home screen widget
-- **Alert Centre:** Critical failures and anomaly alerts with severity badges
-- **Share Extension:** iOS share sheet + Android share target — pipe any content from any app directly into a PulseGrid Flow
 
 **Home screen widgets (iOS/Android):**
 - Mini event feed widget
 - Flow health widget (green/red status indicators)
 - Quick-run widget (one-tap trigger manual flows)
 
-**OTA updates:**
-Shorebird code push is integrated so critical fixes ship to users immediately without waiting for App Store or Google Play review cycles — without needing a second app.
+### 9.4 React Native Expo Companion App
 
-### 9.4 Embeddable Vue SDK
+Focused on speed and quick actions:
+
+- **Daily Digest:** Morning push notification with yesterday's automation summary
+- **Pending approvals:** Approve/reject human-in-the-loop flow pauses
+- **Quick triggers:** List of manual flows to run with one tap
+- **Alert center:** Critical failures and anomaly alerts
+- **Share sheet extension:** Share any content from any app into a PulseGrid flow
+
+### 9.5 Embeddable Vue SDK
 
 For third-party developers to integrate PulseGrid into their apps:
 
@@ -849,7 +861,7 @@ For third-party developers to integrate PulseGrid into their apps:
 
 This allows Shopify app developers, Notion plugin builders, and any SaaS company to embed PulseGrid's power into their own product — with PulseGrid's branding or white-labeled.
 
-### 9.5 Pulse CLI
+### 9.6 Pulse CLI
 
 Described in Module 8.8 above. Distributed as:
 - Cargo install (`cargo install pulsegrid-cli`)
@@ -1467,7 +1479,8 @@ Every developer who builds with the PulseGrid API or embeds the Vue SDK is a dis
 ### Phase 2 — Growth Product (Month 5–10)
 
 **Milestone 2.1 — Mobile App (Month 5–6)**
-- Flutter app: flow management, event feed, push notifications, daily digest, quick triggers, approval flows, share extension
+- Flutter app: flow management, event feed, push notifications
+- React Native Expo companion: daily digest, quick triggers, approval flows
 - Home screen widgets (Flutter)
 - Biometric auth
 - BLE device pairing (smart home)
@@ -1967,13 +1980,17 @@ pulsegrid/
 │   │   └── compliance/
 │   └── src/environments/
 │
-├── mobile/                        # Flutter mobile app (single mobile product)
+├── mobile/                        # Flutter mobile app
 │   ├── lib/
 │   │   ├── features/
 │   │   ├── data/
 │   │   └── core/
-│   ├── shorebird.yaml             # Shorebird OTA code push config
 │   └── test/
+│
+├── companion/                     # React Native Expo app
+│   ├── app/                       # Expo Router
+│   ├── components/
+│   └── hooks/
 │
 ├── sdk/                           # Vue embeddable SDK
 │   ├── src/

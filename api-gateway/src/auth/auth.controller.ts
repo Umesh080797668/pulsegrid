@@ -1,9 +1,9 @@
-import { Body, Controller, Get, Headers, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 import { AuthService } from './auth.service';
 import { EmailService } from '../email/email.service';
 import { SendVerificationEmailDto, VerifyEmailDto } from '../dto';
-import { Request, Response } from 'express';
+import { Request } from 'express';
 import { RateLimitService } from '../rate-limit.service';
 
 class RegisterDto {
@@ -28,7 +28,11 @@ class LoginDto {
   password!: string;
 }
 
-
+class RefreshDto {
+  @IsString()
+  @IsNotEmpty()
+  refreshToken!: string;
+}
 
 @Controller('auth')
 export class AuthController {
@@ -55,31 +59,19 @@ export class AuthController {
   }
 
   @Post('login')
-  async login(@Body() body: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  async login(@Body() body: LoginDto, @Req() req: Request) {
     await this.checkAuthRateLimit(req, 'login', Number(process.env.RATE_LIMIT_LOGIN_PER_MINUTE || 30));
-    const tokens = await this.authService.login(body.email, body.password);
-    res.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
-    return { accessToken: tokens.accessToken };
+    return this.authService.login(body.email, body.password);
   }
 
   @Post('refresh')
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const refreshToken = (req as any).cookies?.refresh_token as string | undefined;
-    if (!refreshToken) {
-      throw new UnauthorizedException('Missing refresh token');
-    }
-    const tokens = await this.authService.refresh(refreshToken);
-    res.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
-    return { accessToken: tokens.accessToken };
+  refresh(@Body() body: RefreshDto) {
+    return this.authService.refresh(body.refreshToken);
   }
 
   @Post('logout')
-  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const refreshToken = (req as any).cookies?.refresh_token as string | undefined;
-    if (refreshToken) {
-      await this.authService.logout(refreshToken);
-    }
-    res.clearCookie('refresh_token');
+  async logout(@Body() body: RefreshDto) {
+    await this.authService.logout(body.refreshToken);
     return { success: true };
   }
 
@@ -144,7 +136,6 @@ export class AuthController {
     @Query('email') fallbackEmail?: string,
     @Query('name') fallbackName?: string,
     @Req() req?: Request,
-    @Res({ passthrough: true }) res?: Response,
   ) {
     if (code) {
       const redirectUri = process.env.GOOGLE_REDIRECT_URI;
@@ -189,9 +180,7 @@ export class AuthController {
         throw new UnauthorizedException('Google account did not return email');
       }
 
-      const tokens = await this.authService.socialLogin('google', profile.email, profile.name);
-      res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
-      return { accessToken: tokens.accessToken };
+      return this.authService.socialLogin('google', profile.email, profile.name);
     }
 
     if (!fallbackEmail) {
@@ -202,9 +191,7 @@ export class AuthController {
       await this.checkAuthRateLimit(req, 'google-callback', Number(process.env.RATE_LIMIT_OAUTH_PER_MINUTE || 60));
     }
 
-    const tokens = await this.authService.socialLogin('google', fallbackEmail, fallbackName);
-    res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
-    return { accessToken: tokens.accessToken };
+    return this.authService.socialLogin('google', fallbackEmail, fallbackName);
   }
 
   @Get('github/callback')
@@ -214,7 +201,6 @@ export class AuthController {
     @Query('name') fallbackName?: string,
     @Headers('user-agent') userAgent?: string,
     @Req() req?: Request,
-    @Res({ passthrough: true }) res?: Response,
   ) {
     if (code) {
       const redirectUri = process.env.GITHUB_REDIRECT_URI;
@@ -281,9 +267,7 @@ export class AuthController {
         throw new UnauthorizedException('GitHub account did not return email');
       }
 
-      const tokens = await this.authService.socialLogin('github', email, user.name || user.login);
-      res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
-      return { accessToken: tokens.accessToken };
+      return this.authService.socialLogin('github', email, user.name || user.login);
     }
 
     if (!fallbackEmail) {
@@ -294,9 +278,7 @@ export class AuthController {
       await this.checkAuthRateLimit(req, 'github-callback', Number(process.env.RATE_LIMIT_OAUTH_PER_MINUTE || 60));
     }
 
-    const tokens = await this.authService.socialLogin('github', fallbackEmail, fallbackName);
-    res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
-    return { accessToken: tokens.accessToken };
+    return this.authService.socialLogin('github', fallbackEmail, fallbackName);
   }
 
   private async checkAuthRateLimit(req: Request, keySuffix: string, limit: number): Promise<void> {
