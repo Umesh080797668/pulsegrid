@@ -4,11 +4,12 @@ use core_proto::pulsecore::{
     SetWorkspaceSecretRequest, SetWorkspaceSecretResponse, TriggerFlowRequest, TriggerFlowResponse,
     VerifyWebhookRequest, VerifyWebhookResponse, GenerateFlowRequest, GenerateFlowResponse,
     AnalyzeFailureRequest, AnalyzeFailureResponse, ListMarketTemplatesRequest,
-    ListMarketTemplatesResponse, InstallTemplateRequest, InstallTemplateResponse, MarketTemplate
+    ListMarketTemplatesResponse, InstallTemplateRequest, InstallTemplateResponse, MarketTemplate,
+    DetectPatternsRequest, DetectPatternsResponse, DetectedPattern
 };
 use core_vault::Vault;
 use redis::AsyncCommands;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -287,5 +288,54 @@ impl PulseCoreService for MyPulseCoreService {
         );
 
         Ok(Response::new(VerifyWebhookResponse { is_valid }))
+    }
+
+    async fn detect_patterns(
+        &self,
+        request: Request<DetectPatternsRequest>,
+    ) -> Result<Response<DetectPatternsResponse>, Status> {
+        let req = request.into_inner();
+        
+        // STUB: Pattern detection RPC - Phase 3 will implement actual detection
+        // For now, return empty patterns from database if they exist
+        let ws_id = Uuid::parse_str(&req.workspace_id)
+            .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
+
+        let rows = sqlx::query(
+            r#"
+            SELECT id, workspace_id, pattern_type, description, confidence, frequency,
+                   events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at
+            FROM ai_detected_patterns
+            WHERE workspace_id = $1
+            ORDER BY detected_at DESC
+            LIMIT 50
+            "#,
+        )
+        .bind(ws_id)
+        .fetch_all(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let patterns = rows.iter().map(|row| {
+            let detected_at: chrono::DateTime<chrono::Utc> = row.get("detected_at");
+            DetectedPattern {
+                id: row.get::<String, _>("id"),
+                workspace_id: row.get::<uuid::Uuid, _>("workspace_id").to_string(),
+                pattern_type: row.get::<String, _>("pattern_type"),
+                description: row.get::<String, _>("description"),
+                confidence: row.get::<f32, _>("confidence"),
+                frequency: row.get::<String, _>("frequency"),
+                suggested_trigger: row.get::<Option<String>, _>("suggested_trigger").unwrap_or_default(),
+                suggested_actions_json: row.get::<serde_json::Value, _>("suggested_actions").to_string(),
+                suggested_flow_json: row.get::<serde_json::Value, _>("suggested_flow").to_string(),
+                detected_at_unix: detected_at.timestamp(),
+            }
+        }).collect();
+
+        Ok(Response::new(DetectPatternsResponse {
+            success: true,
+            patterns,
+            error_message: String::new(),
+        }))
     }
 }

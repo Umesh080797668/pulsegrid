@@ -52,6 +52,7 @@ struct PlanLimits {
     allowed_connector_tier: &'static str,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AIPatternRecord {
     id: uuid::Uuid,
@@ -67,6 +68,7 @@ struct AIPatternRecord {
     detected_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct StripeWebhookEnvelope {
     #[serde(rename = "type")]
@@ -74,6 +76,7 @@ struct StripeWebhookEnvelope {
     data: StripeWebhookData,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct StripeWebhookData {
     object: serde_json::Value,
@@ -314,6 +317,7 @@ async fn enforce_event_quota(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn detect_workspace_patterns(
     pool: &sqlx::PgPool,
     workspace_id: uuid::Uuid,
@@ -451,6 +455,7 @@ async fn detect_workspace_patterns(
     Ok(patterns)
 }
 
+#[allow(dead_code)]
 async fn refresh_workspace_patterns(
     pool: &sqlx::PgPool,
     workspace_id: uuid::Uuid,
@@ -548,8 +553,8 @@ async fn main() {
             get(get_flow).put(update_flow).delete(delete_flow),
         )
         // Webhook endpoints
-        .route("/api/v1/webhooks/:workspace_id", post(webhook_receiver))
-        .route("/api/v1/webhooks/:workspace_id/:flow_id", post(flow_webhook_receiver))
+        .route("/api/v1/webhooks/{workspace_id}", post(webhook_receiver))
+        .route("/api/v1/webhooks/{workspace_id}/{flow_id}", post(flow_webhook_receiver))
         // Credentials endpoints
         .route(
             "/api/v1/workspaces/{workspace_id}/secrets",

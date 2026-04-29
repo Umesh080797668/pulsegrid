@@ -37,15 +37,6 @@ import { EventsModule } from './events/events.module';
           url: '127.0.0.1:50051',
         },
       },
-      {
-        name: 'CORE_AI_PACKAGE',
-        transport: Transport.GRPC,
-        options: {
-          package: 'core_ai',
-          protoPath: './src/proto/pulsecore.proto',
-          url: '127.0.0.1:50052',
-        },
-      },
     ]),
   ],
   controllers: [AppController],
