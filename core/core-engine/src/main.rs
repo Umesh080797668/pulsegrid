@@ -584,6 +584,7 @@ async fn main() {
         .route("/api/v1/flows/{flow_id}/runs", get(get_flow_runs))
         .route("/api/v1/flows/{flow_id}/runs/{run_id}", get(get_flow_run_details))
         .route("/api/v1/flows/{flow_id}/stats", get(get_flow_stats))
+        .route("/api/v1/replay/{workspace_id}", get(get_replay_events))
         // WebSocket event stream
         .route("/events/stream", get(events_stream))
         .with_state(state.clone());
@@ -1059,6 +1060,20 @@ async fn start_event_listener(
                                     // BILLING: Increment event count
                                     let _ = increment_usage(&pg_pool, event.tenant_id, 1, 0).await;
 
+                                    if event.event_type == "approval.response" {
+                                        if let Err(error) = handle_approval_response_event(
+                                            &pg_pool,
+                                            &executor,
+                                            &mut con,
+                                            &event,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!("Approval response handling failed: {}", error);
+                                        }
+                                        continue;
+                                    }
+
                                     let (event_count, _) = get_monthly_usage(&pg_pool, event.tenant_id).await.unwrap_or((0, 0));
                                     if event_count % 100 == 0 && event_count > 0 {
                                         // Batch pattern detection: collect recent flow_runs + step logs and analyze
@@ -1290,18 +1305,19 @@ async fn start_event_listener(
                                         let mut step_outputs = std::collections::HashMap::new();
                                         let mut all_steps_succeeded = true;
                                         let mut steps_log = serde_json::json!([]);
+                                        let mut paused_for_approval = false;
                                         let should_dead_letter = flow_def
                                             .error_policy
                                             .on_failure
                                             .eq_ignore_ascii_case("dead_letter");
 
-                                        for group in execution_order {
+                                        for (group_index, group) in execution_order.iter().enumerate() {
                                             use std::future::Future;
                                             use std::pin::Pin;
 
                                             let mut futures_vec: Vec<Pin<Box<dyn Future<Output = models::StepExecutionResult> + '_>>> = Vec::new();
 
-                                            for step_id in &group {
+                                            for step_id in group {
                                                 if let Some(step) =
                                                     flow_def.steps.iter().find(|s| &s.id == step_id)
                                                 {
@@ -1309,16 +1325,57 @@ async fn start_event_listener(
                                                     let executor_clone = Arc::clone(&executor);
                                                     let event_clone = event.clone();
                                                     let outputs_snapshot = step_outputs.clone();
-
+                                                    let flow_def_clone = flow_def.clone();
+                                                    let flow_name_clone = flow_name.clone();
+                                                    let group_snapshot = execution_order.clone();
+                                                    let flow_id_clone = flow_id;
+                                                    let flow_run_id_clone = flow_run_id;
                                                     let fut = Box::pin(async move {
-                                                        execute_step_with_retry(
-                                                            executor_clone,
-                                                            &step_clone,
-                                                            serde_json::json!({}),
-                                                            &outputs_snapshot,
-                                                            &event_clone,
-                                                        )
-                                                        .await
+                                                        if step_clone.r#type == "wait_for_approval" {
+                                                            let context_json = serde_json::json!({
+                                                                "workspace_id": event_clone.tenant_id,
+                                                                "flow_id": flow_id_clone,
+                                                                "flow_run_id": flow_run_id_clone,
+                                                                "flow_name": flow_name_clone,
+                                                                "step_id": step_clone.id,
+                                                                "step_name": step_clone.id,
+                                                                "message": format!("Approval required for step {}", step_clone.id),
+                                                                "step_outputs": serde_json::to_value(&outputs_snapshot).unwrap_or_else(|_| serde_json::json!({})),
+                                                                "execution_order": group_snapshot,
+                                                                "current_group_index": group_index,
+                                                                "flow_definition": flow_def_clone,
+                                                                "trigger_event": event_clone,
+                                                            });
+                                                            let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+                                                            match executor_clone
+                                                                .create_pending_approval(flow_run_id_clone, &step_clone, context_json, expires_at)
+                                                                .await
+                                                            {
+                                                                Ok(token) => models::StepExecutionResult {
+                                                                    step_id: step_clone.id.clone(),
+                                                                    status: "waiting".to_string(),
+                                                                    output: serde_json::json!({"approval_token": token}),
+                                                                    error: None,
+                                                                    duration_ms: 0,
+                                                                },
+                                                                Err(error) => models::StepExecutionResult {
+                                                                    step_id: step_clone.id.clone(),
+                                                                    status: "failed".to_string(),
+                                                                    output: serde_json::Value::Null,
+                                                                    error: Some(error),
+                                                                    duration_ms: 0,
+                                                                },
+                                                            }
+                                                        } else {
+                                                            execute_step_with_retry(
+                                                                executor_clone,
+                                                                &step_clone,
+                                                                serde_json::json!({}),
+                                                                &outputs_snapshot,
+                                                                &event_clone,
+                                                            )
+                                                            .await
+                                                        }
                                                     });
 
                                                     futures_vec.push(fut);
@@ -1366,6 +1423,13 @@ async fn start_event_listener(
                                                         "      ⏭️  Step {} skipped (condition not met)",
                                                         result.step_id
                                                     );
+                                                } else if result.status == "waiting" {
+                                                    println!(
+                                                        "      ⏸️  Step {} waiting for approval",
+                                                        result.step_id
+                                                    );
+                                                    paused_for_approval = true;
+                                                    all_steps_succeeded = false;
                                                 }
 
                                                 step_outputs.insert(
@@ -1381,6 +1445,19 @@ async fn start_event_listener(
                                                     }),
                                                 );
                                             }
+
+                                            if paused_for_approval {
+                                                break;
+                                            }
+                                        }
+
+                                        if paused_for_approval {
+                                            let _ = sqlx::query!(
+                                                r#"UPDATE flow_runs SET status = 'waiting', steps_log = $1 WHERE id = $2"#,
+                                                steps_log,
+                                                flow_run_id as _
+                                            ).execute(&pg_pool).await;
+                                            continue;
                                         }
 
                                         // Update flow run status
@@ -1602,6 +1679,339 @@ async fn execute_step_with_retry(
         error: Some("retry loop exhausted".to_string()),
         duration_ms: 0,
     }
+}
+
+async fn handle_approval_response_event(
+    pg_pool: &sqlx::PgPool,
+    executor: &Arc<FlowExecutor>,
+    con: &mut redis::aio::MultiplexedConnection,
+    event: &models::PulseEvent,
+) -> Result<(), String> {
+    let approval_token = event
+        .data
+        .get("approval_token")
+        .or_else(|| event.data.get("token"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "approval response missing approval_token".to_string())?;
+
+    let decision = event
+        .data
+        .get("decision")
+        .and_then(|value| value.as_str())
+        .unwrap_or("approved");
+
+    let approval_row = sqlx::query(
+        r#"
+        SELECT
+            pa.flow_run_id,
+            pa.context_json,
+            pa.status,
+            fr.workspace_id,
+            fr.flow_id,
+            COALESCE(f.name, pa.context_json->>'flow_name', 'Unknown flow') AS flow_name
+        FROM pending_approvals pa
+        JOIN flow_runs fr ON fr.id = pa.flow_run_id
+        LEFT JOIN flows f ON f.id = fr.flow_id
+        WHERE pa.approval_token = $1
+        LIMIT 1
+        "#,
+    )
+    .bind(approval_token)
+    .fetch_optional(pg_pool)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let Some(row) = approval_row else {
+        return Ok(());
+    };
+
+    let status: String = row.try_get("status").map_err(|error| error.to_string())?;
+    if status != "pending" {
+        return Ok(());
+    }
+
+    let flow_run_id: uuid::Uuid = row.try_get("flow_run_id").map_err(|error| error.to_string())?;
+    let workspace_id: uuid::Uuid = row.try_get("workspace_id").map_err(|error| error.to_string())?;
+    let flow_id: uuid::Uuid = row.try_get("flow_id").map_err(|error| error.to_string())?;
+    let flow_name: String = row.try_get("flow_name").map_err(|error| error.to_string())?;
+    let context_json: serde_json::Value = row.try_get("context_json").map_err(|error| error.to_string())?;
+
+    if decision.eq_ignore_ascii_case("rejected") {
+        sqlx::query(
+            r#"
+            UPDATE pending_approvals
+            SET status = 'rejected', updated_at = NOW()
+            WHERE approval_token = $1
+            "#,
+        )
+        .bind(approval_token)
+        .execute(pg_pool)
+        .await
+        .map_err(|error| error.to_string())?;
+
+        sqlx::query(
+            r#"
+            UPDATE flow_runs
+            SET status = 'failed', completed_at = NOW(), error_message = 'Approval rejected'
+            WHERE id = $1
+            "#,
+        )
+        .bind(flow_run_id)
+        .execute(pg_pool)
+        .await
+        .map_err(|error| error.to_string())?;
+
+        let completion_payload = serde_json::json!({
+            "event_type": "flow_run_completed",
+            "tenant_id": workspace_id,
+            "flow_id": flow_id,
+            "status": "failed",
+            "run_id": flow_run_id,
+            "completed_at": chrono::Utc::now().to_rfc3339(),
+            "error_message": "Approval rejected",
+            "flow_name": flow_name,
+        });
+        let workspace_stream = workspace_stream_key(workspace_id);
+        let _ = con
+            .xadd::<_, _, _, _, ()>(
+                &workspace_stream,
+                "*",
+                &[("payload", serde_json::to_string(&completion_payload).unwrap_or_else(|_| "{}".to_string()))],
+            )
+            .await;
+
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        UPDATE pending_approvals
+        SET status = 'approved', updated_at = NOW()
+        WHERE approval_token = $1
+        "#,
+    )
+    .bind(approval_token)
+    .execute(pg_pool)
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let flow_definition_value = context_json
+        .get("flow_definition")
+        .cloned()
+        .ok_or_else(|| "approval context missing flow_definition".to_string())?;
+    let flow_def: FlowDefinition = serde_json::from_value(flow_definition_value)
+        .map_err(|error| error.to_string())?;
+
+    let execution_order: Vec<Vec<String>> = context_json
+        .get("execution_order")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_else(|| executor.resolve_execution_order(&flow_def.steps).unwrap_or_default());
+
+    let step_outputs: std::collections::HashMap<String, serde_json::Value> = context_json
+        .get("step_outputs")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+
+    let start_group_index = context_json
+        .get("current_group_index")
+        .and_then(|value| value.as_u64())
+        .map(|index| index as usize + 1)
+        .unwrap_or(0);
+
+    resume_flow_after_approval(
+        pg_pool,
+        executor,
+        con,
+        flow_run_id,
+        workspace_id,
+        flow_id,
+        flow_name,
+        flow_def,
+        execution_order,
+        step_outputs,
+        start_group_index,
+        context_json,
+    )
+    .await
+}
+
+async fn resume_flow_after_approval(
+    pg_pool: &sqlx::PgPool,
+    executor: &Arc<FlowExecutor>,
+    con: &mut redis::aio::MultiplexedConnection,
+    flow_run_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    flow_id: uuid::Uuid,
+    flow_name: String,
+    flow_def: FlowDefinition,
+    execution_order: Vec<Vec<String>>,
+    mut step_outputs: std::collections::HashMap<String, serde_json::Value>,
+    start_group_index: usize,
+    trigger_event: serde_json::Value,
+) -> Result<(), String> {
+    let event: models::PulseEvent = serde_json::from_value(trigger_event)
+        .map_err(|error| error.to_string())?;
+    let mut all_steps_succeeded = true;
+    let mut steps_log = serde_json::json!([]);
+    let mut paused_for_approval = false;
+    let should_dead_letter = flow_def
+        .error_policy
+        .on_failure
+        .eq_ignore_ascii_case("dead_letter");
+
+    for (group_index, group) in execution_order.iter().enumerate().skip(start_group_index) {
+        use std::future::Future;
+        use std::pin::Pin;
+
+        let mut futures_vec: Vec<Pin<Box<dyn Future<Output = models::StepExecutionResult> + '_>>> = Vec::new();
+
+        for step_id in group {
+            if let Some(step) = flow_def.steps.iter().find(|candidate| &candidate.id == step_id) {
+                let step_clone = step.clone();
+                let executor_clone = Arc::clone(executor);
+                let event_clone = event.clone();
+                let outputs_snapshot = step_outputs.clone();
+                let flow_def_clone = flow_def.clone();
+                let flow_name_clone = flow_name.clone();
+                let group_snapshot = execution_order.clone();
+                let flow_id_clone = flow_id;
+                let flow_run_id_clone = flow_run_id;
+
+                let fut = Box::pin(async move {
+                    if step_clone.r#type == "wait_for_approval" {
+                        let context_json = serde_json::json!({
+                            "workspace_id": event_clone.tenant_id,
+                            "flow_id": flow_id_clone,
+                            "flow_run_id": flow_run_id_clone,
+                            "flow_name": flow_name_clone,
+                            "step_id": step_clone.id,
+                            "step_name": step_clone.id,
+                            "message": format!("Approval required for step {}", step_clone.id),
+                            "step_outputs": serde_json::to_value(&outputs_snapshot).unwrap_or_else(|_| serde_json::json!({})),
+                            "execution_order": group_snapshot,
+                            "current_group_index": group_index,
+                            "flow_definition": flow_def_clone,
+                            "trigger_event": event_clone,
+                        });
+                        let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+
+                        match executor_clone
+                            .create_pending_approval(flow_run_id_clone, &step_clone, context_json, expires_at)
+                            .await
+                        {
+                            Ok(token) => models::StepExecutionResult {
+                                step_id: step_clone.id.clone(),
+                                status: "waiting".to_string(),
+                                output: serde_json::json!({"approval_token": token}),
+                                error: None,
+                                duration_ms: 0,
+                            },
+                            Err(error) => models::StepExecutionResult {
+                                step_id: step_clone.id.clone(),
+                                status: "failed".to_string(),
+                                output: serde_json::Value::Null,
+                                error: Some(error),
+                                duration_ms: 0,
+                            },
+                        }
+                    } else {
+                        execute_step_with_retry(
+                            executor_clone,
+                            &step_clone,
+                            serde_json::json!({}),
+                            &outputs_snapshot,
+                            &event_clone,
+                        )
+                        .await
+                    }
+                });
+
+                futures_vec.push(fut);
+            }
+        }
+
+        let results = join_all(futures_vec).await;
+
+        for result in results {
+            if result.status == "failed" {
+                all_steps_succeeded = false;
+
+                if should_dead_letter {
+                    let dlq_key = format!("dlq:failed:{}", workspace_id);
+                    let dlq_payload = serde_json::json!({
+                        "workspace_id": workspace_id,
+                        "flow_id": flow_id,
+                        "flow_name": flow_name,
+                        "trigger_event_id": event.id,
+                        "step_id": result.step_id,
+                        "error": result.error,
+                        "failed_at": chrono::Utc::now().to_rfc3339(),
+                    });
+                    let _ = con
+                        .rpush::<_, _, usize>(dlq_key, dlq_payload.to_string())
+                        .await;
+                }
+            } else if result.status == "waiting" {
+                paused_for_approval = true;
+                all_steps_succeeded = false;
+            }
+
+            step_outputs.insert(result.step_id.clone(), result.output.clone());
+            steps_log.as_array_mut().unwrap().push(serde_json::json!({
+                "step_id": result.step_id,
+                "status": result.status,
+                "duration_ms": result.duration_ms,
+                "error": result.error
+            }));
+        }
+
+        if paused_for_approval {
+            break;
+        }
+    }
+
+    if paused_for_approval {
+        let _ = sqlx::query(
+            r#"UPDATE flow_runs SET status = 'waiting', steps_log = $1 WHERE id = $2"#,
+        )
+        .bind(steps_log)
+        .bind(flow_run_id)
+        .execute(pg_pool)
+        .await;
+        return Ok(());
+    }
+
+    let final_status = if all_steps_succeeded { "success" } else { "failed" };
+    let _ = sqlx::query(
+        r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE id = $3"#,
+    )
+    .bind(final_status)
+    .bind(steps_log)
+    .bind(flow_run_id)
+    .execute(pg_pool)
+    .await;
+
+    let completion_payload = serde_json::json!({
+        "event_type": "flow_run_completed",
+        "tenant_id": workspace_id,
+        "flow_id": flow_id,
+        "status": final_status,
+        "run_id": flow_run_id,
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+        "flow_name": flow_name,
+    });
+    let workspace_stream = workspace_stream_key(workspace_id);
+    let _ = con
+        .xadd::<_, _, _, _, ()>(
+            &workspace_stream,
+            "*",
+            &[("payload", serde_json::to_string(&completion_payload).unwrap_or_else(|_| "{}".to_string()))],
+        )
+        .await;
+
+    Ok(())
 }
 
 async fn create_flow(
@@ -2834,6 +3244,45 @@ async fn get_flow_stats(
         "avg_duration_ms": avg_query.avg_dur,
         "max_duration_ms": stats.max_duration_ms,
         "min_duration_ms": stats.min_duration_ms,
+    })))
+}
+
+async fn get_replay_events(
+    Path(workspace_id): Path<uuid::Uuid>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<isize>().ok())
+        .unwrap_or(50)
+        .clamp(1, 500);
+
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    let client = redis::Client::open(redis_url)
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let mut con = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+
+    let ring_buffer_key = format!("workspace:{}:events", workspace_id);
+    let events: Vec<String> = redis::cmd("ZREVRANGE")
+        .arg(&ring_buffer_key)
+        .arg(0)
+        .arg(limit - 1)
+        .query_async(&mut con)
+        .await
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+
+    let parsed_events: Vec<serde_json::Value> = events
+        .into_iter()
+        .filter_map(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "workspace_id": workspace_id,
+        "total": parsed_events.len(),
+        "events": parsed_events,
     })))
 }
 

@@ -271,6 +271,58 @@ export class FlowsController {
   }
 
   /**
+   * List pending approvals for the authenticated workspace
+   * GET /flows/pending-approvals
+   */
+  @Get('pending-approvals')
+  async listPendingApprovals(@Request() req: ExpressRequest) {
+    const workspaceId = this.extractWorkspaceId(req);
+    const approvals = await this.flowsService.listPendingApprovals(workspaceId);
+    return approvals.map((approval) => ({
+      token: approval.token,
+      flowRunId: approval.flowRunId,
+      flowName: approval.flowName,
+      stepName: approval.stepName,
+      message: approval.message,
+      createdAt: approval.createdAt.toISOString(),
+      expiresAt: approval.expiresAt.toISOString(),
+      status: approval.status,
+    }));
+  }
+
+  /**
+   * Approve a pending flow step
+   * POST /flows/approval/:token/approve
+   */
+  @Post('approval/:token/approve')
+  async approvePendingApproval(@Param('token') token: string, @Request() req: ExpressRequest) {
+    const workspaceId = this.extractWorkspaceId(req);
+    const approval = await this.flowsService.respondToApproval(token, 'approved', workspaceId);
+
+    return {
+      statusCode: 200,
+      message: 'Approval accepted',
+      data: approval,
+    };
+  }
+
+  /**
+   * Reject a pending flow step
+   * POST /flows/approval/:token/reject
+   */
+  @Post('approval/:token/reject')
+  async rejectPendingApproval(@Param('token') token: string, @Request() req: ExpressRequest) {
+    const workspaceId = this.extractWorkspaceId(req);
+    const approval = await this.flowsService.respondToApproval(token, 'rejected', workspaceId);
+
+    return {
+      statusCode: 200,
+      message: 'Approval rejected',
+      data: approval,
+    };
+  }
+
+  /**
    * Extract workspace ID from JWT token in request
    * Throws BadRequestException if workspace not found in token
    */

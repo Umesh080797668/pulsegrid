@@ -123,7 +123,7 @@ pub struct RetryPolicy {
     pub initial_backoff_ms: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FlowDefinition {
     pub id: String,
     pub name: String,
@@ -170,7 +170,7 @@ pub struct FlowResponse {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StepExecutionResult {
     pub step_id: String,
-    pub status: String, // "success", "failed", "skipped"
+    pub status: String, // "success", "failed", "skipped", "waiting"
     pub output: Value,
     pub error: Option<String>,
     pub duration_ms: i32,

@@ -156,6 +156,7 @@ export class FlowStepDto {
     'transform',
     'delay',
     'fork',
+    'wait_for_approval',
   ])
   type!: string;
 

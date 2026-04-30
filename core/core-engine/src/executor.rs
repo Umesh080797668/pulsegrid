@@ -329,6 +329,10 @@ impl FlowExecutor {
                 if result.status == "failed" {
                     return Err(result.error.unwrap_or_else(|| "step failed".to_string()));
                 }
+                if result.status == "waiting" {
+                    step_outputs.insert(result.step_id.clone(), result.output.clone());
+                    return Ok(step_outputs);
+                }
                 step_outputs.insert(result.step_id.clone(), result.output.clone());
             }
         }
@@ -785,6 +789,13 @@ impl FlowExecutor {
                     "delay_ms": delay_ms,
                 })
             }
+            "wait_for_approval" => {
+                json!({
+                    "status": "waiting",
+                    "step_id": step.id,
+                    "approval_required": true,
+                })
+            }
             "fork" => {
                 let fork_condition = step.condition.as_deref().unwrap_or("");
                 if fork_condition.is_empty() {
@@ -873,6 +884,110 @@ impl FlowExecutor {
         self.engine
             .eval_with_scope::<bool>(&mut scope, condition)
             .unwrap_or(false)
+    }
+
+    pub async fn create_pending_approval(
+        &self,
+        flow_run_id: uuid::Uuid,
+        step: &FlowStep,
+        context_json: Value,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<String, String> {
+        let approval_token = uuid::Uuid::new_v4().to_string();
+        let query = sqlx::query(
+            r#"
+            INSERT INTO pending_approvals (
+                flow_run_id,
+                step_id,
+                approval_token,
+                context_json,
+                expires_at,
+                status
+            ) VALUES ($1, $2, $3, $4, $5, 'pending')
+            "#,
+        )
+        .bind(flow_run_id)
+        .bind(&step.id)
+        .bind(&approval_token)
+        .bind(&context_json)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await;
+
+        if let Err(error) = query {
+            return Err(error.to_string());
+        }
+
+        if let Err(error) = self.send_approval_notification(&approval_token, &context_json).await {
+            eprintln!("failed to send approval notification: {}", error);
+        }
+
+        Ok(approval_token)
+    }
+
+    async fn send_approval_notification(
+        &self,
+        approval_token: &str,
+        context_json: &Value,
+    ) -> Result<(), String> {
+        let approval_link_base = std::env::var("APPROVAL_LINK_BASE")
+            .unwrap_or_else(|_| "pulsegrid://approvals".to_string());
+        let approval_link = format!("{}/{}", approval_link_base.trim_end_matches('/'), approval_token);
+        let flow_name = context_json
+            .get("flow_name")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown flow");
+        let step_name = context_json
+            .get("step_name")
+            .and_then(Value::as_str)
+            .unwrap_or("Approval step");
+        let message = context_json
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Approval required");
+
+        if let Ok(webhook_url) = std::env::var("APPROVAL_SLACK_WEBHOOK_URL") {
+            let client = reqwest::Client::new();
+            client
+                .post(webhook_url)
+                .json(&json!({
+                    "text": format!(
+                        "Approval required for {flow_name} / {step_name}: {message}\n{approval_link}"
+                    )
+                }))
+                .send()
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+
+        let resend_api_key = match std::env::var("RESEND_API_KEY") {
+            Ok(value) => value,
+            Err(_) => return Ok(()),
+        };
+        let approval_email_to = match std::env::var("APPROVAL_EMAIL_TO") {
+            Ok(value) => value,
+            Err(_) => return Ok(()),
+        };
+        let resend_from = std::env::var("RESEND_FROM_EMAIL").unwrap_or_else(|_| "noreply@pulsegrid.local".to_string());
+
+        let client = reqwest::Client::new();
+        client
+            .post("https://api.resend.com/emails")
+            .bearer_auth(resend_api_key)
+            .json(&json!({
+                "from": resend_from,
+                "to": [approval_email_to],
+                "subject": format!("Approval required: {flow_name}"),
+                "html": format!(
+                    "<p>{message}</p><p><strong>Step:</strong> {step_name}</p><p><a href=\"{approval_link}\">Open approval request</a></p>"
+                ),
+            }))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(())
     }
 
     async fn dispatch_connector_action(

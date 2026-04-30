@@ -48,9 +48,11 @@ dependencies:
   
   # Navigation
   go_router: ^14.2.0
+  receive_sharing_intent: ^1.4.5
+  share_plus: ^7.2.1
   
   # OTA Updates (Shorebird)
-  shorebird_code_push: ^0.0.1
+  shorebird_code_push: ^2.0.6
   
   # Local storage
   hive: ^2.2.3

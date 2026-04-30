@@ -1,10 +1,11 @@
-import { Injectable, Inject, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Inject, Logger, NotFoundException, BadRequestException, OnModuleDestroy } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { firstValueFrom } from 'rxjs';
 import { CreateFlowDto, UpdateFlowDto } from '../dto';
 import { FlowValidationService } from './flow-validation.service';
 import { ConnectorsService } from '../connectors/connectors.service';
 import { Redis } from 'ioredis';
+import { Pool } from 'pg';
 
 interface Flow {
   id: string;
@@ -59,6 +60,19 @@ interface RunFlowRequest {
   input?: Record<string, any>;
 }
 
+interface PendingApprovalRecord {
+  token: string;
+  flowRunId: string;
+  flowName: string;
+  stepId: string;
+  stepName: string;
+  message: string;
+  createdAt: Date;
+  expiresAt: Date;
+  status: string;
+  workspaceId: string;
+}
+
 interface FlowServiceClient {
   listFlows(request: ListFlowsRequest): any;
   getFlow(request: GetFlowRequest): any;
@@ -69,9 +83,10 @@ interface FlowServiceClient {
 }
 
 @Injectable()
-export class FlowsService {
+export class FlowsService implements OnModuleDestroy {
   private flowService: FlowServiceClient;
   private readonly logger = new Logger('FlowsService');
+  private readonly pool: Pool;
 
   constructor(
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
@@ -79,7 +94,17 @@ export class FlowsService {
     private connectorsService: ConnectorsService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
   ) {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error('DATABASE_URL must be set for approval management');
+    }
+
+    this.pool = new Pool({ connectionString });
     this.flowService = this.client.getService<FlowServiceClient>('PulseCoreService');
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.pool.end();
   }
 
   /**
@@ -322,6 +347,150 @@ export class FlowsService {
     } catch (error) {
       this.logger.error(`Failed to replay event for flow ${flowId}:`, error);
       throw error;
+    }
+  }
+
+  async listPendingApprovals(workspaceId: string): Promise<PendingApprovalRecord[]> {
+    const result = await this.pool.query<{
+      approval_token: string;
+      flow_run_id: string;
+      flow_name: string | null;
+      step_id: string;
+      context_json: any;
+      expires_at: Date;
+      status: string;
+      created_at: Date;
+    }>(
+      `
+      SELECT
+        pa.approval_token,
+        pa.flow_run_id,
+        COALESCE(f.name, pa.context_json->>'flow_name', 'Unknown flow') AS flow_name,
+        pa.step_id,
+        pa.context_json,
+        pa.expires_at,
+        pa.status,
+        COALESCE(pa.context_json->>'step_name', pa.step_id) AS step_name,
+        COALESCE(pa.context_json->>'message', 'Approval required') AS message,
+        COALESCE(pa.context_json->>'workspace_id', fr.workspace_id::text) AS workspace_id,
+        pa.created_at
+      FROM pending_approvals pa
+      JOIN flow_runs fr ON fr.id = pa.flow_run_id
+      LEFT JOIN flows f ON f.id = fr.flow_id
+      WHERE fr.workspace_id = $1
+      ORDER BY pa.created_at DESC
+      `,
+      [workspaceId],
+    );
+
+    return result.rows.map((row) => ({
+      token: row.approval_token,
+      flowRunId: row.flow_run_id,
+      flowName: row.flow_name ?? 'Unknown flow',
+      stepId: row.step_id,
+      stepName: row.context_json?.step_name ?? row.step_id,
+      message: row.context_json?.message ?? 'Approval required',
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      status: row.status,
+      workspaceId: row.context_json?.workspace_id ?? workspaceId,
+    }));
+  }
+
+  async respondToApproval(token: string, decision: 'approved' | 'rejected', workspaceId: string): Promise<PendingApprovalRecord> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const approvalResult = await client.query<{
+        approval_token: string;
+        flow_run_id: string;
+        flow_name: string | null;
+        step_id: string;
+        context_json: any;
+        expires_at: Date;
+        status: string;
+        created_at: Date;
+        workspace_id: string;
+      }>(
+        `
+        SELECT
+          pa.approval_token,
+          pa.flow_run_id,
+          COALESCE(f.name, pa.context_json->>'flow_name', 'Unknown flow') AS flow_name,
+          pa.step_id,
+          pa.context_json,
+          pa.expires_at,
+          pa.status,
+          pa.created_at,
+          COALESCE(pa.context_json->>'workspace_id', fr.workspace_id::text) AS workspace_id
+        FROM pending_approvals pa
+        JOIN flow_runs fr ON fr.id = pa.flow_run_id
+        LEFT JOIN flows f ON f.id = fr.flow_id
+        WHERE pa.approval_token = $1
+          AND fr.workspace_id = $2::uuid
+        FOR UPDATE
+        `,
+        [token, workspaceId],
+      );
+
+      const approval = approvalResult.rows[0];
+      if (!approval) {
+        throw new BadRequestException('Approval token not found');
+      }
+
+      if (approval.status !== 'pending') {
+        throw new BadRequestException(`Approval has already been ${approval.status}`);
+      }
+
+      const nextStatus = decision === 'approved' ? 'approved' : 'rejected';
+      await client.query(
+        `
+        UPDATE pending_approvals
+        SET status = $1
+        WHERE approval_token = $2
+        `,
+        [nextStatus, token],
+      );
+
+      await client.query('COMMIT');
+
+      const resolvedWorkspaceId = approval.workspace_id;
+      const workspaceStream = `workspace:${resolvedWorkspaceId}:stream`;
+      await this.redis.xadd(
+        workspaceStream,
+        '*',
+        'payload',
+        JSON.stringify({
+          event_type: 'approval.response',
+          tenant_id: resolvedWorkspaceId,
+          approval_token: token,
+          flow_run_id: approval.flow_run_id,
+          decision,
+          step_id: approval.step_id,
+          context_json: approval.context_json,
+          approved_at: new Date().toISOString(),
+        }),
+      );
+
+      return {
+        token: approval.approval_token,
+        flowRunId: approval.flow_run_id,
+        flowName: approval.flow_name ?? 'Unknown flow',
+        stepId: approval.step_id,
+        stepName: approval.context_json?.step_name ?? approval.step_id,
+        message: approval.context_json?.message ?? 'Approval required',
+        createdAt: approval.created_at,
+        expiresAt: approval.expires_at,
+        status: nextStatus,
+        workspaceId: resolvedWorkspaceId,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      this.logger.error(`Failed to respond to approval ${token}:`, error);
+      throw error;
+    } finally {
+      client.release();
     }
   }
 }

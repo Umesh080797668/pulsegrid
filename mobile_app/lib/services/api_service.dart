@@ -68,9 +68,17 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>> runFlow(String flowId) async {
+  Future<Map<String, dynamic>> runFlow(
+    String flowId, {
+    Map<String, dynamic>? input,
+  }) async {
     try {
-      final response = await _dio.post('/flows/$flowId/run');
+      final response = await _dio.post(
+        '/flows/$flowId/run',
+        data: {
+          'input': input ?? <String, dynamic>{},
+        },
+      );
       final data = response.data;
       if (data is Map<String, dynamic>) {
         return data;

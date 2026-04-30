@@ -76,10 +76,10 @@ export class FlowValidationService {
       errors.push('Trigger must have connector and event specified');
     }
 
-    // Step 8: Validate at least one action step exists
-    const hasAction = definition.steps.some((s) => s.type === 'action');
+    // Step 8: Validate at least one executable step exists
+    const hasAction = definition.steps.some((s) => s.type === 'action' || s.type === 'wait_for_approval');
     if (!hasAction) {
-      errors.push('Flow must have at least one action step');
+      errors.push('Flow must have at least one action or approval step');
     }
 
     // Step 9: Validate timeout values
@@ -222,6 +222,9 @@ export class FlowValidationService {
         if (!step.depends_on || step.depends_on.length === 0) {
           errors.push(`Fork step "${step.id}" must have dependencies`);
         }
+        break;
+
+      case 'wait_for_approval':
         break;
 
       case 'trigger':
