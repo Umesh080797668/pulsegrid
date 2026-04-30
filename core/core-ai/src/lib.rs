@@ -274,32 +274,55 @@ pub mod flow_builder {
 
     /// Generates Flow DSL from natural language prompt
     pub async fn generate_flow_from_prompt(prompt: &str) -> Result<Value, String> {
-        let api_key = std::env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not set".to_string())?;
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
+        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-2.1".to_string());
         let client = reqwest::Client::new();
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
-            api_key
+
+        // Optionally include connector catalog JSON in the system prompt
+        let mut catalog_text = String::new();
+        if let Ok(catalog_url) = std::env::var("CONNECTOR_CATALOG_URL") {
+            if let Ok(resp) = client.get(&catalog_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(body) = resp.text().await {
+                        catalog_text = format!("\n\nConnector Catalog:\n{}", body);
+                    }
+                }
+            }
+        }
+
+        let system_instruction = format!(
+            "You are a PulseGrid AI assistant. Convert the user's prompt into a valid JSON Flow DSL. Respond ONLY with valid JSON.{}\n\nEnsure the JSON uses connector ids and action names from the catalog when possible.",
+            catalog_text
         );
 
-        let system_instruction = "You are a PulseGrid AI assistant. Convert the user's prompt into a valid JSON Flow DSL. Respond ONLY with valid JSON.";
-        
+        let prompt_payload = format!("{}\n\nUser Prompt: {}", system_instruction, prompt);
+
+        let url = "https://api.anthropic.com/v1/complete";
         let request_body = json!({
-            "contents": [{
-                "parts": [{"text": format!("{}\n\nPrompt: {}", system_instruction, prompt)}]
-            }]
+            "model": model,
+            "prompt": prompt_payload,
+            "max_tokens": 1500,
+            "temperature": 0.2,
+            "stop_sequences": ["\n\nHuman:"]
         });
 
-        let response = client.post(&url).json(&request_body).send().await.map_err(|e| format!("Network error: {}", e))?;
+        let response = client
+            .post(url)
+            .header("x-api-key", api_key)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("Network error: {}", e))?;
 
         if !response.status().is_success() {
             return Err(format!("API request failed: HTTP {}", response.status()));
         }
 
         let resp_json: Value = response.json().await.map_err(|e| e.to_string())?;
-        
-        let generated_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .unwrap_or("{}")
+        let generated_text = resp_json["completion"].as_str().unwrap_or("{}");
+
+        // Try to trim fences and stray text
+        let generated_text = generated_text
             .trim_matches(|c| c == '`' || c == '\n' || c == ' ')
             .trim_start_matches("json");
 
@@ -315,26 +338,38 @@ pub mod failure_analysis {
 
     /// Suggests plain-English fixes for failed flow runs
     pub async fn analyze_failure(error_log: &str) -> Result<String, String> {
-        let api_key = std::env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not set".to_string())?;
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
+        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-2.1".to_string());
         let client = reqwest::Client::new();
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
-            api_key
+        let url = "https://api.anthropic.com/v1/complete";
+
+        let system_instruction = format!(
+            "You are PulseGrid's troubleshooting assistant. Analyze the following workflow error log and return a concise, user-facing explanation and actionable next steps. Respond in plain English.\n\nError Log:\n{}",
+            error_log
         );
 
         let request_body = json!({
-            "contents": [{
-                "parts": [{"text": format!("Analyze this error log from a PulseGrid workflow failure and suggest a plain-english solution for the user: \n{}", error_log)}]
-            }]
+            "model": model,
+            "prompt": system_instruction,
+            "max_tokens": 800,
+            "temperature": 0.0,
+            "stop_sequences": ["\n\nHuman:"]
         });
 
-        let response = client.post(&url).json(&request_body).send().await.map_err(|e| e.to_string())?;
+        let response = client
+            .post(url)
+            .header("x-api-key", api_key)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !response.status().is_success() {
+            return Err(format!("API request failed: HTTP {}", response.status()));
+        }
+
         let resp_json: Value = response.json().await.map_err(|e| e.to_string())?;
-        
-        let analysis = resp_json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .unwrap_or("Check your API permissions and connection mapping.")
-            .to_string();
+        let analysis = resp_json["completion"].as_str().unwrap_or("Check your API permissions and connection mapping.").to_string();
 
         Ok(analysis)
     }
