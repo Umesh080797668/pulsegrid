@@ -5,6 +5,7 @@ import { Redis } from 'ioredis';
 import { ManagementApiKeyGuard } from './management-api-key.guard';
 import { BetaModule } from "./beta/beta.module";
 import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
 import { RateLimitService } from './rate-limit.service';
 import { EventsGateway } from './events.gateway';
 import { MarketModule } from './market/market.module';
@@ -23,6 +24,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     GraphqlModule,
     BetaModule,
     AuthModule,
+    UsersModule,
     MarketModule,
     AiModule,
     AnalyticsModule,

@@ -8,6 +8,10 @@ import 'screens/builder_screen.dart';
 import 'screens/devices_screen.dart';
 import 'screens/event_feed_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/analytics_screen.dart';
+import 'screens/market_screen.dart';
+import 'screens/approvals_screen.dart';
+import 'screens/alert_centre_screen.dart';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
@@ -53,6 +57,22 @@ class MyApp extends ConsumerWidget {
             final flowId = state.pathParameters['flowId']!;
             return EventFeedScreen(flowId: flowId);
           },
+        ),
+        GoRoute(
+          path: '/analytics',
+          builder: (context, state) => const AnalyticsScreen(),
+        ),
+        GoRoute(
+          path: '/market',
+          builder: (context, state) => const MarketScreen(),
+        ),
+        GoRoute(
+          path: '/approvals',
+          builder: (context, state) => const ApprovalsScreen(),
+        ),
+        GoRoute(
+          path: '/alerts',
+          builder: (context, state) => const AlertCentreScreen(),
         ),
       ],
     );

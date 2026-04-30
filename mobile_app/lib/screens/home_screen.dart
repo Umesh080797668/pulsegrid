@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:home_widget/home_widget.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:dio/dio.dart';
+import '../services/fcm_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -12,8 +14,28 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final LocalAuthentication _localAuth = LocalAuthentication();
+  final Dio _dio = Dio();
+  final FcmService _fcmService = FcmService();
   bool _authenticated = false;
   bool _widgetSynced = false;
+  List<QuickFlow> _quickFlows = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeFcm();
+  }
+
+  /// Initialize FCM on app startup
+  Future<void> _initializeFcm() async {
+    try {
+      // Request permissions and register token
+      await _fcmService.initialize();
+      _showSnackBar('Push notifications enabled');
+    } catch (e) {
+      print('FCM initialization error: $e');
+    }
+  }
 
   Future<void> _authenticate() async {
     try {
@@ -69,6 +91,69 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  Future<void> _loadQuickFlows() async {
+    try {
+      final response = await _dio.get('http://localhost:3001/api/v1/flows?enabled=true');
+      final List<dynamic> data = response.data as List<dynamic>;
+      setState(() {
+        _quickFlows = data
+            .map((item) => QuickFlow.fromJson(item as Map<String, dynamic>))
+            .toList();
+      });
+    } catch (e) {
+      _showSnackBar('Failed to load flows: $e');
+    }
+  }
+
+  void _showQuickTriggers() async {
+    await _loadQuickFlows();
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'Quick Triggers',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+          ),
+          Flexible(
+            child: _quickFlows.isEmpty
+                ? const Center(child: Text('No enabled flows'))
+                : ListView.builder(
+                    itemCount: _quickFlows.length,
+                    itemBuilder: (context, index) {
+                      final flow = _quickFlows[index];
+                      return ListTile(
+                        title: Text(flow.name),
+                        trailing: ElevatedButton(
+                          onPressed: () => _runFlow(flow.id),
+                          child: const Text('Run'),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _runFlow(String flowId) async {
+    try {
+      await _dio.post('http://localhost:3001/api/v1/flows/$flowId/run');
+      if (!mounted) return;
+      Navigator.pop(context);
+      _showSnackBar('Flow triggered successfully');
+    } catch (e) {
+      _showSnackBar('Failed to run flow: $e');
+    }
   }
 
   @override
@@ -128,6 +213,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.playlist_play,
                       label: 'Flows',
                       onTap: () => context.push('/flows'),
+                    ),
+                    _ActionChip(
+                      icon: Icons.bolt,
+                      label: 'Quick Run',
+                      onTap: _showQuickTriggers,
                     ),
                     _ActionChip(
                       icon: Icons.auto_awesome,
@@ -304,6 +394,19 @@ class _TimelineCard extends StatelessWidget {
         title: Text(title),
         subtitle: Text(subtitle),
       ),
+    );
+  }
+}
+class QuickFlow {
+  final String id;
+  final String name;
+
+  QuickFlow({required this.id, required this.name});
+
+  factory QuickFlow.fromJson(Map<String, dynamic> json) {
+    return QuickFlow(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Untitled',
     );
   }
 }
