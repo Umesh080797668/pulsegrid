@@ -16,11 +16,11 @@ use redis::{
     AsyncCommands,
     streams::{StreamReadOptions, StreamReadReply},
 };
-use reqwest::Client;
 use chrono::{Datelike, Timelike};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row};
 use sqlx::postgres::PgPoolOptions;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -664,7 +664,8 @@ async fn main() {
                                         let redis_url = "redis://127.0.0.1:6379/";
                                         if let Ok(client) = redis::Client::open(redis_url) {
                                             if let Ok(mut con) = client.get_multiplexed_async_connection().await {
-                                                let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, "stream:events:global", "*", &[("payload", serde_json::to_string(&event).unwrap())]).await;
+                                                let workspace_stream = workspace_stream_key(event.tenant_id);
+                                                let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, &workspace_stream, "*", &[("payload", serde_json::to_string(&event).unwrap())]).await;
                                             }
                                         }
                                     }
@@ -741,6 +742,53 @@ fn event_matches_workspace(payload: &str, workspace_id: Option<uuid::Uuid>) -> b
         .unwrap_or(false)
 }
 
+fn workspace_stream_key(workspace_id: uuid::Uuid) -> String {
+    format!("stream:events:{}", workspace_id)
+}
+
+async fn ensure_redis_consumer_group(
+    con: &mut redis::aio::MultiplexedConnection,
+    stream_key: &str,
+    consumer_group: &str,
+) {
+    if let Err(e) = redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(stream_key)
+        .arg(consumer_group)
+        .arg("$")
+        .arg("MKSTREAM")
+        .query_async::<()>(&mut *con)
+        .await
+    {
+        let err = e.to_string();
+        if !err.contains("BUSYGROUP") {
+            eprintln!("Failed to create Redis consumer group for {}: {}", stream_key, err);
+        }
+    }
+}
+
+async fn enqueue_failure_email_notification(
+    workspace_id: uuid::Uuid,
+    flow_name: &str,
+    error: &str,
+    email: &str,
+) {
+    let redis_url = "redis://127.0.0.1:6379/";
+    if let Ok(client) = redis::Client::open(redis_url) {
+        if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+            let payload = serde_json::json!({
+                "workspace_id": workspace_id,
+                "flow_name": flow_name,
+                "error": error,
+                "email": email,
+            });
+            let _ = con
+                .lpush::<_, _, usize>("queue:email:failure", payload.to_string())
+                .await;
+        }
+    }
+}
+
 /// Connects to Redis and indefinitely reads from the Real-Time Event Stream
 async fn start_event_listener(
     pg_pool: sqlx::PgPool,
@@ -748,7 +796,6 @@ async fn start_event_listener(
     event_tx: broadcast::Sender<String>,
     cache: Arc<LocalCache>,
 ) {
-    const STREAM_KEY: &str = "stream:events:global";
     const CONSUMER_GROUP: &str = "pulsegrid-workers";
 
     let redis_url = "redis://127.0.0.1:6379/";
@@ -771,23 +818,6 @@ async fn start_event_listener(
 
     println!("Connected to Redis. Listening for inbound PulseEvents...");
 
-    // Ensure consumer group exists (idempotent)
-    if let Err(e) = redis::cmd("XGROUP")
-        .arg("CREATE")
-        .arg(STREAM_KEY)
-        .arg(CONSUMER_GROUP)
-        .arg("$")
-        .arg("MKSTREAM")
-        .query_async::<()>(&mut con)
-        .await
-    {
-        let err = e.to_string();
-        if !err.contains("BUSYGROUP") {
-            eprintln!("Failed to create Redis consumer group: {}", err);
-            return;
-        }
-    }
-
     let consumer_name = format!("consumer-{}", uuid::Uuid::new_v4());
     println!(
         "Using Redis consumer group '{}' with consumer '{}'",
@@ -800,11 +830,48 @@ async fn start_event_listener(
         .count(10); // Read up to 10 events per batch
 
     let executor = Arc::new(FlowExecutor::new(pg_pool.clone(), vault.clone()));
+    let mut known_streams: HashSet<String> = HashSet::new();
+    let mut event_counter = 0u64;
 
     loop {
+        // Periodically clear expired cache entries (every 1000 events)
+        event_counter += 1;
+        if event_counter % 1000 == 0 {
+            if let Err(e) = cache.clear() {
+                eprintln!("⚠️ Failed to clear cache: {}", e);
+            } else {
+                println!("🧹 Cache cleared (event counter: {})", event_counter);
+            }
+        }
+        let workspace_ids = sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM workspaces")
+            .fetch_all(&pg_pool)
+            .await
+            .unwrap_or_default();
+
+        let mut stream_keys: Vec<String> = workspace_ids
+            .into_iter()
+            .map(workspace_stream_key)
+            .collect();
+        stream_keys.sort();
+        stream_keys.dedup();
+
+        if stream_keys.is_empty() {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+
+        for stream_key in &stream_keys {
+            if known_streams.insert(stream_key.clone()) {
+                ensure_redis_consumer_group(&mut con, stream_key, CONSUMER_GROUP).await;
+            }
+        }
+
+        let stream_key_refs: Vec<&str> = stream_keys.iter().map(|s| s.as_str()).collect();
+        let stream_ids = vec![">"; stream_key_refs.len()];
+
         // XREADGROUP for at-least-once delivery
         let result: Result<StreamReadReply, redis::RedisError> = con
-            .xread_options(&[STREAM_KEY], &[">"], &opts)
+            .xread_options(&stream_key_refs, &stream_ids, &opts)
             .await;
 
         match result {
@@ -900,7 +967,7 @@ async fn start_event_listener(
                                             RETURNING id
                                             "#,
                                             event.tenant_id as _,
-                                            flow.id as _,
+                                            flow_id as _,
                                             "running",
                                             event.id as _
                                         )
@@ -988,8 +1055,8 @@ async fn start_event_listener(
                                                         );
                                                         let dlq_payload = serde_json::json!({
                                                             "workspace_id": event.tenant_id,
-                                                            "flow_id": flow.id,
-                                                            "flow_name": flow.name,
+                                                            "flow_id": flow_id,
+                                                            "flow_name": flow_name,
                                                             "trigger_event_id": event.id,
                                                             "step_id": result.step_id,
                                                             "error": result.error,
@@ -1123,6 +1190,17 @@ async fn start_event_listener(
                                                 .on_failure
                                                 .eq_ignore_ascii_case("notify_owner")
                                         {
+                                            let failure_error = steps_log
+                                                .as_array()
+                                                .and_then(|steps| {
+                                                    steps.iter().rev().find_map(|step| {
+                                                        step.get("error")
+                                                            .and_then(|e| e.as_str())
+                                                            .map(|s| s.to_string())
+                                                    })
+                                                })
+                                                .unwrap_or_else(|| "flow execution failed".to_string());
+
                                             let owner_email = sqlx::query_scalar::<_, String>(
                                                 r#"
                                                 SELECT u.email
@@ -1148,11 +1226,11 @@ async fn start_event_listener(
                                                 });
 
                                             if let Some(email) = notify_email {
-                                                let _ = send_failure_email(
-                                                    &email,
-                                                    &flow.name,
-                                                    event.id,
+                                                enqueue_failure_email_notification(
                                                     event.tenant_id,
+                                                    &flow_name,
+                                                    &failure_error,
+                                                    &email,
                                                 )
                                                 .await;
                                             }
@@ -1166,7 +1244,7 @@ async fn start_event_listener(
 
                                     // Acknowledge only after successful processing
                                     if let Err(e) = redis::cmd("XACK")
-                                        .arg(STREAM_KEY)
+                                        .arg(&key.key)
                                         .arg(CONSUMER_GROUP)
                                         .arg(&node.id)
                                         .query_async::<i32>(&mut con)
@@ -1237,49 +1315,6 @@ async fn execute_step_with_retry(
         error: Some("retry loop exhausted".to_string()),
         duration_ms: 0,
     }
-}
-
-async fn send_failure_email(
-    to_email: &str,
-    flow_name: &str,
-    trigger_event_id: uuid::Uuid,
-    workspace_id: uuid::Uuid,
-) -> Result<(), String> {
-    let resend_api_key = match std::env::var("RESEND_API_KEY") {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
-    };
-
-    let from_email = std::env::var("FLOW_FAILURE_FROM_EMAIL")
-        .unwrap_or_else(|_| "PulseGrid <onboarding@resend.dev>".to_string());
-
-    let subject = format!("PulseGrid flow failed: {}", flow_name);
-    let html = format!(
-        "<p>A flow execution failed.</p><ul><li><b>Flow:</b> {}</li><li><b>Workspace:</b> {}</li><li><b>Trigger Event:</b> {}</li></ul>",
-        flow_name, workspace_id, trigger_event_id
-    );
-
-    let payload = serde_json::json!({
-        "from": from_email,
-        "to": [to_email],
-        "subject": subject,
-        "html": html,
-    });
-
-    let client = Client::new();
-    let resp = client
-        .post("https://api.resend.com/emails")
-        .bearer_auth(resend_api_key)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !resp.status().is_success() {
-        return Err(format!("resend email failed with status {}", resp.status()));
-    }
-
-    Ok(())
 }
 
 async fn create_flow(
@@ -1950,8 +1985,9 @@ async fn webhook_receiver(
     if let Ok(client) = redis::Client::open(redis_url) {
         if let Ok(mut con) = client.get_multiplexed_async_connection().await {
             let payload_str = serde_json::to_string(&event).unwrap_or_default();
+            let workspace_stream = workspace_stream_key(workspace_id);
             let _ = con.xadd::<_, _, _, _, ()>(
-                "stream:events:global",
+                &workspace_stream,
                 "*",
                 &[("payload", payload_str)]
             ).await;

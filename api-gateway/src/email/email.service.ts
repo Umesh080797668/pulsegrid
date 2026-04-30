@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 
+export interface FlowFailureAlert {
+  workspace_id: string;
+  flow_name: string;
+  error: string;
+  email: string;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -59,6 +66,27 @@ export class EmailService {
     `;
 
     return this.sendEmail(email, 'Verify Your Email Address', htmlContent, textContent);
+  }
+
+  async sendFlowFailureAlert(payload: FlowFailureAlert): Promise<boolean> {
+    const subject = `PulseGrid flow failed: ${payload.flow_name}`;
+    const htmlContent = `
+      <h1>Flow failure alert</h1>
+      <p>A flow execution failed in workspace <strong>${payload.workspace_id}</strong>.</p>
+      <ul>
+        <li><strong>Flow:</strong> ${payload.flow_name}</li>
+        <li><strong>Error:</strong> ${payload.error}</li>
+      </ul>
+    `;
+
+    const textContent = [
+      'Flow failure alert',
+      `Workspace: ${payload.workspace_id}`,
+      `Flow: ${payload.flow_name}`,
+      `Error: ${payload.error}`,
+    ].join('\n');
+
+    return this.sendEmail(payload.email, subject, htmlContent, textContent);
   }
 
   private async sendEmail(to: string, subject: string, html: string, text: string): Promise<boolean> {

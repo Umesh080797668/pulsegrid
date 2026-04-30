@@ -12,19 +12,20 @@ export class EventsController {
 
   /**
    * Stream events from a source
-   * GET /events/stream?source=&type=
+    * GET /events/stream?workspaceId=&source=&type=
    *
    * Returns Server-Sent Events stream
    * Example: curl -H "Authorization: Bearer TOKEN" http://localhost:3000/events/stream?source=webhook&type=http
    */
   @Get('stream')
   async streamEvents(
+    @Query('workspaceId') workspaceId?: string,
     @Query('source') source?: string,
     @Query('type') type?: string,
     @Res() res?: Response,
   ) {
     try {
-      this.logger.log(`Streaming events for source: ${source}, type: ${type}`);
+      this.logger.log(`Streaming events for workspaceId: ${workspaceId}, source: ${source}, type: ${type}`);
 
       // Set SSE headers
       if (res) {
@@ -35,7 +36,7 @@ export class EventsController {
       }
 
       // Get events stream
-      const events = await this.eventsService.streamEvents(source, type);
+      const events = await this.eventsService.streamEvents(source, type, workspaceId);
 
       // Send events
       for (const event of events) {

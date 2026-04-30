@@ -14,10 +14,12 @@ import { GraphqlModule } from './graphql/graphql.module';
 import { FlowsModule } from './flows/flows.module';
 import { ConnectorsModule } from './connectors/connectors.module';
 import { EventsModule } from './events/events.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Global()
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     GraphqlModule,
     BetaModule,
     AuthModule,

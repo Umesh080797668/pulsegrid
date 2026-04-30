@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use rocksdb::DB;
+use rocksdb::{DB, IteratorMode};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -72,8 +72,16 @@ impl LocalCache {
 
     /// Clear all entries from cache (use with caution)
     pub fn clear(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // RocksDB doesn't have a direct "clear all" operation, so we'd need to iterate
-        // For now, this is a no-op. In production, consider recreating the DB.
+        let mut keys: Vec<Vec<u8>> = Vec::new();
+        for item in self.db.iterator(IteratorMode::Start) {
+            let (key, _) = item?;
+            keys.push(key.to_vec());
+        }
+
+        for key in keys {
+            self.db.delete(key)?;
+        }
+
         Ok(())
     }
 }
