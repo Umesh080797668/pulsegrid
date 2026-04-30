@@ -5,6 +5,8 @@ use core_proto::pulsecore::{
     VerifyWebhookRequest, VerifyWebhookResponse, GenerateFlowRequest, GenerateFlowResponse,
     AnalyzeFailureRequest, AnalyzeFailureResponse, ListMarketTemplatesRequest,
     ListMarketTemplatesResponse, InstallTemplateRequest, InstallTemplateResponse, MarketTemplate,
+    GetMarketTemplateRequest, GetMarketTemplateResponse, PublishMarketTemplateRequest,
+    PublishMarketTemplateResponse, RateMarketTemplateRequest, RateMarketTemplateResponse,
     DetectPatternsRequest, DetectPatternsResponse, DetectedPattern,
     WorkspaceAnalyticsRequest, WorkspaceAnalyticsResponse, WorkspaceMetricsRequest,
     FlowMetricsResponse, FlowMetric, ConnectorMetricsResponse, ConnectorMetric,
@@ -31,6 +33,23 @@ impl MyPulseCoreService {
             .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
         let vault = std::sync::Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes()));
         Self { pg_pool, vault }
+    }
+
+    async fn queue_market_review(&self, payload: serde_json::Value) -> Result<(), Status> {
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+        let client = redis::Client::open(redis_url)
+            .map_err(|e| Status::internal(format!("Failed to create Redis client: {}", e)))?;
+        let mut con = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to connect Redis: {}", e)))?;
+
+        let _: () = con
+            .lpush("queue:market:review", payload.to_string())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to queue market review: {}", e)))?;
+
+        Ok(())
     }
 
     async fn fetch_flow_metrics(&self, ws_id: Uuid) -> Result<Vec<FlowMetric>, Status> {
@@ -478,6 +497,191 @@ impl PulseCoreService for MyPulseCoreService {
         };
         
         Ok(Response::new(ListMarketTemplatesResponse { templates }))
+    }
+
+    async fn get_market_template(
+        &self,
+        request: Request<GetMarketTemplateRequest>,
+    ) -> Result<Response<GetMarketTemplateResponse>, Status> {
+        let req = request.into_inner();
+        let template_id = Uuid::parse_str(req.template_id.trim())
+            .map_err(|_| Status::invalid_argument("Invalid template ID"))?;
+
+        let row = sqlx::query(
+            r#"
+            SELECT id, creator_workspace_id, title, description, flow_definition, price_cents, category, published, rating_avg
+            FROM market_templates
+            WHERE id = $1
+            "#,
+        )
+        .bind(template_id)
+        .fetch_optional(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let Some(row) = row else {
+            return Err(Status::not_found("Template not found"));
+        };
+
+        let flow_definition: serde_json::Value = row.get("flow_definition");
+        let rating_avg = row.try_get::<Option<f64>, _>("rating_avg").ok().flatten().unwrap_or(0.0);
+
+        Ok(Response::new(GetMarketTemplateResponse {
+            id: row.get::<Uuid, _>("id").to_string(),
+            creator_workspace_id: row
+                .try_get::<Option<Uuid>, _>("creator_workspace_id")
+                .ok()
+                .flatten()
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            title: row.get::<String, _>("title"),
+            description: row.try_get::<Option<String>, _>("description").ok().flatten().unwrap_or_default(),
+            flow_definition_json: flow_definition.to_string(),
+            price_cents: row.get::<i32, _>("price_cents"),
+            category: row.try_get::<Option<String>, _>("category").ok().flatten().unwrap_or_default(),
+            published: row.get::<bool, _>("published"),
+            rating_avg,
+        }))
+    }
+
+    async fn publish_market_template(
+        &self,
+        request: Request<PublishMarketTemplateRequest>,
+    ) -> Result<Response<PublishMarketTemplateResponse>, Status> {
+        let req = request.into_inner();
+        let creator_workspace_id = if req.creator_workspace_id.trim().is_empty() {
+            None
+        } else {
+            Some(
+                Uuid::parse_str(req.creator_workspace_id.trim())
+                    .map_err(|_| Status::invalid_argument("Invalid creator workspace ID"))?,
+            )
+        };
+
+        let title = req.title.trim();
+        if title.is_empty() {
+            return Err(Status::invalid_argument("Title is required"));
+        }
+
+        let flow_definition: serde_json::Value = serde_json::from_str(req.flow_definition_json.trim())
+            .map_err(|_| Status::invalid_argument("flow_definition_json must be valid JSON"))?;
+
+        let template_id = Uuid::new_v4();
+        let category = req.category.trim();
+        let description = if req.description.trim().is_empty() { None } else { Some(req.description.trim().to_string()) };
+
+        sqlx::query(
+            r#"
+            INSERT INTO market_templates (
+                id,
+                creator_workspace_id,
+                title,
+                description,
+                flow_definition,
+                price_cents,
+                category,
+                published
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE)
+            "#,
+        )
+        .bind(template_id)
+        .bind(creator_workspace_id)
+        .bind(title)
+        .bind(description)
+        .bind(flow_definition)
+        .bind(req.price_cents)
+        .bind(if category.is_empty() { None::<String> } else { Some(category.to_string()) })
+        .execute(&self.pg_pool)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let review_payload = serde_json::json!({
+            "template_id": template_id,
+            "creator_workspace_id": creator_workspace_id,
+            "title": title,
+            "price_cents": req.price_cents,
+            "category": if category.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(category.to_string()) },
+            "queue": "market_template_review",
+            "submitted_at": Utc::now().to_rfc3339(),
+        });
+        let _ = self.queue_market_review(review_payload).await;
+
+        Ok(Response::new(PublishMarketTemplateResponse {
+            success: true,
+            template_id: template_id.to_string(),
+            queued_for_review: true,
+            message: "Template submitted for review".to_string(),
+        }))
+    }
+
+    async fn rate_market_template(
+        &self,
+        request: Request<RateMarketTemplateRequest>,
+    ) -> Result<Response<RateMarketTemplateResponse>, Status> {
+        let req = request.into_inner();
+        let template_id = Uuid::parse_str(req.template_id.trim())
+            .map_err(|_| Status::invalid_argument("Invalid template ID"))?;
+        let user_id = Uuid::parse_str(req.user_id.trim())
+            .map_err(|_| Status::invalid_argument("Invalid user ID"))?;
+
+        if !(1..=5).contains(&req.rating) {
+            return Err(Status::invalid_argument("Rating must be between 1 and 5"));
+        }
+
+        let mut tx = self.pg_pool.begin().await
+            .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO template_reviews (template_id, user_id, rating, review_text)
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(template_id)
+        .bind(user_id)
+        .bind(req.rating)
+        .bind(if req.review_text.trim().is_empty() { None::<String> } else { Some(req.review_text.trim().to_string()) })
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let row = sqlx::query(
+            r#"
+            SELECT COALESCE(AVG(rating)::FLOAT8, 0) AS rating_avg, COUNT(*)::BIGINT AS review_count
+            FROM template_reviews
+            WHERE template_id = $1
+            "#,
+        )
+        .bind(template_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        let rating_avg = row.get::<f64, _>("rating_avg");
+        let review_count = row.get::<i64, _>("review_count");
+
+        sqlx::query(
+            r#"
+            UPDATE market_templates
+            SET rating_avg = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(rating_avg)
+        .bind(template_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        tx.commit().await.map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+        Ok(Response::new(RateMarketTemplateResponse {
+            success: true,
+            template_id: template_id.to_string(),
+            rating_avg,
+            review_count: review_count as i32,
+        }))
     }
 
     async fn install_template(

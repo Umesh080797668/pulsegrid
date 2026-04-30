@@ -14,6 +14,9 @@ service PulseCoreService {
   // Phase 2: Market
   rpc ListMarketTemplates (ListMarketTemplatesRequest) returns (ListMarketTemplatesResponse);
   rpc InstallTemplate (InstallTemplateRequest) returns (InstallTemplateResponse);
+  rpc GetMarketTemplate (GetMarketTemplateRequest) returns (GetMarketTemplateResponse);
+  rpc PublishMarketTemplate (PublishMarketTemplateRequest) returns (PublishMarketTemplateResponse);
+  rpc RateMarketTemplate (RateMarketTemplateRequest) returns (RateMarketTemplateResponse);
 
   // STUB Phase 3: Pattern Detection
   rpc DetectPatterns (DetectPatternsRequest) returns (DetectPatternsResponse);
@@ -105,6 +108,52 @@ message InstallTemplateResponse {
   bool success = 1;
   string new_flow_id = 2;
   string message = 3;
+}
+
+message GetMarketTemplateRequest {
+  string template_id = 1;
+}
+
+message GetMarketTemplateResponse {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string flow_definition_json = 4;
+  int32 price_cents = 5;
+  string category = 6;
+  bool published = 7;
+  double rating_avg = 8;
+  string creator_workspace_id = 9;
+}
+
+message PublishMarketTemplateRequest {
+  string creator_workspace_id = 1;
+  string title = 2;
+  string description = 3;
+  string flow_definition_json = 4;
+  int32 price_cents = 5;
+  string category = 6;
+}
+
+message PublishMarketTemplateResponse {
+  bool success = 1;
+  string template_id = 2;
+  bool queued_for_review = 3;
+  string message = 4;
+}
+
+message RateMarketTemplateRequest {
+  string template_id = 1;
+  string user_id = 2;
+  int32 rating = 3;
+  string review_text = 4;
+}
+
+message RateMarketTemplateResponse {
+  bool success = 1;
+  string template_id = 2;
+  double rating_avg = 3;
+  int32 review_count = 4;
 }
 
 // -- STUB: Pattern Detection Messages (Phase 3) --
