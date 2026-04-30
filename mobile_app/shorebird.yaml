@@ -1,0 +1,23 @@
+app:
+  # Your app id - this should be created on https://console.shorebird.dev
+  id: # To be filled in after registering app on Shorebird console
+  # The package name of your app (must match your pubspec.yaml)
+  package_name: mobile_app
+  # Release version - must match version in pubspec.yaml
+  release: 1.0.0
+  # Flavor configuration (optional)
+  # flavor: staging
+
+# Platforms to release for
+platforms:
+  android:
+    enabled: true
+  ios:
+    enabled: true
+
+# Artifact configuration (optional)
+# artifacts:
+#   android:
+#     target: lib/main.dart
+#   ios:
+#     target: lib/main.dart

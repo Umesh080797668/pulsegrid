@@ -230,6 +230,47 @@ export class FlowsController {
   }
 
   /**
+   * Replay an event through a flow
+   * POST /flows/:id/replay
+   * Body: { eventPayload: Record<string, any> }
+   *
+   * Reads the event from Redis ring buffer and re-publishes it to the workspace stream
+   * so the flow can process it with the current flow definition active
+   */
+  @Post(':id/replay')
+  async replayEvent(
+    @Param('id') id: string,
+    @Body() body: { eventPayload: Record<string, any>; workspaceId?: string },
+    @Request() req: ExpressRequest,
+  ) {
+    try {
+      const workspaceId = this.extractWorkspaceId(req);
+      if (body.workspaceId && body.workspaceId !== workspaceId) {
+        throw new BadRequestException(
+          'Replay workspace does not match authenticated workspace',
+        );
+      }
+
+      this.logger.log(`Replaying event through flow ${id}`);
+
+      const result = await this.flowsService.replayEvent(
+        id,
+        workspaceId,
+        body.eventPayload,
+      );
+
+      return {
+        statusCode: 200,
+        message: 'Event replayed successfully',
+        data: result,
+      };
+    } catch (error) {
+      this.logger.error(`Error replaying event for flow ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Extract workspace ID from JWT token in request
    * Throws BadRequestException if workspace not found in token
    */

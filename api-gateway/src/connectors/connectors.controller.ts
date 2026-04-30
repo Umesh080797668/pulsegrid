@@ -1,14 +1,17 @@
 import {
   Controller,
   Post,
+  Get,
   Param,
   Body,
   UseGuards,
   Logger,
   BadRequestException,
+  Request,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ConnectorsService } from './connectors.service';
+import { Request as ExpressRequest } from 'express';
 
 @Controller('connectors')
 @UseGuards(JwtAuthGuard)
@@ -50,4 +53,45 @@ export class ConnectorsController {
       throw error;
     }
   }
-}
+
+  /**
+   * Get flows that depend on a credential
+   * GET /credentials/:id/dependents
+   *
+   * Returns: { statusCode: number, data: { flows: Array<{ id: string, name: string }> } }
+   */
+  @Get('credentials/:id/dependents')
+  async getCredentialDependents(
+    @Param('id') credentialId: string,
+    @Request() req: ExpressRequest,
+  ) {
+    try {
+      const workspaceId = this.extractWorkspaceId(req);
+      this.logger.log(`Fetching dependents for credential ${credentialId}`);
+
+      const dependents = await this.connectorsService.getCredentialDependents(
+        credentialId,
+        workspaceId,
+      );
+
+      return {
+        statusCode: 200,
+        data: dependents,
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching dependents for credential ${credentialId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract workspace ID from JWT token in request
+   * Throws BadRequestException if workspace not found in token
+   */
+  private extractWorkspaceId(req: ExpressRequest): string {
+    const user = (req as ExpressRequest & { user?: any }).user;
+    if (!user || !user.workspaceId) {
+      throw new BadRequestException('Invalid or missing workspace in JWT token');
+    }
+    return user.workspaceId;
+  }}

@@ -15,6 +15,7 @@ type EventPayload = {
 export default function EventsPage() {
   const { accessToken, workspaceId } = useDashboardStore();
   const [events, setEvents] = useState<EventPayload[]>([]);
+  const [replayLoading, setReplayLoading] = useState<string | null>(null);
 
   const wsUrl = useMemo(() => {
     try {
@@ -43,6 +44,39 @@ export default function EventsPage() {
     };
   }, [workspaceId, accessToken, wsUrl]);
 
+  const handleReplayEvent = async (event: EventPayload, flowId?: string) => {
+    if (!flowId) {
+      alert('Please select a flow to replay this event through');
+      return;
+    }
+
+    setReplayLoading(event.id);
+    try {
+      const response = await fetch(`${apiBase}/flows/${flowId}/replay`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          eventPayload: event,
+          workspaceId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to replay event');
+      }
+
+      alert('Event replayed successfully');
+    } catch (error) {
+      console.error('Error replaying event:', error);
+      alert('Failed to replay event');
+    } finally {
+      setReplayLoading(null);
+    }
+  };
+
   return (
     <div>
       <div className="page-hd">
@@ -63,7 +97,7 @@ export default function EventsPage() {
           </div>
         ) : (
           <table>
-            <thead><tr><th>Type</th><th>Event ID</th><th>Tenant</th><th>Timestamp</th></tr></thead>
+            <thead><tr><th>Type</th><th>Event ID</th><th>Tenant</th><th>Timestamp</th><th>Action</th></tr></thead>
             <tbody>
               {events.map((evt) => (
                 <tr key={evt.id}>
@@ -71,6 +105,19 @@ export default function EventsPage() {
                   <td><span className="font-mono text-faint" style={{ fontSize: 11 }}>{evt.id.slice(0, 16)}…</span></td>
                   <td>{evt.tenant_id?.slice(0, 12) || '—'}</td>
                   <td>{evt.timestamp || '—'}</td>
+                  <td>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        const flowId = prompt('Enter flow ID to replay through:');
+                        if (flowId) handleReplayEvent(evt, flowId);
+                      }}
+                      disabled={replayLoading === evt.id}
+                      style={{ fontSize: 11 }}
+                    >
+                      {replayLoading === evt.id ? 'Replaying...' : 'Replay'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

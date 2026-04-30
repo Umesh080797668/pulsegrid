@@ -49,6 +49,9 @@ dependencies:
   # Navigation
   go_router: ^14.2.0
   
+  # OTA Updates (Shorebird)
+  shorebird_code_push: ^0.0.1
+  
   # Local storage
   hive: ^2.2.3
   hive_flutter: ^1.1.0

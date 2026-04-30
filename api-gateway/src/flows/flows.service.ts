@@ -3,6 +3,8 @@ import { ClientGrpc } from '@nestjs/microservices';
 import { firstValueFrom } from 'rxjs';
 import { CreateFlowDto, UpdateFlowDto } from '../dto';
 import { FlowValidationService } from './flow-validation.service';
+import { ConnectorsService } from '../connectors/connectors.service';
+import { Redis } from 'ioredis';
 
 interface Flow {
   id: string;
@@ -74,6 +76,8 @@ export class FlowsService {
   constructor(
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
     private validationService: FlowValidationService,
+    private connectorsService: ConnectorsService,
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
   ) {
     this.flowService = this.client.getService<FlowServiceClient>('PulseCoreService');
   }
@@ -170,11 +174,54 @@ export class FlowsService {
         this.flowService.updateFlow(updateRequest),
       )) as Flow;
 
+      // Extract credential IDs from flow definition and invalidate their dependents cache
+      if (dto.definition && dto.definition.steps) {
+        const credentialIds = this.extractCredentialIdsFromFlow(dto.definition);
+        if (credentialIds.length > 0) {
+          await this.connectorsService.invalidateCredentialDependentsCache(credentialIds);
+        }
+      }
+
       return updatedFlow;
     } catch (error) {
       this.logger.error(`Failed to update flow ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Extract all credential IDs referenced in a flow definition
+   */
+  private extractCredentialIdsFromFlow(definition: any): string[] {
+    const credentialIds: Set<string> = new Set();
+
+    if (!definition.steps || !Array.isArray(definition.steps)) {
+      return [];
+    }
+
+    for (const step of definition.steps) {
+      // Check if step has credential reference in various fields
+      if (step.credential_id) {
+        credentialIds.add(step.credential_id);
+      }
+      if (step.config?.credential_id) {
+        credentialIds.add(step.config.credential_id);
+      }
+      if (step.input_mapping) {
+        // Look for credential references in input mappings
+        Object.values(step.input_mapping).forEach((mapping: any) => {
+          if (typeof mapping === 'string' && mapping.includes('credential')) {
+            // Try to extract credential ID from template
+            const match = mapping.match(/credential[_:]([a-f0-9\-]+)/i);
+            if (match && match[1]) {
+              credentialIds.add(match[1]);
+            }
+          }
+        });
+      }
+    }
+
+    return Array.from(credentialIds);
   }
 
   /**
@@ -236,6 +283,44 @@ export class FlowsService {
       return response;
     } catch (error) {
       this.logger.error(`Failed to run flow ${id}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Replay an event through a flow
+   * Reads the event payload and re-publishes it to the workspace's Redis stream
+   * so the flow can process it with the current flow definition active
+   */
+  async replayEvent(
+    flowId: string,
+    workspaceId: string,
+    eventPayload: Record<string, any>,
+  ): Promise<any> {
+    try {
+      this.logger.log(`Replaying event through flow ${flowId} in workspace ${workspaceId}`);
+
+      // Re-publish event to workspace Redis stream for processing
+      const workspaceStream = `workspace:${workspaceId}:stream`;
+      const eventJson = JSON.stringify(eventPayload);
+      
+      // XADD pushes to the stream for the event listener to pick up
+      const messageId = await this.redis.xadd(
+        workspaceStream,
+        '*',
+        'payload',
+        eventJson,
+      );
+
+      this.logger.log(`Event replayed and added to stream ${workspaceStream} with ID ${messageId}`);
+
+      return {
+        messageId,
+        workspaceStream,
+        eventPayload,
+      };
+    } catch (error) {
+      this.logger.error(`Failed to replay event for flow ${flowId}:`, error);
       throw error;
     }
   }

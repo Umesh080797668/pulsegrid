@@ -1041,6 +1041,21 @@ async fn start_event_listener(
                                     println!("🔥 Received PulseEvent (ID: {})", node.id);
                                     let _ = event_tx.send(payload_str.to_string());
 
+                                    // EVENT REPLAY: Store event in ring buffer (sorted set capped at 500)
+                                    // Get current Unix timestamp in milliseconds
+                                    let unix_ms = chrono::Utc::now().timestamp_millis();
+                                    let ring_buffer_key = format!("workspace:{}:events", event.tenant_id);
+                                    
+                                    // Add event to sorted set with timestamp as score
+                                    let _: Result<(), _> = con.zadd(
+                                        &ring_buffer_key,
+                                        &payload_str.to_string(),
+                                        unix_ms
+                                    ).await;
+                                    
+                                    // Cap at 500 events: remove oldest events if count exceeds 500
+                                    let _: Result<(), _> = con.zremrangebyrank(&ring_buffer_key, 0, -501).await;
+                                    
                                     // BILLING: Increment event count
                                     let _ = increment_usage(&pg_pool, event.tenant_id, 1, 0).await;
 
