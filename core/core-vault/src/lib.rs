@@ -87,4 +87,16 @@ impl Vault {
 
         mac.verify_slice(&provided_bytes).is_ok()
     }
+
+    pub fn hmac_sha256_hex(
+        &self,
+        message: &str,
+        plain_secret: &str,
+    ) -> Result<String, VaultError> {
+        let mut mac = HmacSha256::new_from_slice(plain_secret.as_bytes())
+            .map_err(|_| VaultError::InvalidSignature)?;
+        mac.update(message.as_bytes());
+
+        Ok(hex::encode(mac.finalize().into_bytes()))
+    }
 }
