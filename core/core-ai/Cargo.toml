@@ -11,3 +11,4 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
 tokio = { version = "1", features = ["full"] }
+tract-onnx = "0.21"

@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc, Datelike, Timelike};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub mod pattern_detection {
     use super::*;
@@ -46,24 +47,10 @@ pub mod pattern_detection {
         pub action: Option<String>,
     }
 
-    /// Analyzes event history for patterns (placeholder for tract ONNX integration)
+    /// Analyzes event history for patterns.
     ///
-    /// STUB: This implementation uses statistical analysis only.
-    /// Phase 3 will integrate tract ONNX for ML-based time-series detection.
-    ///
-    /// TODO Phase 3:
-    /// - Replace statistical functions with ONNX model inference
-    /// - Add tract crate dependency: `tract = "0.21"`
-    /// - Load ONNX model from bytes/file
-    /// - Implement recurrent neural network for sequence detection
-    /// - Add confidence scoring based on model output probabilities
-    /// - Support multiple model architectures (LSTM, GRU, Transformer)
-    ///
-    /// Current limitations:
-    /// - Only groups events by time-of-day (hour)
-    /// - Anomalies detected via standard deviation only
-    /// - No temporal dependencies between event sequences
-    /// - No learned patterns from historical data
+    /// The analyzer first attempts ONNX inference (via `tract_onnx`) when a model
+    /// is available, then falls back to deterministic statistical detectors.
     pub fn analyze_event_history(
         tenant_id: uuid::Uuid,
         events: Vec<EventEntry>,
@@ -73,6 +60,19 @@ pub mod pattern_detection {
         }
 
         let mut patterns = Vec::new();
+
+        // Pattern 0: ML model inference (optional)
+        // If the ONNX model is unavailable or inference fails, continue with
+        // statistical detectors so this remains fully functional.
+        match detect_patterns_with_onnx(&events) {
+            Ok(Some(ml_patterns)) => patterns.extend(ml_patterns),
+            Ok(None) => {
+                // No model file configured/present; skip ML inference.
+            }
+            Err(err) => {
+                eprintln!("PulseAI ONNX inference skipped: {}", err);
+            }
+        }
 
         // Pattern 1: Detect repeated actions on specific days/times
         if let Some(time_patterns) = detect_time_based_patterns(&events) {
@@ -93,6 +93,127 @@ pub mod pattern_detection {
                  events.len(), tenant_id, patterns.len());
         
         Ok(patterns)
+    }
+
+    /// Attempts ML-based pattern detection using an ONNX model via tract.
+    ///
+    /// Expected model output shape: `[1, 3]` (or any flat tensor with at least 3 scores):
+    /// - index 0: time-based confidence
+    /// - index 1: correlation confidence
+    /// - index 2: anomaly confidence
+    ///
+    /// Returns `Ok(None)` when the model file does not exist.
+    fn detect_patterns_with_onnx(events: &[EventEntry]) -> Result<Option<Vec<Pattern>>, String> {
+        use tract_onnx::prelude::*;
+
+        let configured_path = std::env::var("PULSEAI_ONNX_MODEL").ok();
+        let model_path = configured_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("models")
+                    .join("pulseai_pattern.onnx")
+            });
+
+        if !model_path.exists() {
+            return Ok(None);
+        }
+
+        // Build a compact feature tensor: [1, 64, 4]
+        // features per timestep:
+        // [event_hash, hour_norm, weekday_norm, has_action]
+        let timesteps = 64usize;
+        let feature_width = 4usize;
+        let mut features = vec![0f32; timesteps * feature_width];
+
+        let start = events.len().saturating_sub(timesteps);
+        for (i, event) in events[start..].iter().enumerate() {
+            let base = i * feature_width;
+            let event_hash = event.event_type.bytes().fold(0u32, |acc, b| acc.wrapping_add(b as u32));
+            features[base] = (event_hash % 997) as f32 / 997.0;
+            features[base + 1] = event.timestamp.hour() as f32 / 23.0;
+            features[base + 2] = event.timestamp.weekday().num_days_from_monday() as f32 / 6.0;
+            features[base + 3] = if event.action.is_some() { 1.0 } else { 0.0 };
+        }
+
+        let model = tract_onnx::onnx()
+            .model_for_path(&model_path)
+            .map_err(|e| format!("Failed to load ONNX model at {}: {}", model_path.display(), e))?
+            .with_input_fact(0, InferenceFact::dt_shape(f32::datum_type(), tvec!(1, timesteps as i64, feature_width as i64)))
+            .map_err(|e| format!("Failed to set model input fact: {}", e))?
+            .into_optimized()
+            .map_err(|e| format!("Failed to optimize ONNX model: {}", e))?
+            .into_runnable()
+            .map_err(|e| format!("Failed to create ONNX runnable model: {}", e))?;
+
+        let input = Tensor::from_shape(&[1usize, timesteps, feature_width], &features)
+            .map_err(|e| format!("Failed to construct ONNX input tensor: {}", e))?;
+
+        let outputs = model
+            .run(tvec!(input.into()))
+            .map_err(|e| format!("ONNX inference failed: {}", e))?;
+
+        let output = outputs
+            .first()
+            .ok_or_else(|| "ONNX inference returned no outputs".to_string())?;
+        let score_view = output
+            .to_array_view::<f32>()
+            .map_err(|e| format!("Failed to decode ONNX output tensor as f32: {}", e))?;
+
+        let scores: Vec<f32> = score_view.iter().copied().collect();
+        if scores.len() < 3 {
+            return Err(format!(
+                "ONNX output had {} scores; expected at least 3",
+                scores.len()
+            ));
+        }
+
+        let mut patterns = Vec::new();
+        let threshold = 0.65f32;
+
+        let time_score = scores[0].clamp(0.0, 1.0);
+        if time_score >= threshold {
+            patterns.push(Pattern {
+                id: "ml_time_based".to_string(),
+                pattern_type: PatternType::TimeBased,
+                description: "ML model detected recurring time-based behavior".to_string(),
+                confidence: time_score,
+                frequency: "model_inference".to_string(),
+                events_involved: events.iter().take(5).map(|e| e.event_type.clone()).collect(),
+                suggested_trigger: Some("Use schedule trigger around peak period".to_string()),
+                suggested_actions: vec![],
+            });
+        }
+
+        let correlation_score = scores[1].clamp(0.0, 1.0);
+        if correlation_score >= threshold {
+            patterns.push(Pattern {
+                id: "ml_correlation".to_string(),
+                pattern_type: PatternType::EventCorrelation,
+                description: "ML model detected likely event correlation sequence".to_string(),
+                confidence: correlation_score,
+                frequency: "model_inference".to_string(),
+                events_involved: events.iter().take(6).map(|e| e.event_type.clone()).collect(),
+                suggested_trigger: Some("Trigger follow-up action on precursor event".to_string()),
+                suggested_actions: vec!["auto_chain_next_step".to_string()],
+            });
+        }
+
+        let anomaly_score = scores[2].clamp(0.0, 1.0);
+        if anomaly_score >= threshold {
+            patterns.push(Pattern {
+                id: "ml_anomaly".to_string(),
+                pattern_type: PatternType::Anomaly,
+                description: "ML model detected anomalous behavior in event sequence".to_string(),
+                confidence: anomaly_score,
+                frequency: "model_inference".to_string(),
+                events_involved: events.iter().take(8).map(|e| e.event_type.clone()).collect(),
+                suggested_trigger: None,
+                suggested_actions: vec!["investigate".to_string(), "increase_monitoring".to_string()],
+            });
+        }
+
+        Ok(Some(patterns))
     }
 
     /// Detects time-based patterns (recurring at specific times/days)
