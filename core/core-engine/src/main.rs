@@ -1145,6 +1145,8 @@ async fn start_event_listener(
                                                         }
                                                     };
 
+                                                    let mut anomaly_events: Vec<(String, f32)> = Vec::new();
+
                                                     for p in patterns.into_iter() {
                                                         let db_id = uuid::Uuid::new_v4();
                                                         let pattern_type_str = match p.pattern_type {
@@ -1176,24 +1178,31 @@ async fn start_event_listener(
                                                         .execute(&mut *tx)
                                                         .await;
 
-                                                        // If anomaly with high confidence, push realtime event to workspace Redis stream
+                                                        // Queue anomaly alerts for realtime delivery after the DB transaction commits.
                                                         if matches!(p.pattern_type, core_ai::pattern_detection::PatternType::Anomaly) && p.confidence > 0.8 {
-                                                            let workspace_stream = workspace_stream_key(event.tenant_id);
-                                                            let anomaly_payload = serde_json::json!({
-                                                                "event_type": "anomaly_detected",
-                                                                "tenant_id": event.tenant_id,
-                                                                "pattern_id": db_id,
-                                                                "description": p.description,
-                                                                "confidence": p.confidence,
-                                                                "detected_at": chrono::Utc::now().to_rfc3339(),
-                                                            });
-
-                                                            let _ = con.xadd::<_, _, _, _, ()>(&workspace_stream, "*", &[("payload", serde_json::to_string(&anomaly_payload).unwrap())]).await;
+                                                            anomaly_events.push((p.description, p.confidence));
                                                         }
                                                     }
 
                                                     if let Err(e) = tx.commit().await {
                                                         eprintln!("Failed to commit pattern inserts: {}", e);
+                                                    } else {
+                                                        let workspace_stream = workspace_stream_key(event.tenant_id);
+                                                        for (description, confidence) in anomaly_events.into_iter() {
+                                                            let anomaly_payload = serde_json::json!({
+                                                                "event_type": "anomaly_detected",
+                                                                "description": description,
+                                                                "confidence": confidence,
+                                                            });
+
+                                                            let _ = con
+                                                                .xadd::<_, _, _, _, ()>(
+                                                                    &workspace_stream,
+                                                                    "*",
+                                                                    &[("payload", serde_json::to_string(&anomaly_payload).unwrap())],
+                                                                )
+                                                                .await;
+                                                        }
                                                     }
                                                 }
                                             }
