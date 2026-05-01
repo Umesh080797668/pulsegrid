@@ -1,13 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Inject } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { Pool } from 'pg';
+import * as admin from 'firebase-admin';
 import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class DailyDigestService {
+  private readonly logger = new Logger(DailyDigestService.name);
   private readonly pool: Pool;
+  private firebaseInitialized = false;
 
   constructor(
     private readonly usersService: UsersService,
@@ -18,6 +21,28 @@ export class DailyDigestService {
       throw new Error('DATABASE_URL must be set for daily digest');
     }
     this.pool = new Pool({ connectionString });
+    void this.ensureFirebaseInitialized();
+  }
+
+  private async ensureFirebaseInitialized(): Promise<void> {
+    if (this.firebaseInitialized) {
+      return;
+    }
+
+    if (admin.apps.length > 0) {
+      this.firebaseInitialized = true;
+      return;
+    }
+
+    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    if (!serviceAccountJson) {
+      this.logger.warn('FIREBASE_SERVICE_ACCOUNT_JSON is not set; daily digests will skip push delivery');
+      return;
+    }
+
+    const serviceAccount = JSON.parse(serviceAccountJson) as admin.ServiceAccount;
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    this.firebaseInitialized = true;
   }
 
   /**
@@ -130,13 +155,59 @@ export class DailyDigestService {
         estimatedHoursSaved,
       });
 
-      // Send notifications via FCM (placeholder for Firebase Admin SDK integration)
-      // TODO: Initialize Firebase Admin SDK and call sendMulticast
-      // For now, log what would be sent
-      console.log(
-        `[DailyDigest] Would send digest to ${tokensByUser.length} user(s) in workspace ${workspaceName}`,
-        notificationPayload
+      await this.ensureFirebaseInitialized();
+
+      const tokenEntries = tokensByUser.flatMap((entry) =>
+        entry.tokens.map((tokenInfo) => ({
+          userId: entry.userId,
+          token: tokenInfo.token,
+        })),
       );
+
+      if (!this.firebaseInitialized) {
+        this.logger.warn(
+          `[DailyDigest] Firebase unavailable; skipping push for workspace ${workspaceName}`,
+        );
+      } else if (tokenEntries.length > 0) {
+        const chunks = this.chunkArray(tokenEntries, 500);
+
+        for (const chunk of chunks) {
+          const result = await (admin.messaging() as any).sendMulticast({
+            tokens: chunk.map((entry) => entry.token),
+            notification: notificationPayload.notification,
+            data: notificationPayload.data,
+            android: { priority: 'high' },
+            apns: { headers: { 'apns-priority': '10' } },
+          });
+
+          if (result.failureCount > 0) {
+            await Promise.all(
+              result.responses.map(async (response: any, index: number) => {
+                if (response.success) {
+                  return;
+                }
+
+                const failedEntry = chunk[index];
+                const code = response.error?.code ?? '';
+                const isInvalidToken =
+                  code.includes('registration-token-not-registered') ||
+                  code.includes('invalid-registration-token');
+
+                if (failedEntry && isInvalidToken) {
+                  await this.usersService.removeFcmToken(
+                    failedEntry.userId,
+                    failedEntry.token,
+                  );
+                }
+              }),
+            );
+          }
+
+          this.logger.log(
+            `[DailyDigest] Workspace ${workspaceName}: sent ${result.successCount} success / ${result.failureCount} failure`,
+          );
+        }
+      }
 
       // Log digest sent event (audit trail)
       await this.logDigestSent(workspaceId, {
@@ -164,7 +235,9 @@ export class DailyDigestService {
    */
   private estimateHoursSaved(totalRuns: number, avgDurationMs: number): number {
     const MANUAL_WORK_PER_RUN_MINUTES = 5; // Estimated minutes of manual work each run replaces
-    const totalMinutesSaved = totalRuns * MANUAL_WORK_PER_RUN_MINUTES;
+    const averageAutomatedMinutes = avgDurationMs / 60_000;
+    const netMinutesSavedPerRun = Math.max(MANUAL_WORK_PER_RUN_MINUTES - averageAutomatedMinutes, 1);
+    const totalMinutesSaved = totalRuns * netMinutesSavedPerRun;
     return totalMinutesSaved / 60; // Convert to hours
   }
 
@@ -215,5 +288,17 @@ export class DailyDigestService {
     } catch (error) {
       console.error('[DailyDigest] Error logging digest sent:', error);
     }
+  }
+
+  private chunkArray<T>(items: T[], size: number): T[][] {
+    if (size <= 0) {
+      return [items];
+    }
+
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
   }
 }

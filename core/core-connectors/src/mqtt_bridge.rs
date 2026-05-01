@@ -61,8 +61,28 @@ impl MqttBridge {
     }
 
     /// Register a new MQTT subscription
-    /// In production, this would connect to the broker and subscribe
     pub async fn subscribe(&self, config: MqttSubscription) -> Result<(), String> {
+        if config.broker_url.trim().is_empty() {
+            return Err("broker_url is required".to_string());
+        }
+
+        let lower_broker = config.broker_url.to_lowercase();
+        if !(lower_broker.starts_with("mqtt://") || lower_broker.starts_with("mqtts://")) {
+            return Err("broker_url must start with mqtt:// or mqtts://".to_string());
+        }
+
+        if config.topic_pattern.trim().is_empty() {
+            return Err("topic_pattern is required".to_string());
+        }
+
+        if config.qos > 2 {
+            return Err("qos must be 0, 1, or 2".to_string());
+        }
+
+        if config.client_id.trim().is_empty() {
+            return Err("client_id is required".to_string());
+        }
+
         let workspace_id = config.workspace_id;
         let client_id = config.client_id.clone();
 

@@ -1,4 +1,4 @@
-use rhai::{Dynamic, Map, Scope};
+use rhai::{Array, Dynamic, Map, Scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasmtime::{
@@ -157,8 +157,29 @@ impl CoreVm {
                     }
                 }
                 "http" | "slack" => {
-                    // For now, these plugins are executed directly in core-connectors,
-                    // but we might stub them out here.
+                    // These steps are executed in core-connectors. The VM records
+                    // observability metadata for diagnostics and replay traces.
+                    if let Some(mut ctx) = scope.get_value::<Map>("ctx") {
+                        let observed_at_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis())
+                            .unwrap_or(0);
+
+                        let mut trace_steps = ctx
+                            .get("trace_steps")
+                            .and_then(|value| value.clone().try_cast::<Array>())
+                            .unwrap_or_default();
+
+                        trace_steps.push(Dynamic::from(serde_json::json!({
+                            "step_id": step.id,
+                            "kind": step.kind,
+                            "observed_at_ms": observed_at_ms,
+                        }).to_string()));
+
+                        ctx.insert("trace_steps".into(), Dynamic::from_array(trace_steps));
+                        scope.set_value("ctx", Dynamic::from(ctx));
+                    }
+
                     println!("Executing special step: {} (id: {})", step.kind, step.id);
                 }
                 _ => return Err(ExecutionError::UnknownKind(step.kind.clone())),

@@ -43,8 +43,7 @@ export class GuardIngestController {
         throw new BadRequestException('source is required');
       }
 
-      // Extract tenant from request (would come from JWT in real scenario)
-      const tenantId = (request as any).tenantId || uuidv4();
+      const tenantId = this.extractTenantId(request);
       const deploymentSha = process.env.DEPLOYMENT_SHA || 'unknown';
       const receivedAt = new Date().toISOString();
 
@@ -92,6 +91,56 @@ export class GuardIngestController {
         throw err;
       }
       throw new InternalServerErrorException('Failed to ingest guard event');
+    }
+  }
+
+  private extractTenantId(request: Request): string {
+    const req = request as Request & {
+      tenantId?: string;
+      user?: {
+        workspaceId?: string;
+        tenantId?: string;
+      };
+    };
+
+    if (req.tenantId) {
+      return req.tenantId;
+    }
+
+    if (req.user?.workspaceId) {
+      return req.user.workspaceId;
+    }
+
+    if (req.user?.tenantId) {
+      return req.user.tenantId;
+    }
+
+    const authHeader = request.headers['authorization'];
+    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice('Bearer '.length).trim();
+      const payload = this.decodeJwtPayload(token);
+      const tenantFromToken = payload?.workspaceId || payload?.tenant_id || payload?.tenantId;
+      if (typeof tenantFromToken === 'string' && tenantFromToken.length > 0) {
+        return tenantFromToken;
+      }
+    }
+
+    return uuidv4();
+  }
+
+  private decodeJwtPayload(token: string): Record<string, any> | null {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) {
+        return null;
+      }
+
+      const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+      const decoded = Buffer.from(padded, 'base64').toString('utf-8');
+      return JSON.parse(decoded);
+    } catch {
+      return null;
     }
   }
 }

@@ -178,7 +178,14 @@ export class AutonomousMaintenanceService {
           `Retry attempt ${attempt}/${maxRetries} for flow ${intelligence.flow_id}`,
         );
 
-        // Simulate retry (in real implementation, would re-execute flow)
+        this.eventEmitter.emit('flow.retry.requested', {
+          flow_id: intelligence.flow_id,
+          pattern_id: intelligence.pattern_id,
+          attempt,
+          max_retries: maxRetries,
+          requested_at: new Date().toISOString(),
+        });
+
         await new Promise((resolve) =>
           setTimeout(resolve, backoffMs * Math.pow(2, attempt - 1)),
         );

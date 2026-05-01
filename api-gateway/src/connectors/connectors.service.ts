@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import axios from 'axios';
 import { Redis } from 'ioredis';
 import { Inject } from '@nestjs/common';
+import { Pool } from 'pg';
 
 export interface ConnectorTestResult {
   success: boolean;
@@ -15,10 +16,24 @@ interface CredentialDependents {
 }
 
 @Injectable()
-export class ConnectorsService {
+export class ConnectorsService implements OnModuleDestroy {
   private readonly logger = new Logger('ConnectorsService');
+  private readonly pool: Pool | null;
 
-  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
+  constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {
+    const connectionString = process.env.DATABASE_URL;
+    this.pool = connectionString ? new Pool({ connectionString }) : null;
+
+    if (!this.pool) {
+      this.logger.warn('DATABASE_URL not set; credential dependents lookup will return empty results');
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    if (this.pool) {
+      await this.pool.end();
+    }
+  }
 
   /**
    * Test a connector by making a test request
@@ -92,7 +107,7 @@ export class ConnectorsService {
   ): Promise<CredentialDependents> {
     try {
       // Check Redis cache first
-      const cacheKey = `credentials:${credentialId}:dependents`;
+      const cacheKey = `credentials:${workspaceId}:${credentialId}:dependents`;
       const cached = await this.redis.get(cacheKey);
       
       if (cached) {
@@ -100,12 +115,42 @@ export class ConnectorsService {
         return JSON.parse(cached);
       }
 
-      // TODO: Query PostgreSQL to get credential details and flows
-      // This requires access to the database through gRPC or direct connection
-      // For now, return empty result - will be implemented with DB layer
-      const result: CredentialDependents = {
-        flows: [],
-      };
+      if (!this.pool) {
+        const emptyResult: CredentialDependents = { flows: [] };
+        await this.redis.setex(cacheKey, 300, JSON.stringify(emptyResult));
+        return emptyResult;
+      }
+
+      // Validate credential belongs to workspace (if missing, return empty set).
+      const credentialCheck = await this.pool.query<{ id: string }>(
+        `SELECT id FROM credentials WHERE id = $1::uuid AND workspace_id = $2::uuid LIMIT 1`,
+        [credentialId, workspaceId],
+      );
+
+      if (credentialCheck.rowCount === 0) {
+        const emptyResult: CredentialDependents = { flows: [] };
+        await this.redis.setex(cacheKey, 600, JSON.stringify(emptyResult));
+        return emptyResult;
+      }
+
+      const flowRows = await this.pool.query<{
+        id: string;
+        name: string;
+        definition: any;
+      }>(
+        `
+        SELECT id::text, name, definition
+        FROM flows
+        WHERE workspace_id = $1::uuid
+        `,
+        [workspaceId],
+      );
+
+      const dependentFlows = flowRows.rows
+        .filter((row) => this.definitionReferencesCredential(row.definition, credentialId))
+        .map((row) => ({ id: row.id, name: row.name }));
+
+      const result: CredentialDependents = { flows: dependentFlows };
 
       // Cache the result for 1 hour
       await this.redis.setex(cacheKey, 3600, JSON.stringify(result));
@@ -124,14 +169,69 @@ export class ConnectorsService {
    */
   async invalidateCredentialDependentsCache(credentialIds: string[]): Promise<void> {
     try {
-      const keys = credentialIds.map((id) => `credentials:${id}:dependents`);
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-        this.logger.log(`Invalidated cache for ${keys.length} credential dependents`);
+      if (credentialIds.length === 0) {
+        return;
       }
+
+      let deleted = 0;
+      for (const credentialId of credentialIds) {
+        const pattern = `credentials:*:${credentialId}:dependents`;
+        const keys = await this.redis.keys(pattern);
+        if (keys.length > 0) {
+          deleted += await this.redis.del(...keys);
+        }
+      }
+
+      this.logger.log(`Invalidated ${deleted} credential dependents cache key(s)`);
     } catch (error: any) {
       this.logger.warn(`Failed to invalidate credential cache:`, error);
       // Don't throw - cache invalidation failure shouldn't break flow save
     }
+  }
+
+  private definitionReferencesCredential(definition: unknown, credentialId: string): boolean {
+    if (!definition) {
+      return false;
+    }
+
+    const stack: unknown[] = [definition];
+
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (current == null) {
+        continue;
+      }
+
+      if (typeof current === 'string') {
+        if (current === credentialId || current.includes(credentialId)) {
+          return true;
+        }
+        continue;
+      }
+
+      if (Array.isArray(current)) {
+        stack.push(...current);
+        continue;
+      }
+
+      if (typeof current === 'object') {
+        const obj = current as Record<string, unknown>;
+        for (const [key, value] of Object.entries(obj)) {
+          const normalizedKey = key.toLowerCase();
+          if (
+            (normalizedKey === 'credential_id' ||
+              normalizedKey === 'credentialid' ||
+              normalizedKey === 'credential') &&
+            typeof value === 'string' &&
+            value === credentialId
+          ) {
+            return true;
+          }
+          stack.push(value);
+        }
+      }
+    }
+
+    return false;
   }
 }

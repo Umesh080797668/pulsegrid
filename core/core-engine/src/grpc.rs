@@ -725,8 +725,8 @@ impl PulseCoreService for MyPulseCoreService {
 
         Ok(Response::new(InstallTemplateResponse {
             success: true,
-            new_flow_id: Uuid::new_v4().to_string(),
-            message: format!("Template installed successfully (Stub)"),
+            new_flow_id: new_flow_id.to_string(),
+            message: "Template installed successfully".to_string(),
         }))
     }
 

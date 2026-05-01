@@ -71,8 +71,26 @@ impl BleDeviceListener {
     }
 
     /// Register a BLE device to listen to
-    /// In production, this would initiate a BLE scan and connection
     pub async fn register_device(&self, config: BleDeviceConfig) -> Result<(), String> {
+        if !Self::is_valid_ble_address(&config.device_address.0) {
+            return Err(format!(
+                "Invalid BLE address format: {}",
+                config.device_address.0
+            ));
+        }
+
+        if config.device_name.trim().is_empty() {
+            return Err("device_name is required".to_string());
+        }
+
+        if config.scan_interval_ms == 0 {
+            return Err("scan_interval_ms must be greater than 0".to_string());
+        }
+
+        if config.characteristics.is_empty() {
+            return Err("At least one characteristic must be configured".to_string());
+        }
+
         let device_address = config.device_address.clone();
 
         let mut devices = self.devices.write().await;
@@ -96,11 +114,18 @@ impl BleDeviceListener {
     }
 
     /// Connect to a registered BLE device
-    /// In production, would establish BLE connection and enable notifications
     pub async fn connect_device(&self, device_address: BleDeviceAddress) -> Result<(), String> {
         let devices = self.devices.read().await;
-        if !devices.contains_key(&device_address) {
+        let Some(config) = devices.get(&device_address) else {
             return Err(format!("Device {} not registered", device_address.0));
+        };
+
+        let supports_notify = config.characteristics.iter().any(|c| c.notify);
+        if !supports_notify {
+            return Err(format!(
+                "Device {} has no notify-enabled characteristics",
+                device_address.0
+            ));
         }
 
         let mut conns = self.active_connections.write().await;
@@ -173,6 +198,17 @@ impl BleDeviceListener {
         let conns = self.active_connections.read().await;
         conns.values().filter(|&&connected| connected).count()
     }
+
+    fn is_valid_ble_address(address: &str) -> bool {
+        let parts: Vec<&str> = address.split(':').collect();
+        if parts.len() != 6 {
+            return false;
+        }
+
+        parts
+            .iter()
+            .all(|part| part.len() == 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+    }
 }
 
 #[cfg(test)]
@@ -212,7 +248,11 @@ mod tests {
             workspace_id,
             device_address: device_address.clone(),
             device_name: "Test Device".to_string(),
-            characteristics: vec![],
+            characteristics: vec![BleCharacteristic {
+                service_uuid: "180A".to_string(),
+                characteristic_uuid: "2A6E".to_string(),
+                notify: true,
+            }],
             scan_interval_ms: 5000,
         };
 

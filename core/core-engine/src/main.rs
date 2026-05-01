@@ -18,7 +18,7 @@ use redis::{
 };
 use chrono::{Datelike, Timelike};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Row};
+use sqlx::{FromRow, Postgres, QueryBuilder, Row};
 use sqlx::postgres::PgPoolOptions;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -100,6 +100,15 @@ struct StripeSubscriptionCreateResponse {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DetectedPatternsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    pattern_type: Option<String>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+}
+
 const FREE_CONNECTORS: &[&str] = &[
     "GMAIL",
     "SLACK",
@@ -139,7 +148,7 @@ const PRO_CONNECTORS: &[&str] = &[
 ];
 
 // BILLING: Plan limit configuration per workspace tier
-// STUB: This is the scaffolding for plan enforcement.
+// Phase 1/2 enforcement baseline: static plan limits used by runtime checks.
 // 
 // Phase 4 will add:
 // - Stripe integration for automatic billing
@@ -3381,33 +3390,111 @@ async fn get_flow_run_details(
     }))
 }
 
-// STUB: Pattern detection endpoint - returns detected patterns for a workspace
-// This is scaffolding for the pattern detection feature. Full ML-based detection
-// will be implemented in Phase 3 with tract ONNX integration.
 async fn get_detected_patterns(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
+    Query(params): Query<DetectedPatternsQuery>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    // STUB: Retrieve patterns from ai_detected_patterns table
-    // TODO: Add pagination, filtering by pattern_type, date range
-    let patterns = sqlx::query(
+    let limit = params.limit.unwrap_or(50).clamp(1, 200);
+    let offset = params.offset.unwrap_or(0).max(0);
+    let start_date_raw = params.start_date.clone();
+    let end_date_raw = params.end_date.clone();
+
+    let start_date = match start_date_raw.as_deref() {
+        Some(ref value) => Some(
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|_| {
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "Invalid start_date. Use RFC3339 format".to_string(),
+                    )
+                })?
+                .with_timezone(&chrono::Utc),
+        ),
+        None => None,
+    };
+
+    let end_date = match end_date_raw.as_deref() {
+        Some(ref value) => Some(
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|_| {
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "Invalid end_date. Use RFC3339 format".to_string(),
+                    )
+                })?
+                .with_timezone(&chrono::Utc),
+        ),
+        None => None,
+    };
+
+    let normalized_pattern_type = params
+        .pattern_type
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let mut query_builder = QueryBuilder::<Postgres>::new(
         r#"
         SELECT id, workspace_id, pattern_type, description, confidence, frequency,
                events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at
         FROM ai_detected_patterns
-        WHERE workspace_id = $1
-        ORDER BY detected_at DESC
-        LIMIT 50
-        "#
-    )
-    .bind(workspace_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        WHERE workspace_id = "#,
+    );
+    query_builder.push_bind(workspace_id);
+
+    if let Some(pattern_type) = normalized_pattern_type.as_deref() {
+        query_builder.push(" AND pattern_type = ");
+        query_builder.push_bind(pattern_type);
+    }
+    if let Some(date) = start_date.as_ref() {
+        query_builder.push(" AND detected_at >= ");
+        query_builder.push_bind(date.clone());
+    }
+    if let Some(date) = end_date.as_ref() {
+        query_builder.push(" AND detected_at <= ");
+        query_builder.push_bind(date.clone());
+    }
+
+    query_builder.push(" ORDER BY detected_at DESC LIMIT ");
+    query_builder.push_bind(limit);
+    query_builder.push(" OFFSET ");
+    query_builder.push_bind(offset);
+
+    let patterns = query_builder
+        .build()
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut count_query_builder = QueryBuilder::<Postgres>::new(
+        "SELECT COUNT(*)::bigint AS total FROM ai_detected_patterns WHERE workspace_id = ",
+    );
+    count_query_builder.push_bind(workspace_id);
+
+    if let Some(pattern_type) = normalized_pattern_type.as_deref() {
+        count_query_builder.push(" AND pattern_type = ");
+        count_query_builder.push_bind(pattern_type);
+    }
+    if let Some(date) = start_date.as_ref() {
+        count_query_builder.push(" AND detected_at >= ");
+        count_query_builder.push_bind(date.clone());
+    }
+    if let Some(date) = end_date.as_ref() {
+        count_query_builder.push(" AND detected_at <= ");
+        count_query_builder.push_bind(date.clone());
+    }
+
+    let total_row = count_query_builder
+        .build()
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let total = total_row.get::<i64, _>("total");
 
     let patterns_json: Vec<serde_json::Value> = patterns.iter().map(|row| {
         serde_json::json!({
-            "id": row.get::<String, _>("id"),
+            "id": row.get::<uuid::Uuid, _>("id").to_string(),
             "workspace_id": row.get::<uuid::Uuid, _>("workspace_id").to_string(),
             "pattern_type": row.get::<String, _>("pattern_type"),
             "description": row.get::<String, _>("description"),
@@ -3423,7 +3510,14 @@ async fn get_detected_patterns(
 
     Ok(Json(serde_json::json!({
         "patterns": patterns_json,
-        "total": patterns_json.len()
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "filters": {
+            "pattern_type": normalized_pattern_type,
+            "start_date": start_date_raw,
+            "end_date": end_date_raw,
+        }
     })))
 }
 
@@ -3712,7 +3806,7 @@ async fn stripe_webhook_handler(
 }
 
 // BILLING: Usage metering endpoint - returns current month usage for a workspace
-// STUB: Shows event and flow run counts for billing enforcement
+// Returns event and flow run counts used by Phase 1/2 billing enforcement.
 async fn get_workspace_usage(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,

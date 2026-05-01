@@ -12,6 +12,9 @@ class FcmService {
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final Dio _dio = Dio();
   late SharedPreferences _prefs;
+  void Function(RemoteMessage message, Map<String, dynamic> payload)?
+      _foregroundHandler;
+  void Function(RemoteMessage message, String? deepLink)? _tapHandler;
 
   FcmService() {
     _initializeSharedPreferences();
@@ -19,6 +22,16 @@ class FcmService {
 
   Future<void> _initializeSharedPreferences() async {
     _prefs = await SharedPreferences.getInstance();
+  }
+
+  /// Register optional callbacks to integrate notification behavior with app UI.
+  void configureMessageHandlers({
+    void Function(RemoteMessage message, Map<String, dynamic> payload)?
+        onForegroundMessage,
+    void Function(RemoteMessage message, String? deepLink)? onMessageTap,
+  }) {
+    _foregroundHandler = onForegroundMessage;
+    _tapHandler = onMessageTap;
   }
 
   /// Initialize FCM and request permissions
@@ -134,8 +147,16 @@ class FcmService {
     print('Body: ${message.notification?.body}');
     print('Data: ${message.data}');
 
-    // TODO: Show local notification or update UI based on message content
-    // Can dispatch to app state management (Riverpod, etc.)
+    final payload = _normalizedPayload(message);
+    final type = payload['type'] ?? 'unknown';
+
+    if (_foregroundHandler != null) {
+      _foregroundHandler!(message, payload);
+      return;
+    }
+
+    // Default behavior when app has not registered custom handlers.
+    print('Handled foreground message type=$type');
   }
 
   /// Handle message tap
@@ -143,8 +164,31 @@ class FcmService {
     print('Message tapped');
     print('Data: ${message.data}');
 
-    // TODO: Navigate to relevant screen based on message data
-    // e.g., if message.data['type'] == 'daily_digest', navigate to analytics_screen
+    final payload = _normalizedPayload(message);
+    final deepLink = payload['deepLink'];
+    final type = payload['type'];
+
+    if (_tapHandler != null) {
+      _tapHandler!(message, deepLink);
+      return;
+    }
+
+    // Default behavior when app has not registered custom handlers.
+    if (deepLink != null) {
+      print('Open deep link: $deepLink');
+    } else if (type == 'daily_digest') {
+      print('Navigate suggestion: analytics_screen');
+    } else if (type == 'anomaly_alert') {
+      print('Navigate suggestion: analytics/anomalies');
+    }
+  }
+
+  Map<String, dynamic> _normalizedPayload(RemoteMessage message) {
+    final payload = <String, dynamic>{};
+    for (final entry in message.data.entries) {
+      payload[entry.key] = entry.value;
+    }
+    return payload;
   }
 
   /// Get current FCM token

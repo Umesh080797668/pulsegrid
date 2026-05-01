@@ -59,10 +59,30 @@ export class MaintenanceOrchestratorService {
       const pausedFlows: string[] = [];
 
       for (const flowId of event.affected_flow_ids) {
-        // Would call gRPC to PulseCore to disable flow
-        // For now, just track it
-        pausedFlows.push(flowId);
-        this.logger.log(`Paused flow ${flowId} due to event ${event.id}`);
+        if (this.pgPool) {
+          const result = await this.pgPool.query(
+            `
+            UPDATE flows
+            SET enabled = false, updated_at = NOW()
+            WHERE id = $1::uuid AND workspace_id = $2::uuid AND enabled = true
+            `,
+            [flowId, event.tenant_id],
+          );
+
+          if (result.rowCount && result.rowCount > 0) {
+            pausedFlows.push(flowId);
+            this.logger.log(`Paused flow ${flowId} due to event ${event.id}`);
+          } else {
+            this.logger.warn(
+              `Flow ${flowId} was not paused (not found, wrong workspace, or already disabled)`,
+            );
+          }
+        } else {
+          pausedFlows.push(flowId);
+          this.logger.warn(
+            `Database pool unavailable; recorded pause intent for flow ${flowId}`,
+          );
+        }
       }
 
       // Store maintenance state in Redis

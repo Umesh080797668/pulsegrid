@@ -382,8 +382,33 @@ pub struct ResendConnector;
 
 #[async_trait]
 impl Connector for ResendConnector {
-    async fn validate_credentials(&self, _creds: &Credentials) -> Result<(), ConnectorError> {
-        // Resend validation would check API key with a test call
+    async fn validate_credentials(&self, creds: &Credentials) -> Result<(), ConnectorError> {
+        if !creds.connector_id.eq_ignore_ascii_case("resend") {
+            return Err(ConnectorError::InvalidConfig(
+                "connector_id must be RESEND".to_string(),
+            ));
+        }
+
+        if creds.encrypted_blob.is_empty() {
+            return Err(ConnectorError::InvalidConfig(
+                "encrypted_blob cannot be empty".to_string(),
+            ));
+        }
+
+        if creds.nonce.len() < 12 {
+            return Err(ConnectorError::InvalidConfig(
+                "nonce must be at least 12 bytes".to_string(),
+            ));
+        }
+
+        if let Some(expires_at) = creds.expires_at {
+            if expires_at < Utc::now() {
+                return Err(ConnectorError::InvalidConfig(
+                    "credential is expired".to_string(),
+                ));
+            }
+        }
+
         Ok(())
     }
 

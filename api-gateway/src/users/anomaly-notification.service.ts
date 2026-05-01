@@ -29,6 +29,8 @@ export class AnomalyNotificationService implements OnModuleInit, OnModuleDestroy
   private readonly logger = new Logger('AnomalyNotificationService');
   private streamListenerInterval: NodeJS.Timeout | null = null;
   private firebaseInitialized = false;
+  private readonly consumerGroup = 'anomaly_notifications';
+  private readonly consumerName = `consumer-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
@@ -83,24 +85,33 @@ export class AnomalyNotificationService implements OnModuleInit, OnModuleDestroy
 
   /**
    * Poll all workspace streams for anomaly_detected events.
-   * This implementation uses simple XREVRANGE; for production, use consumer groups.
    */
   private async pollAnomalyStreams(): Promise<void> {
     // Get all workspace stream keys
     const streamKeys = await this.redis.keys('workspace_*');
 
     for (const streamKey of streamKeys) {
+      await this.ensureConsumerGroup(streamKey);
+
       // Extract workspace_id from key like "workspace_abc123"
       const workspaceId = streamKey.replace('workspace_', '');
 
-      // Read latest 10 entries from stream
-      const entries = (await this.redis.xrevrange(
-        streamKey,
-        '+',
-        '-',
+      const streamData = (await this.redis.xreadgroup(
+        'GROUP',
+        this.consumerGroup,
+        this.consumerName,
         'COUNT',
-        10
-      )) as RedisStreamEntry[];
+        20,
+        'STREAMS',
+        streamKey,
+        '>'
+      )) as [string, RedisStreamEntry[]][] | null;
+
+      if (!streamData || streamData.length === 0) {
+        continue;
+      }
+
+      const entries = streamData.flatMap(([, streamEntries]) => streamEntries);
 
       for (const [entryId, fieldValues] of entries) {
         try {
@@ -127,12 +138,36 @@ export class AnomalyNotificationService implements OnModuleInit, OnModuleDestroy
           // Send notification to workspace users
           await this.sendAnomalyNotification(workspaceId, payload);
 
-          // Mark as processed by removing from stream
-          // (In production, use consumer groups for better reliability)
-          await this.redis.xdel(streamKey, entryId);
+          // Mark as processed for this consumer group
+          await this.redis.xack(streamKey, this.consumerGroup, entryId);
         } catch (error) {
           this.logger.error(`Failed to process stream entry ${entryId}:`, error);
         }
+      }
+
+      // Keep streams bounded to avoid unbounded growth.
+      await this.redis.xtrim(streamKey, 'MAXLEN', '~', 5000);
+    }
+  }
+
+  private async ensureConsumerGroup(streamKey: string): Promise<void> {
+    try {
+      await this.redis.xgroup(
+        'CREATE',
+        streamKey,
+        this.consumerGroup,
+        '$',
+        'MKSTREAM',
+      );
+      this.logger.log(
+        `Created Redis consumer group ${this.consumerGroup} for stream ${streamKey}`,
+      );
+    } catch (error: any) {
+      const message = String(error?.message ?? error);
+      if (!message.includes('BUSYGROUP')) {
+        this.logger.error(
+          `Failed to ensure consumer group for stream ${streamKey}: ${message}`,
+        );
       }
     }
   }
