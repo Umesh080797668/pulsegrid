@@ -7,6 +7,7 @@ import { AuthStore } from './auth.store';
 import { EmailModule } from '../email/email.module';
 import { MfaController } from './mfa.controller';
 import { MfaService } from './mfa.service';
+import { MicrosoftOAuthStrategy } from './microsoft-oauth.strategy';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import { MfaService } from './mfa.service';
     EmailModule,
   ],
   controllers: [AuthController, MfaController],
-  providers: [AuthStore, AuthService, MfaService, JwtAuthGuard],
+  providers: [AuthStore, AuthService, MfaService, JwtAuthGuard, MicrosoftOAuthStrategy],
   exports: [AuthService, MfaService, JwtAuthGuard, AuthStore, JwtModule],
 })
 export class AuthModule {}

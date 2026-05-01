@@ -6,6 +6,7 @@ import { SendVerificationEmailDto, VerifyEmailDto } from '../dto';
 import { Request, Response } from 'express';
 import { RateLimitService } from '../rate-limit.service';
 import { AuthTokens } from './auth.types';
+import { MicrosoftOAuthStrategy } from './microsoft-oauth.strategy';
 
 class RegisterDto {
   @IsEmail()
@@ -37,6 +38,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly emailService: EmailService,
     private readonly rateLimitService: RateLimitService,
+    private readonly microsoftStrategy: MicrosoftOAuthStrategy,
   ) {}
 
   @Post('register')
@@ -145,6 +147,15 @@ export class AuthController {
     return { provider: 'github', authUrl: url };
   }
 
+  @Get('microsoft')
+  microsoftAuthUrl() {
+    const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+    if (!redirectUri) {
+      throw new UnauthorizedException('Microsoft OAuth is not configured');
+    }
+    const authUrl = this.microsoftStrategy.getAuthorizationUrl(redirectUri);
+    return { provider: 'microsoft', authUrl };
+  }
   @Get('google/callback')
   async googleCallback(
     @Query('code') code?: string,
@@ -306,6 +317,42 @@ export class AuthController {
     return { accessToken: tokens.accessToken };
   }
 
+  @Get('microsoft/callback')
+  async microsoftCallback(
+    @Query('code') code?: string,
+    @Query('id_token') idToken?: string,
+    @Query('email') fallbackEmail?: string,
+    @Query('name') fallbackName?: string,
+    @Req() req?: Request,
+    @Res({ passthrough: true }) res?: Response,
+  ) {
+    if (code) {
+      const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+      if (!redirectUri) {
+        throw new UnauthorizedException('Microsoft OAuth callback is not configured');
+      }
+      const tokenResp = await this.microsoftStrategy.exchangeCodeForToken(code, redirectUri);
+      const userInfo = await this.microsoftStrategy.validateIdToken(tokenResp.id_token);
+      const tokens = await this.authService.socialLogin('microsoft', userInfo.email, userInfo.name);
+      res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
+      return { accessToken: tokens.accessToken };
+    }
+    if (idToken) {
+      const userInfo = await this.microsoftStrategy.validateIdToken(idToken);
+      const tokens = await this.authService.socialLogin('microsoft', userInfo.email, userInfo.name);
+      res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
+      return { accessToken: tokens.accessToken };
+    }
+    if (!fallbackEmail) {
+      throw new UnauthorizedException('Missing code, id_token or email in callback');
+    }
+    if (req) {
+      await this.checkAuthRateLimit(req, 'microsoft-callback', Number(process.env.RATE_LIMIT_OAUTH_PER_MINUTE || 60));
+    }
+    const tokens = await this.authService.socialLogin('microsoft', fallbackEmail, fallbackName);
+    res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
+    return { accessToken: tokens.accessToken };
+  }
   private async checkAuthRateLimit(req: Request, keySuffix: string, limit: number): Promise<void> {
     const forwardedFor = req.headers['x-forwarded-for'];
     const ip = typeof forwardedFor === 'string'

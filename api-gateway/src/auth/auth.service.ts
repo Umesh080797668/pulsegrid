@@ -105,7 +105,7 @@ export class AuthService {
     await this.authStore.revokeRefreshTokenHash(tokenHash);
   }
 
-  async socialLogin(provider: 'google' | 'github', email: string, name?: string): Promise<AuthTokens> {
+  async socialLogin(provider: 'google' | 'github' | 'microsoft', email: string, name?: string, providerId?: string): Promise<AuthTokens> {
     const normalizedEmail = email.trim().toLowerCase();
     const row = await this.authStore.upsertSocialUser({
       id: crypto.randomUUID(),
