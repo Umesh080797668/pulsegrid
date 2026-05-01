@@ -7,10 +7,11 @@ import { ContextBuilderService } from './triage/context-builder.service';
 import { InternetResearchService } from './research/internet-research.service';
 import { MaintenanceOrchestratorService } from './maintenance/orchestrator.service';
 import { NotificationService } from './notifications/notification.service';
+import { PulseGuardAIModule } from './ai/pulseguard-ai.module';
 
 @Global()
 @Module({
-  imports: [ConfigModule.forRoot()],
+  imports: [ConfigModule.forRoot(), PulseGuardAIModule],
   controllers: [GuardController],
   providers: [
     GuardStreamsConsumer,
@@ -27,6 +28,7 @@ import { NotificationService } from './notifications/notification.service';
     InternetResearchService,
     MaintenanceOrchestratorService,
     NotificationService,
+    PulseGuardAIModule,
   ],
 })
 export class GuardModule {}

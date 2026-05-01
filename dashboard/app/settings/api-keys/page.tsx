@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { Copy, Eye, EyeOff, Trash2, Plus } from 'lucide-react';
-import { useDashboardStore } from '@/lib/store';
-import { createApiKey, listApiKeys, revokeApiKey, type ApiKey, type CreateApiKeyResponse } from '@/lib/api';
+import { useDashboardStore } from '../../../lib/store';
+import { createApiKey, listApiKeys, revokeApiKey, type ApiKey, type CreateApiKeyResponse } from '../../../lib/api';
 
 export default function ApiKeysPage() {
   const { accessToken, workspaceId, setAccessToken } = useDashboardStore();
