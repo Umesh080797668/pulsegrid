@@ -14,6 +14,7 @@ type Query {
   
   # Pattern Detection Queries (from core-ai)
   detectedPatterns(workspaceId: ID!): [EventPattern!]!
+  pattern(id: ID!): EventPattern
   
   # Workspace Queries
   workspaces: [Workspace!]!
@@ -27,18 +28,24 @@ type Mutation {
   deleteFlow(id: ID!): Boolean!
   
   # Pattern-to-Flow Suggestions
-  suggestFlowFromPattern(patternId: String!): Flow
+  suggestFlowFromPattern(patternId: String!, workspaceId: ID!): Flow
   
   # Workspace Management
   createWorkspace(name: String!): Workspace!
 }
 
 type Subscription {
-  # Real-time event stream (connects to WebSocket gateway)
+  # Real-time event stream (connects to WebSocket gateway and Redis Streams)
   eventReceived(workspaceId: ID!): EventData!
   
-  # Flow run status updates
+  # Flow run status updates (step completion, errors, success)
   flowRunUpdated(flowId: ID!): FlowRun!
+  
+  # New pattern detection alerts (from core-ai engine)
+  patternDetected(workspaceId: ID!): EventPattern!
+  
+  # Connector health status changes (healthy ↔ unhealthy transitions)
+  connectorHealthChanged(connectorId: String!): String!
 }
 
 # Core Types
@@ -109,11 +116,14 @@ type EventPattern {
   id: ID!
   patternType: String! # time_based, correlation, anomaly
   description: String!
-  confidence: Float! # 0.0 - 1.0
-  frequency: String!
+  confidence: Float! # 0.0 - 1.0 (how certain is the pattern)
+  frequency: Int! # How many times observed
   eventsInvolved: [String!]!
+  suggestedAction: String! # "review", "automate", "evaluate", "monitor"
   suggestedTrigger: String
   suggestedActions: [String!]!
+  affectedFlows: Int # Number of flows that could use this pattern
+  temporalAnalysis: JSON # Time distribution analysis
 }
 
 type Workspace {
@@ -128,3 +138,4 @@ type Workspace {
 }
 
 scalar DateTime
+scalar JSON

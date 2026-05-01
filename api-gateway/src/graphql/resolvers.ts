@@ -154,7 +154,37 @@ export class EventResolver {
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
     @Context() context: any,
   ) {
+    // Subscribe to real-time event stream from PulseCore via Redis Streams
+    // Context pubSub connects to Redis and forwards events as they arrive
     return context.pubSub.asyncIterator([`eventReceived_${workspaceId}`]);
+  }
+
+  /**
+   * Subscribe to flow run status updates
+   * Emits when a flow run starts, progresses, or completes
+   * Enables real-time dashboard updates without polling
+   */
+  @Subscription(() => FlowRun)
+  flowRunUpdated(
+    @Args('flowId', { type: () => ID }) flowId: string,
+    @Context() context: any,
+  ) {
+    // Subscribe to flow execution events from the rule evaluation engine
+    // Each step completion and error triggers a subscription event
+    return context.pubSub.asyncIterator([`flowRunUpdated_${flowId}`]);
+  }
+
+  /**
+   * Subscribe to connector health status changes
+   * Emits when a connector transitions between healthy/unhealthy state
+   * Enables proactive alerts for connector failures
+   */
+  @Subscription(() => String) // Status message
+  connectorHealthChanged(
+    @Args('connectorId') connectorId: string,
+    @Context() context: any,
+  ) {
+    return context.pubSub.asyncIterator([`connectorHealthChanged_${connectorId}`]);
   }
 }
 
@@ -162,8 +192,16 @@ export class EventResolver {
 export class PatternResolver {
   private logger = new Logger('PatternResolver');
 
-  constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
+  constructor(
+    @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
+    @Inject('PUB_SUB') private pubSub: any,
+  ) {}
 
+  /**
+   * Query detected patterns for a workspace
+   * Calls core-ai module in PulseCore to retrieve identified event patterns
+   * Returns patterns like "user logs in at 9am every weekday" or "order follows inventory check"
+   */
   @Query(() => [EventPattern])
   async detectedPatterns(
     @Args('workspaceId', { type: () => ID }) workspaceId: string,
@@ -171,33 +209,133 @@ export class PatternResolver {
     try {
       const patternService: any = this.client.getService('PulseCoreService');
       const response = await patternService.detectPatterns({ workspace_id: workspaceId }).toPromise?.();
-      return response?.patterns || [];
+      
+      const patterns = response?.patterns || [];
+      
+      // Enrich pattern metadata with confidence scores and action suggestions
+      return patterns.map((pattern: any) => ({
+        ...pattern,
+        confidence: pattern.confidence || 0.85,
+        suggestedAction: this.getSuggestedAction(pattern),
+        affectedFlows: pattern.affected_flow_count || 0,
+      }));
     } catch (error) {
       this.logger.error(`Error detecting patterns for workspace ${workspaceId}:`, error);
       return [];
     }
   }
 
+  /**
+   * Get a single pattern by ID with full analysis
+   * Includes frequency distribution, temporal analysis, and anomaly detection
+   */
+  @Query(() => EventPattern, { nullable: true })
+  async pattern(
+    @Args('id', { type: () => ID }) patternId: string,
+  ): Promise<EventPattern | null> {
+    try {
+      const patternService: any = this.client.getService('PulseCoreService');
+      const response = await patternService.getPattern({ id: patternId }).toPromise?.();
+      
+      if (!response) return null;
+      
+      return {
+        ...response,
+        confidence: response.confidence || 0.85,
+        frequency: response.frequency || {},
+        temporalAnalysis: response.temporal_analysis || {},
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching pattern ${patternId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Suggest an automation Flow based on a detected pattern
+   * Uses AI to generate a complete Flow definition with trigger and actions
+   * User can review and customize before deploying
+   */
   @Mutation(() => Flow, { nullable: true })
   async suggestFlowFromPattern(
     @Args('patternId') patternId: string,
+    @Args('workspaceId', { type: () => ID }) workspaceId: string,
   ): Promise<Flow | null> {
     try {
       const patternService: any = this.client.getService('PulseCoreService');
       const patternResponse = await patternService.getPattern({ id: patternId }).toPromise?.();
 
       if (!patternResponse) {
+        this.logger.warn(`Pattern ${patternId} not found for suggestion`);
         return null;
       }
 
+      // Call AI suggestion engine with pattern analysis
       const suggestionService: any = this.client.getService('PulseCoreService');
-      const flowResponse = await suggestionService.suggestFlow({ pattern: patternResponse }).toPromise?.();
+      const flowResponse = await suggestionService.suggestFlow({
+        pattern: patternResponse,
+        workspace_id: workspaceId,
+      }).toPromise?.();
 
-      return flowResponse || null;
+      if (!flowResponse) {
+        return null;
+      }
+
+      // Generate a descriptive flow name from the pattern
+      const flowName = this.generateFlowNameFromPattern(patternResponse);
+
+      return {
+        ...flowResponse,
+        name: flowName,
+        workspaceId,
+        isActive: false, // Suggestions start disabled
+      } as Flow;
     } catch (error) {
       this.logger.error(`Error suggesting flow from pattern ${patternId}:`, error);
       return null;
     }
+  }
+
+  /**
+   * Subscribe to new pattern detections in real-time
+   * Emits when core-ai identifies a new pattern in event history
+   */
+  @Subscription(() => EventPattern)
+  patternDetected(
+    @Args('workspaceId', { type: () => ID }) workspaceId: string,
+    @Context() context: any,
+  ) {
+    // Subscribe to pattern detection events from PulseCore
+    return context.pubSub.asyncIterator([`patternDetected_${workspaceId}`]);
+  }
+
+  /**
+   * Helper: Determine suggested action for a pattern
+   */
+  private getSuggestedAction(pattern: any): string {
+    const frequency = pattern.frequency || 0;
+    const confidence = pattern.confidence || 0;
+
+    if (confidence < 0.6) {
+      return 'review'; // Low confidence — needs manual review
+    } else if (frequency > 100) {
+      return 'automate'; // High frequency — strong candidate for automation
+    } else if (frequency > 20) {
+      return 'evaluate'; // Moderate frequency — evaluate cost/benefit
+    } else {
+      return 'monitor'; // Low frequency — track more data before automating
+    }
+  }
+
+  /**
+   * Helper: Generate descriptive flow name from pattern analysis
+   */
+  private generateFlowNameFromPattern(pattern: any): string {
+    const eventType = pattern.event_type || 'Event';
+    const actionType = pattern.action_type || 'Action';
+    const timestamp = new Date().toLocaleDateString();
+
+    return `Auto: ${eventType} → ${actionType} (${timestamp})`;
   }
 }
 
