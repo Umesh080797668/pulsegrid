@@ -12,11 +12,11 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body>
         <Layout
-          pageMap={await getPageMap()}
-          docsRepositoryBase="https://github.com/your-org/pulsegrid/tree/main/docs"
+          pageMap={await getPageMap('/')}
+          docsRepositoryBase="https://github.com/Umesh080797668/pulsegrid/tree/main/docs"
           sidebar={{ autoCollapse: true }}
         >
-          {children}
+          {children ?? null}
         </Layout>
       </body>
     </html>
