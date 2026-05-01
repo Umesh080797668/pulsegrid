@@ -75,6 +75,16 @@ export class AnalyticsController {
   }
 
   /**
+   * GET /analytics/connectors/health
+   * Returns uptime and error rate per connector (reads Redis counters)
+   */
+  @Get('connectors/health')
+  async getConnectorsHealth(): Promise<any> {
+    this.logger.log('Fetching connectors health');
+    return this.analyticsService.getConnectorsHealth();
+  }
+
+  /**
    * GET /analytics/errors?workspaceId=...&limit=20
    * Get recent flow errors
    */
@@ -160,5 +170,19 @@ export class AnalyticsController {
       recentErrorCount: errors.length,
       recentErrors: errors.slice(0, 3),
     };
+  }
+
+  /**
+   * GET /analytics/connectors/health?connector=...
+   * Get connector health metrics from Redis circuit breaker counters
+   */
+  @Get('connectors/health')
+  async getConnectorsHealth(
+    @Query('connector') filterConnector?: string,
+  ): Promise<any> {
+    this.logger.log(
+      `Fetching connector health metrics${filterConnector ? ` for ${filterConnector}` : ''}`,
+    );
+    return this.analyticsService.getConnectorHealthMetrics(filterConnector);
   }
 }

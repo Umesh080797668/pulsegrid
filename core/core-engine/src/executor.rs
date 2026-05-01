@@ -64,6 +64,70 @@ impl FlowExecutor {
         Ok(false) // Not a duplicate
     }
 
+    /// Track connector call for health monitoring
+    async fn track_connector_call(&self, connector: &str) -> Result<(), String> {
+        let redis_url = "redis://127.0.0.1:6379/";
+        if let Ok(client) = redis::Client::open(redis_url) {
+            if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                let window = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() / 300; // 5-minute window
+                
+                let calls_key = format!("connector:calls:{}:{}", connector, window);
+                use redis::AsyncCommands;
+                let _: () = con.incr(&calls_key, 1).await.unwrap_or_default();
+                let _: () = con.expire(&calls_key, 600).await.unwrap_or_default();
+            }
+        }
+        Ok(())
+    }
+
+    /// Track connector error for health monitoring
+    async fn track_connector_error(&self, connector: &str) -> Result<(), String> {
+        let redis_url = "redis://127.0.0.1:6379/";
+        if let Ok(client) = redis::Client::open(redis_url) {
+            if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                let window = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() / 300; // 5-minute window
+                
+                let errors_key = format!("connector:errors:{}:{}", connector, window);
+                use redis::AsyncCommands;
+                let _: () = con.incr(&errors_key, 1).await.unwrap_or_default();
+                let _: () = con.expire(&errors_key, 600).await.unwrap_or_default();
+            }
+        }
+        Ok(())
+    }
+
+    /// Check if connector circuit breaker is open (error rate > 50%)
+    async fn is_circuit_open(&self, connector: &str) -> Result<bool, String> {
+        let redis_url = "redis://127.0.0.1:6379/";
+        if let Ok(client) = redis::Client::open(redis_url) {
+            if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                let window = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() / 300; // 5-minute window
+                
+                let calls_key = format!("connector:calls:{}:{}", connector, window);
+                let errors_key = format!("connector:errors:{}:{}", connector, window);
+                
+                use redis::AsyncCommands;
+                let calls_count: i32 = con.get(&calls_key).await.unwrap_or(0);
+                let errors_count: i32 = con.get(&errors_key).await.unwrap_or(0);
+                
+                if calls_count > 0 {
+                    let error_rate = errors_count as f64 / calls_count as f64;
+                    return Ok(error_rate > 0.5); // Circuit open if error rate > 50%
+                }
+            }
+        }
+        Ok(false)
+    }
+
     pub fn matches_trigger(&self, trigger: &TriggerDefinition, event: &PulseEvent) -> bool {
         if !trigger.connector.is_empty() {
             match event.source.as_deref() {
@@ -997,6 +1061,18 @@ impl FlowExecutor {
         action: &str,
         input: &Value,
     ) -> Result<Value, String> {
+        // Check circuit breaker before executing connector action
+        if self.is_circuit_open(connector).await.unwrap_or(false) {
+            self.track_connector_error(connector).await.ok();
+            return Err(format!(
+                "Circuit breaker open for connector '{}': error rate exceeded threshold",
+                connector
+            ));
+        }
+
+        // Track the call
+        self.track_connector_call(connector).await.ok();
+
         let get_required = |key: &str| -> Result<String, String> {
             input
                 .get(key)
@@ -1013,7 +1089,8 @@ impl FlowExecutor {
             })
         };
 
-        match connector {
+        // Execute the connector action
+        let result = match connector {
             "http" => {
                 let method = input
                     .get("method")
@@ -1233,7 +1310,14 @@ impl FlowExecutor {
                     Err(format!("unsupported connector: {connector}"))
                 }
             }
+        };
+
+        // Track errors on failure and return result
+        if result.is_err() {
+            self.track_connector_error(connector).await.ok();
         }
+
+        result
     }
 }
 

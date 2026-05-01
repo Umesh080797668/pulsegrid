@@ -1,5 +1,6 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
+import { Redis } from 'ioredis';
 
 export interface FlowMetrics {
   flowId: string;
@@ -43,7 +44,10 @@ export interface WorkspaceAnalytics {
 export class AnalyticsService {
   private readonly logger = new Logger('AnalyticsService');
 
-  constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
+  constructor(
+    @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
+  ) {}
 
   /**
    * Get workspace analytics overview for a specific period
@@ -104,6 +108,50 @@ export class AnalyticsService {
         `Error fetching connector metrics for workspace ${workspaceId}:`,
         error,
       );
+      return [];
+    }
+  }
+
+  /**
+   * Get connectors health by reading Redis counters created by core executor
+   */
+  async getConnectorsHealth(): Promise<Array<{ connector: string; callCount: number; errorCount: number; errorRate: number; uptime: number }>> {
+    try {
+      const keys = await this.redis.keys('connector:calls:*');
+      const by_connector: Record<string, { calls: number; errors: number }> = {};
+
+      for (const k of keys) {
+        // key format: connector:calls:{connector}:{window}
+        let parts = k.split(':');
+        if (parts.length < 4) continue;
+        let connector = parts.slice(2, parts.length - 1).join(':');
+        const val = parseInt((await this.redis.get(k)) || '0', 10);
+        if (!by_connector[connector]) by_connector[connector] = { calls: 0, errors: 0 };
+        by_connector[connector].calls += val;
+      }
+
+      const errKeys = await this.redis.keys('connector:errors:*');
+      for (const k of errKeys) {
+        let parts = k.split(':');
+        if (parts.length < 4) continue;
+        let connector = parts.slice(2, parts.length - 1).join(':');
+        const val = parseInt((await this.redis.get(k)) || '0', 10);
+        if (!by_connector[connector]) by_connector[connector] = { calls: 0, errors: 0 };
+        by_connector[connector].errors += val;
+      }
+
+      return Object.entries(by_connector).map(([connector, v]) => {
+        const errorRate = v.calls === 0 ? 0 : v.errors as number / (v.calls as number);
+        return {
+          connector,
+          callCount: v.calls,
+          errorCount: v.errors,
+          errorRate,
+          uptime: Math.max(0, 1 - errorRate),
+        };
+      });
+    } catch (error) {
+      this.logger.error('Failed to compute connectors health', error);
       return [];
     }
   }
@@ -187,6 +235,84 @@ export class AnalyticsService {
   calculateSuccessRate(successful: number, total: number): number {
     if (total === 0) return 0;
     return Math.round((successful / total) * 100);
+  }
+
+  /**
+   * Get connector health metrics from Redis circuit breaker counters
+   */
+  async getConnectorHealthMetrics(filterConnector?: string) {
+    try {
+      const metrics: any[] = [];
+
+      // Get all connector health keys from Redis
+      const pattern = 'connector:calls:*';
+      const keys = await this.redis.keys(pattern);
+
+      // Extract unique connectors and their latest windows
+      const connectorWindows = new Map<string, number>();
+
+      for (const key of keys) {
+        // Pattern: connector:calls:{connector}:{window}
+        const parts = key.split(':');
+        if (parts.length === 4) {
+          const connector = parts[2];
+          const window = parseInt(parts[3], 10);
+
+          if (filterConnector && connector !== filterConnector) {
+            continue;
+          }
+
+          // Store the latest window for each connector
+          const existing = connectorWindows.get(connector) || 0;
+          if (window > existing) {
+            connectorWindows.set(connector, window);
+          }
+        }
+      }
+
+      // Fetch metrics for each connector's latest window
+      for (const [connector, window] of connectorWindows) {
+        const callsKey = `connector:calls:${connector}:${window}`;
+        const errorsKey = `connector:errors:${connector}:${window}`;
+
+        const callsStr = await this.redis.get(callsKey);
+        const errorsStr = await this.redis.get(errorsKey);
+
+        const calls = callsStr ? parseInt(callsStr, 10) : 0;
+        const errors = errorsStr ? parseInt(errorsStr, 10) : 0;
+
+        const errorRate = calls > 0 ? errors / calls : 0;
+        const uptime = 1 - errorRate;
+
+        metrics.push({
+          connector,
+          error_rate: parseFloat(errorRate.toFixed(4)),
+          uptime: parseFloat(uptime.toFixed(4)),
+          calls,
+          errors,
+          window: new Date(window * 300 * 1000).toISOString(),
+        });
+      }
+
+      // Sort by connector name
+      metrics.sort((a, b) => a.connector.localeCompare(b.connector));
+
+      this.logger.debug(
+        `Returning health metrics for ${metrics.length} connectors`,
+      );
+
+      return {
+        connectors: metrics,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (err) {
+      this.logger.error('Failed to get connector health metrics', err);
+      return {
+        connectors: [],
+        timestamp: new Date().toISOString(),
+        error: 'Failed to retrieve connector health metrics',
+      };
+    }
   }
 
   /**

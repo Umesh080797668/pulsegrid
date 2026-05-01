@@ -11,6 +11,7 @@ import { EventsGateway } from './events.gateway';
 import { MarketModule } from './market/market.module';
 import { AiModule } from './ai/ai.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { GuardIngestModule } from './guard-ingest/guard-ingest.module';
 import { GraphqlModule } from './graphql/graphql.module';
 import { FlowsModule } from './flows/flows.module';
 import { ConnectorsModule } from './connectors/connectors.module';
@@ -31,6 +32,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     FlowsModule,
     ConnectorsModule,
     EventsModule,
+    GuardIngestModule,
     ClientsModule.register([
       {
         name: 'PULSECORE_PACKAGE',

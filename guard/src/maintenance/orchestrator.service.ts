@@ -1,0 +1,120 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { GuardEvent, TriageResult, MaintenanceResult } from '../types';
+import { Redis } from 'ioredis';
+import { Pool } from 'pg';
+
+@Injectable()
+export class MaintenanceOrchestratorService {
+  private readonly logger = new Logger('MaintenanceOrchestratorService');
+  private redis: Redis | null = null;
+  private pgPool: Pool | null = null;
+
+  constructor() {
+    this.initializeConnections();
+  }
+
+  private async initializeConnections() {
+    if (!this.redis) {
+      const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+      this.redis = new Redis(redisUrl);
+    }
+
+    if (!this.pgPool) {
+      const { Pool: PgPool } = require('pg');
+      this.pgPool = new PgPool({
+        connectionString: process.env.DATABASE_URL,
+      });
+    }
+  }
+
+  async execute(
+    event: GuardEvent,
+    triage: TriageResult,
+  ): Promise<MaintenanceResult> {
+    await this.initializeConnections();
+
+    switch (triage.maintenance_scope) {
+      case 'none':
+        this.logger.log(
+          `Event ${event.id}: no maintenance action (warning level)`,
+        );
+        return { scope: 'none', pausedFlows: [] };
+
+      case 'flows_only':
+        return await this.pauseAffectedFlows(event, triage);
+
+      case 'full':
+        return await this.triggerFullMaintenance(event, triage);
+
+      default:
+        return { scope: 'none', pausedFlows: [] };
+    }
+  }
+
+  private async pauseAffectedFlows(
+    event: GuardEvent,
+    triage: TriageResult,
+  ): Promise<MaintenanceResult> {
+    try {
+      const pausedFlows: string[] = [];
+
+      for (const flowId of event.affected_flow_ids) {
+        // Would call gRPC to PulseCore to disable flow
+        // For now, just track it
+        pausedFlows.push(flowId);
+        this.logger.log(`Paused flow ${flowId} due to event ${event.id}`);
+      }
+
+      // Store maintenance state in Redis
+      if (this.redis) {
+        const maintenanceKey = `guard:maintenance:${event.tenant_id}:flows`;
+        await this.redis.setex(
+          maintenanceKey,
+          86400, // 24 hours
+          JSON.stringify({
+            pausedFlows,
+            reason: triage.root_cause,
+            since: new Date().toISOString(),
+            eventId: event.id,
+          }),
+        );
+      }
+
+      return { scope: 'flows_only', pausedFlows };
+    } catch (err) {
+      this.logger.error('Failed to pause affected flows', err);
+      return { scope: 'flows_only', pausedFlows: [] };
+    }
+  }
+
+  private async triggerFullMaintenance(
+    event: GuardEvent,
+    triage: TriageResult,
+  ): Promise<MaintenanceResult> {
+    try {
+      // Set full maintenance mode in Redis
+      if (this.redis) {
+        const maintenanceKey = `guard:maintenance:${event.tenant_id}`;
+        await this.redis.setex(
+          maintenanceKey,
+          86400, // 24 hours
+          JSON.stringify({
+            reason: triage.root_cause,
+            since: new Date().toISOString(),
+            eventId: event.id,
+            severity: 'critical',
+          }),
+        );
+
+        this.logger.warn(
+          `Triggered FULL maintenance mode for tenant ${event.tenant_id} due to event ${event.id}`,
+        );
+      }
+
+      return { scope: 'full', pausedFlows: [] };
+    } catch (err) {
+      this.logger.error('Failed to trigger full maintenance', err);
+      return { scope: 'full', pausedFlows: [] };
+    }
+  }
+}
