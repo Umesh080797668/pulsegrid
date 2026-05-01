@@ -581,40 +581,139 @@ pub mod flow_builder {
 pub mod failure_analysis {
     use serde_json::{json, Value};
 
-    /// Suggests plain-English fixes for failed flow runs
+    /// Analyzes a failed flow run and provides actionable troubleshooting suggestions.
+    ///
+    /// Uses LLM to:
+    /// 1. Identify the root cause from error logs and stack traces
+    /// 2. Suggest connector-specific remediations (API keys, permissions, timeouts)
+    /// 3. Recommend configuration changes to prevent recurrence
+    /// 4. Provide step-by-step resolution instructions
+    ///
+    /// Supports both Anthropic (Claude) and OpenAI (GPT-4).
     pub async fn analyze_failure(error_log: &str) -> Result<String, String> {
+        let provider = detect_provider()?;
+        
+        match provider {
+            FailureAnalysisProvider::Anthropic => analyze_with_anthropic(error_log).await,
+            FailureAnalysisProvider::OpenAI => analyze_with_openai(error_log).await,
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum FailureAnalysisProvider {
+        Anthropic,
+        OpenAI,
+    }
+
+    fn detect_provider() -> Result<FailureAnalysisProvider, String> {
+        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            Ok(FailureAnalysisProvider::Anthropic)
+        } else if std::env::var("OPENAI_API_KEY").is_ok() {
+            Ok(FailureAnalysisProvider::OpenAI)
+        } else {
+            Err("Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set".to_string())
+        }
+    }
+
+    async fn analyze_with_anthropic(error_log: &str) -> Result<String, String> {
         let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
-        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-2.1".to_string());
+        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-opus-20240229".to_string());
         let client = reqwest::Client::new();
-        let url = "https://api.anthropic.com/v1/complete";
 
-        let system_instruction = format!(
-            "You are PulseGrid's troubleshooting assistant. Analyze the following workflow error log and return a concise, user-facing explanation and actionable next steps. Respond in plain English.\n\nError Log:\n{}",
-            error_log
-        );
+        let system_instruction = "You are PulseGrid's AI troubleshooting assistant. Analyze the error log and provide:\n\
+            1. Root cause analysis (in 1-2 sentences)\n\
+            2. Specific remediation steps (numbered list)\n\
+            3. Prevention recommendations\n\
+            4. Related documentation or connector setup tips\n\
+            Respond in clear, actionable plain English suitable for users.";
 
+        let url = "https://api.anthropic.com/v1/messages";
         let request_body = json!({
             "model": model,
-            "prompt": system_instruction,
-            "max_tokens": 800,
-            "temperature": 0.0,
-            "stop_sequences": ["\n\nHuman:"]
+            "max_tokens": 1200,
+            "system": system_instruction,
+            "messages": [{
+                "role": "user",
+                "content": format!("Analyze this flow failure and suggest fixes:\n\n{}", error_log)
+            }]
         });
 
         let response = client
             .post(url)
             .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Anthropic request failed: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(format!("API request failed: HTTP {}", response.status()));
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("Anthropic API error ({}): {}", status, error_text));
         }
 
-        let resp_json: Value = response.json().await.map_err(|e| e.to_string())?;
-        let analysis = resp_json["completion"].as_str().unwrap_or("Check your API permissions and connection mapping.").to_string();
+        let resp_json: Value = response.json().await.map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+        
+        let analysis = resp_json["content"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("text"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unable to analyze failure; please review error logs manually.")
+            .to_string();
+
+        Ok(analysis)
+    }
+
+    async fn analyze_with_openai(error_log: &str) -> Result<String, String> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set".to_string())?;
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4-turbo".to_string());
+        let client = reqwest::Client::new();
+
+        let system_instruction = "You are PulseGrid's AI troubleshooting assistant. Analyze the error log and provide:\n\
+            1. Root cause analysis (in 1-2 sentences)\n\
+            2. Specific remediation steps (numbered list)\n\
+            3. Prevention recommendations\n\
+            4. Related documentation or connector setup tips\n\
+            Respond in clear, actionable plain English suitable for users.";
+
+        let url = "https://api.openai.com/v1/chat/completions";
+        let request_body = json!({
+            "model": model,
+            "max_tokens": 1200,
+            "temperature": 0.2,
+            "system": system_instruction,
+            "messages": [{
+                "role": "user",
+                "content": format!("Analyze this flow failure and suggest fixes:\n\n{}", error_log)
+            }]
+        });
+
+        let response = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("OpenAI request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("OpenAI API error ({}): {}", status, error_text));
+        }
+
+        let resp_json: Value = response.json().await.map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
+
+        let analysis = resp_json["choices"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("message"))
+            .and_then(|msg| msg.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unable to analyze failure; please review error logs manually.")
+            .to_string();
 
         Ok(analysis)
     }
