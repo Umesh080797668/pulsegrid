@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Injectable, Module, OnModuleDestroy, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Injectable, Logger, Module, OnModuleDestroy, Post, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Request as ExpressRequest } from 'express';
 import { Pool } from 'pg';
@@ -22,35 +22,44 @@ type CreatePurchaseIntentParams = {
 
 @Injectable()
 export class StripeConnectService implements OnModuleDestroy {
-  private readonly pool: Pool;
+  private readonly logger = new Logger('StripeConnectService');
+  private readonly pool: Pool | null;
   private readonly stripe: any;
+  private readonly enabled: boolean;
 
   constructor() {
     const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
-      throw new Error('DATABASE_URL must be set for Stripe Connect persistence');
-    }
-
     const apiKey = process.env.STRIPE_SECRET_KEY;
-    if (!apiKey) {
-      throw new Error('STRIPE_SECRET_KEY must be set for Stripe Connect');
+
+    if (!connectionString || !apiKey) {
+      this.enabled = false;
+      this.pool = null;
+      this.stripe = null;
+      this.logger.warn(
+        'Stripe Connect disabled: set DATABASE_URL and STRIPE_SECRET_KEY to enable market payout features.',
+      );
+      return;
     }
 
+    this.enabled = true;
     this.pool = new Pool({ connectionString });
     this.stripe = new Stripe(apiKey);
     void this.ensureSchema();
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.pool.end();
+    if (this.pool) {
+      await this.pool.end();
+    }
   }
 
   async onboardCreator(workspaceId: string): Promise<{ accountId: string; url: string }> {
+    const { pool, stripe } = this.getClients();
     const workspace = await this.getWorkspace(workspaceId);
     let accountId = workspace.stripe_connect_account_id;
 
     if (!accountId) {
-      const account = await this.stripe.accounts.create({
+      const account = await stripe.accounts.create({
         type: 'express',
         country: process.env.STRIPE_CONNECT_COUNTRY || 'US',
         capabilities: {
@@ -61,7 +70,7 @@ export class StripeConnectService implements OnModuleDestroy {
 
       accountId = account.id;
 
-      await this.pool.query(
+      await pool.query(
         'UPDATE workspaces SET stripe_connect_account_id = $1 WHERE id = $2',
         [accountId, workspaceId],
       );
@@ -72,7 +81,7 @@ export class StripeConnectService implements OnModuleDestroy {
       throw new BadRequestException('Unable to resolve Stripe Connect account id');
     }
 
-    const accountLink = await this.stripe.accountLinks.create({
+    const accountLink = await stripe.accountLinks.create({
       account: accountId,
       refresh_url: refreshUrl,
       return_url: returnUrl,
@@ -86,11 +95,13 @@ export class StripeConnectService implements OnModuleDestroy {
   }
 
   async getWorkspaceStripeConnectAccountId(workspaceId: string): Promise<string | null> {
+    this.getClients();
     const workspace = await this.getWorkspace(workspaceId);
     return workspace.stripe_connect_account_id;
   }
 
   async createTemplatePurchaseIntent(params: CreatePurchaseIntentParams) {
+    const { stripe } = this.getClients();
     if (!Number.isInteger(params.amountCents) || params.amountCents <= 0) {
       throw new BadRequestException('amountCents must be a positive integer');
     }
@@ -100,7 +111,7 @@ export class StripeConnectService implements OnModuleDestroy {
     }
 
     const feeAmount = Math.max(0, Math.round(params.amountCents * 0.3));
-    return this.stripe.paymentIntents.create({
+    return stripe.paymentIntents.create({
       amount: params.amountCents,
       currency: (params.currency || 'usd').toLowerCase(),
       transfer_data: {
@@ -114,7 +125,8 @@ export class StripeConnectService implements OnModuleDestroy {
   }
 
   private async getWorkspace(workspaceId: string): Promise<WorkspaceStripeRow> {
-    const result = await this.pool.query<WorkspaceStripeRow>(
+    const { pool } = this.getClients();
+    const result = await pool.query<WorkspaceStripeRow>(
       'SELECT id, stripe_connect_account_id FROM workspaces WHERE id = $1',
       [workspaceId],
     );
@@ -136,10 +148,22 @@ export class StripeConnectService implements OnModuleDestroy {
   }
 
   private async ensureSchema(): Promise<void> {
+    if (!this.pool) {
+      return;
+    }
     await this.pool.query(`
       ALTER TABLE workspaces
       ADD COLUMN IF NOT EXISTS stripe_connect_account_id TEXT
     `);
+  }
+
+  private getClients(): { pool: Pool; stripe: any } {
+    if (!this.enabled || !this.pool || !this.stripe) {
+      throw new ServiceUnavailableException(
+        'Stripe Connect is not configured on this deployment.',
+      );
+    }
+    return { pool: this.pool, stripe: this.stripe };
   }
 }
 

@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { GuardIngestController, GuardEventDto } from './guard-ingest.controller';
+import { GuardIngestController } from './guard-ingest.controller';
 
 @Module({
   controllers: [GuardIngestController],
   providers: [],
-  exports: [GuardEventDto],
+  exports: [],
 })
 export class GuardIngestModule {}

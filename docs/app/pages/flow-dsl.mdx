@@ -1,0 +1,39 @@
+---
+title: Flow DSL Reference
+---
+
+# Flow DSL (JSON stored in PostgreSQL)
+
+Below is a canonical Flow DSL JSON example (copied from the blueprint):
+
+```json
+{
+  "id": "flow_abc123",
+  "name": "New Shopify Order → Fulfilment",
+  "trigger": {
+    "connector": "shopify",
+    "event": "order.created",
+    "filters": [{ "field": "order.total_price", "op": "gt", "value": "0" }]
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "action",
+      "connector": "airtable",
+      "action": "create_record",
+      "input": { "table": "Orders", "fields": { "OrderID": "{{trigger.id}}", "Total": "{{trigger.total_price}}" } }
+    },
+    {
+      "id": "step_2",
+      "type": "action",
+      "connector": "slack",
+      "action": "send_message",
+      "input": { "channel": "#fulfilment", "text": "New order {{trigger.id}} for ${{trigger.total_price}}" },
+      "depends_on": ["step_1"]
+    }
+  ],
+  "error_policy": { "retry_count": 3, "retry_delay_seconds": 30, "on_failure": "notify_owner" }
+}
+```
+
+Use this as the canonical example for authoring Flow DSL definitions.

@@ -1,0 +1,12 @@
+---
+title: Authentication Guide
+---
+
+# Authentication Guide
+
+This page describes authentication flows used by PulseGrid API and how to obtain tokens.
+
+- Management API keys: include `X-Management-Api-Key` header for management endpoints.
+- JWT auth: use `Authorization: Bearer <token>` for user-scoped endpoints.
+
+For more details, see the `api-gateway` source and the auth connector implementations.

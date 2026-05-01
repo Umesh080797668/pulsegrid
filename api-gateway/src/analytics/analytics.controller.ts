@@ -75,16 +75,6 @@ export class AnalyticsController {
   }
 
   /**
-   * GET /analytics/connectors/health
-   * Returns uptime and error rate per connector (reads Redis counters)
-   */
-  @Get('connectors/health')
-  async getConnectorsHealth(): Promise<any> {
-    this.logger.log('Fetching connectors health');
-    return this.analyticsService.getConnectorsHealth();
-  }
-
-  /**
    * GET /analytics/errors?workspaceId=...&limit=20
    * Get recent flow errors
    */

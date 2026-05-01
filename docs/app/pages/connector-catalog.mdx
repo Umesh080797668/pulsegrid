@@ -1,0 +1,21 @@
+---
+title: Connector Catalog
+---
+
+# Connector Catalog
+
+This page should auto-render the connector catalog from the running API Gateway endpoint at `/connectors/catalog`.
+
+Example fetch snippet to render at build or runtime (adjust as appropriate):
+
+```js
+export async function getServerSideProps() {
+  const res = await fetch('http://localhost:3000/connectors/catalog');
+  const catalog = await res.json();
+  return { props: { catalog } };
+}
+
+// Render `catalog` in the page body
+```
+
+If the endpoint is not available at build time, fetch at runtime from the browser or provide a prebuilt JSON snapshot in `docs/data/`.

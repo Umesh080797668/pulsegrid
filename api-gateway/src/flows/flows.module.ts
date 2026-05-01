@@ -5,6 +5,7 @@ import { FlowsController } from './flows.controller';
 import { FlowsService } from './flows.service';
 import { FlowValidationService } from './flow-validation.service';
 import { AuthModule } from '../auth/auth.module';
+import { ConnectorsModule } from '../connectors/connectors.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AuthModule } from '../auth/auth.module';
       },
     ]),
     AuthModule,
+    ConnectorsModule,
   ],
   controllers: [FlowsController],
   providers: [FlowsService, FlowValidationService],
