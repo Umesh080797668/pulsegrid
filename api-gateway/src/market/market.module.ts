@@ -4,6 +4,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
 import { join } from 'path';
 import { AuthModule } from '../auth/auth.module';
 import { StripeConnectModule } from '../stripe/stripe-connect.module';
+import { MarketReviewWorker } from './market-review.worker';
 
 @Module({
   imports: [
@@ -22,6 +23,6 @@ import { StripeConnectModule } from '../stripe/stripe-connect.module';
     ]),
   ],
   controllers: [MarketController],
-  providers: [],
+  providers: [MarketReviewWorker],
 })
 export class MarketModule {}
