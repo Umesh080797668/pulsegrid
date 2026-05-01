@@ -124,6 +124,38 @@ export class StripeConnectService implements OnModuleDestroy {
     });
   }
 
+  async createTemplateCheckoutSession(params: { amountCents: number; sellerAccountId: string; successUrl: string; cancelUrl: string; currency?: string }) {
+    const { stripe } = this.getClients();
+    if (!Number.isInteger(params.amountCents) || params.amountCents <= 0) {
+      throw new BadRequestException('amountCents must be a positive integer');
+    }
+
+    const feeAmount = Math.max(0, Math.round(params.amountCents * 0.3));
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      line_items: [
+        {
+          price_data: {
+            currency: (params.currency || 'usd').toLowerCase(),
+            product_data: { name: 'Template purchase' },
+            unit_amount: params.amountCents,
+          },
+          quantity: 1,
+        },
+      ],
+      payment_intent_data: {
+        application_fee_amount: feeAmount,
+        transfer_data: { destination: params.sellerAccountId },
+      },
+      success_url: params.successUrl,
+      cancel_url: params.cancelUrl,
+      automatic_tax: { enabled: false },
+    });
+
+    return session;
+  }
+
   private async getWorkspace(workspaceId: string): Promise<WorkspaceStripeRow> {
     const { pool } = this.getClients();
     const result = await pool.query<WorkspaceStripeRow>(

@@ -172,6 +172,147 @@ fn month_start_utc() -> chrono::NaiveDate {
     chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap_or(now)
 }
 
+fn is_polling_connector(connector: &str) -> bool {
+    let normalized = connector.trim().to_lowercase();
+    !matches!(normalized.as_str(), "webhook" | "schedule")
+}
+
+fn trigger_poll_interval_seconds(definition: &FlowDefinition) -> i64 {
+    definition
+        .trigger
+        .filters
+        .iter()
+        .find(|filter| {
+            matches!(
+                filter.field.as_str(),
+                "poll_interval_seconds" | "poll_every_seconds" | "interval_seconds" | "poll_interval"
+            )
+        })
+        .and_then(|filter| {
+            filter
+                .value
+                .as_i64()
+                .or_else(|| filter.value.as_str().and_then(|value| value.parse::<i64>().ok()))
+        })
+        .unwrap_or(300)
+        .clamp(30, 3600)
+}
+
+async fn publish_event_to_redis(event: &PulseEvent) {
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    if let Ok(client) = redis::Client::open(redis_url) {
+        if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+            let workspace_stream = workspace_stream_key(event.tenant_id);
+            let payload = serde_json::to_string(event).unwrap_or_default();
+            let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, &workspace_stream, "*", &[("payload", payload)]).await;
+        }
+    }
+}
+
+async fn start_schedule_worker(cron_pool: sqlx::PgPool) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        let rows = sqlx::query!(
+            r#"SELECT id, workspace_id, definition, last_run_at FROM flows WHERE enabled = true"#
+        )
+        .fetch_all(&cron_pool)
+        .await
+        .unwrap_or_default();
+
+        for row in rows {
+            let def: crate::models::FlowDefinition = match serde_json::from_value(row.definition) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            if def.trigger.connector != "schedule" {
+                continue;
+            }
+
+            let cron_val = def.trigger.filters.iter().find(|f| f.field == "cron").map(|f| &f.value);
+            if let Some(serde_json::Value::String(cron_expr)) = cron_val {
+                let last = row.last_run_at.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
+
+                if let Ok(schedule) = cron::Schedule::from_str(cron_expr) {
+                    if let Some(next) = schedule.after(&last).next() {
+                        if chrono::Utc::now() >= next {
+                            let event = crate::models::PulseEvent {
+                                id: uuid::Uuid::new_v4(),
+                                tenant_id: row.workspace_id.unwrap_or_default(),
+                                source: Some("schedule".into()),
+                                event_type: def.trigger.event.clone(),
+                                data: serde_json::json!({
+                                    "triggered_at": chrono::Utc::now().to_rfc3339(),
+                                    "flow_id": row.id,
+                                    "cron": cron_expr,
+                                }),
+                                sub_flow_depth: None,
+                            };
+
+                            publish_event_to_redis(&event).await;
+                            let _ = sqlx::query!("UPDATE flows SET last_run_at = NOW() WHERE id = $1", row.id as _)
+                                .execute(&cron_pool)
+                                .await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn start_polling_worker(poll_pool: sqlx::PgPool) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        let rows = sqlx::query!(
+            r#"SELECT id, workspace_id, definition, last_run_at FROM flows WHERE enabled = true"#
+        )
+        .fetch_all(&poll_pool)
+        .await
+        .unwrap_or_default();
+
+        for row in rows {
+            let def: crate::models::FlowDefinition = match serde_json::from_value(row.definition) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            if !is_polling_connector(&def.trigger.connector) {
+                continue;
+            }
+
+            let poll_interval_seconds = trigger_poll_interval_seconds(&def);
+            let last_polled_at = row.last_run_at.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
+            let now = chrono::Utc::now();
+
+            if now.signed_duration_since(last_polled_at).num_seconds() < poll_interval_seconds {
+                continue;
+            }
+
+            let event = crate::models::PulseEvent {
+                id: uuid::Uuid::new_v4(),
+                tenant_id: row.workspace_id.unwrap_or_default(),
+                source: Some(def.trigger.connector.clone()),
+                event_type: def.trigger.event.clone(),
+                data: serde_json::json!({
+                    "poll_interval_seconds": poll_interval_seconds,
+                    "polled_at": now.to_rfc3339(),
+                    "connector": def.trigger.connector,
+                    "flow_id": row.id,
+                }),
+                sub_flow_depth: None,
+            };
+
+            publish_event_to_redis(&event).await;
+            let _ = sqlx::query!("UPDATE flows SET last_run_at = NOW() WHERE id = $1", row.id as _)
+                .execute(&poll_pool)
+                .await;
+        }
+    }
+}
+
 fn is_connector_allowed(plan: &str, connector_id: &str) -> bool {
     let normalized = connector_id.trim().to_uppercase();
     if FREE_CONNECTORS.contains(&normalized.as_str()) {
@@ -629,8 +770,9 @@ async fn main() {
             .unwrap();
     });
 
-    // Spawn our background worker for cron/scheduled flows
+    // Spawn background workers for cron/scheduled flows and generic polling triggers
     let cron_pool = pool.clone();
+    let polling_pool = pool.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -638,54 +780,7 @@ async fn main() {
             .expect("failed to build cron runtime");
 
         rt.block_on(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-
-                let rows = sqlx::query!(
-                    r#"SELECT id, workspace_id, definition, last_run_at FROM flows WHERE enabled = true"#
-                )
-                .fetch_all(&cron_pool)
-                .await
-                .unwrap_or_default();
-
-                for row in rows {
-                    let def: crate::models::FlowDefinition = match serde_json::from_value(row.definition) {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
-
-                    if def.trigger.connector == "schedule" {
-                        let cron_val = def.trigger.filters.iter().find(|f| f.field == "cron").map(|f| &f.value);
-                        if let Some(serde_json::Value::String(cron_expr)) = cron_val {
-                            let last = row.last_run_at.unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(1));
-                            // parse cron and see if past due
-                            if let Ok(schedule) = cron::Schedule::from_str(cron_expr) {
-                                if let Some(next) = schedule.after(&last).next() {
-                                    if chrono::Utc::now() >= next {
-                                        // Emit event to Redis
-                                        let event = crate::models::PulseEvent {
-                                            id: uuid::Uuid::new_v4(),
-                                            tenant_id: row.workspace_id.unwrap_or_default(),
-                                            source: Some("schedule".into()),
-                                            event_type: def.trigger.event.clone(),
-                                            data: serde_json::json!({ "triggered_at": chrono::Utc::now().to_rfc3339() }),
-                                            sub_flow_depth: None,
-                                        };
-
-                                        let redis_url = "redis://127.0.0.1:6379/";
-                                        if let Ok(client) = redis::Client::open(redis_url) {
-                                            if let Ok(mut con) = client.get_multiplexed_async_connection().await {
-                                                let workspace_stream = workspace_stream_key(event.tenant_id);
-                                                let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, &workspace_stream, "*", &[("payload", serde_json::to_string(&event).unwrap())]).await;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            tokio::join!(start_schedule_worker(cron_pool), start_polling_worker(polling_pool));
         });
     });
 
@@ -1407,6 +1502,14 @@ async fn start_event_listener(
                                             }
                                         };
 
+                                        let run_metrics = sqlx::query!(
+                                            r#"SELECT started_at, COALESCE(duration_ms, 0) AS duration_ms FROM flow_runs WHERE id = $1"#,
+                                            flow_run_id as _
+                                        )
+                                        .fetch_one(&pg_pool)
+                                        .await
+                                        .ok();
+
                                         // Resolve execution order (dependency graph)
                                         let execution_order = match executor
                                             .resolve_execution_order(&flow_def.steps)
@@ -1587,7 +1690,7 @@ async fn start_event_listener(
                                             "failed"
                                         };
                                         let _ = sqlx::query!(
-                                            r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE id = $3"#,
+                                            r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), duration_ms = (EXTRACT(EPOCH FROM NOW() - started_at) * 1000)::INT, steps_log = $2 WHERE id = $3"#,
                                             final_status,
                                             steps_log,
                                             flow_run_id as _
@@ -1603,7 +1706,12 @@ async fn start_event_listener(
                                             let run_id = flow_run_id;
                                             let tenant_id = event.tenant_id;
                                             let fid = flow_id;
-                                            let now = chrono::Utc::now();
+                                            let started_at = run_metrics.as_ref().map(|row| row.started_at).unwrap_or_else(chrono::Utc::now);
+                                            let duration_ms = run_metrics
+                                                .as_ref()
+                                                .and_then(|row| row.duration_ms)
+                                                .unwrap_or(0)
+                                                .max(0) as u32;
                                             let status_str = final_status.to_string();
                                             let step_count = steps_log.as_array().map(|a| a.len()).unwrap_or(0) as u8;
                                             let failures = steps_log.as_array().map(|a| {
@@ -1618,14 +1726,11 @@ async fn start_event_listener(
                                                         db
                                                     );
                                                     
-                                                    // Calculate duration in milliseconds
-                                                    let duration_ms = 0u32; // TODO: Get from flow_runs table completed_at - started_at
-                                                    
                                                     let json_payload = serde_json::json!({
                                                         "run_id": run_id,
                                                         "tenant_id": tenant_id,
                                                         "flow_id": fid,
-                                                        "started_at": now,
+                                                        "started_at": started_at,
                                                         "duration_ms": duration_ms,
                                                         "status": status_str,
                                                         "steps_count": step_count,
@@ -2105,7 +2210,7 @@ async fn resume_flow_after_approval(
 
     let final_status = if all_steps_succeeded { "success" } else { "failed" };
     let _ = sqlx::query(
-        r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), steps_log = $2 WHERE id = $3"#,
+        r#"UPDATE flow_runs SET status = $1, completed_at = NOW(), duration_ms = (EXTRACT(EPOCH FROM NOW() - started_at) * 1000)::INT, steps_log = $2 WHERE id = $3"#,
     )
     .bind(final_status)
     .bind(steps_log)

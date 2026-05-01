@@ -39,15 +39,37 @@ export default function MarketPage() {
       setError('Select a workspace first');
       return;
     }
-    const response = await authenticatedFetch(`${apiBase}/market/install`, accessToken, setAccessToken, {
+    const response = await authenticatedFetch(`${apiBase}/market/templates/${templateId}/install`, accessToken, setAccessToken, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceId, templateId }),
+      body: JSON.stringify({ workspaceId }),
     });
 
     if (!response.ok) {
       setError(`Failed to install template (${response.status})`);
       return;
+    }
+
+    const payload = await response.json();
+    if (payload.requires_payment) {
+      // start hosted checkout flow
+      try {
+        const checkoutResp = await authenticatedFetch(`${apiBase}/market/templates/${templateId}/checkout`, accessToken, setAccessToken, { method: 'POST' });
+        if (!checkoutResp.ok) {
+          setError('Failed to create checkout session');
+          return;
+        }
+        const json = await checkoutResp.json();
+        if (json.url) {
+          window.location.href = json.url;
+          return;
+        }
+        setError('Checkout URL not returned');
+        return;
+      } catch (err) {
+        setError('Failed to initiate checkout');
+        return;
+      }
     }
 
     setError('');

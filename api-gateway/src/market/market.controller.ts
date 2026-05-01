@@ -190,6 +190,43 @@ export class MarketController {
     return res;
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/checkout')
+  async createCheckoutSession(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    const template = await this.getTemplateById(id);
+    const buyerWorkspaceId = req.user?.workspaceId || req.user?.sub || '';
+    if (!buyerWorkspaceId) {
+      throw new BadRequestException('Authenticated workspace id missing');
+    }
+
+    if (template.price_cents <= 0) {
+      throw new BadRequestException('Template is free');
+    }
+
+    const creatorWorkspaceId = template.creator_workspace_id;
+    if (!creatorWorkspaceId) {
+      throw new BadRequestException('Template creator workspace is missing');
+    }
+
+    const sellerAccountId = await this.stripeConnectService.getWorkspaceStripeConnectAccountId(creatorWorkspaceId);
+    if (!sellerAccountId) {
+      throw new BadRequestException('Creator has not onboarded Stripe Connect yet');
+    }
+
+    const dashboardBase = process.env.DASHBOARD_URL || 'http://localhost:3000';
+    const successUrl = `${dashboardBase}/market?purchase=success`;
+    const cancelUrl = `${dashboardBase}/market?purchase=cancel`;
+
+    const session = await this.stripeConnectService.createTemplateCheckoutSession({
+      amountCents: template.price_cents,
+      sellerAccountId,
+      successUrl,
+      cancelUrl,
+    });
+
+    return { url: session.url };
+  }
+
   private async getTemplateById(id: string): Promise<MarketTemplateResponse> {
     const res = await lastValueFrom(this.pulseCoreService.getMarketTemplate({ templateId: id }));
     const template = res as any;
