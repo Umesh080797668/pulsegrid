@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:home_widget/home_widget.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:dio/dio.dart';
 import '../services/fcm_service.dart';
+import '../services/home_widget_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -58,6 +58,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _authenticated = success;
       });
 
+      await HomeWidgetService.syncSnapshot(
+        title: 'PulseGrid',
+        message: 'Biometric access ${success ? 'enabled' : 'not confirmed'}',
+        status: success ? 'Unlocked with biometrics' : 'Biometric prompt cancelled',
+      );
+
       _showSnackBar(
         success ? 'Biometric authentication succeeded.' : 'Authentication cancelled.',
       );
@@ -68,15 +74,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _syncWidget() async {
     try {
-      await HomeWidget.saveWidgetData<String>(
-        'pulsegrid_last_sync',
-        DateTime.now().toIso8601String(),
+      await HomeWidgetService.syncSnapshot(
+        title: 'PulseGrid',
+        message: 'PulseGrid is ready for quick actions',
+        status: _authenticated ? 'Biometrics unlocked' : 'Biometrics locked',
       );
-      await HomeWidget.saveWidgetData<String>(
-        'pulsegrid_widget_message',
-        'PulseGrid is ready for quick actions',
-      );
-      await HomeWidget.updateWidget(name: 'PulseGridWidgetProvider');
 
       setState(() {
         _widgetSynced = true;

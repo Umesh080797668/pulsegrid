@@ -24,10 +24,20 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>PulseGrid uses Bluetooth to discover and pair IoT devices.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>PulseGrid uses Bluetooth to pair with nearby IoT devices.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>PulseGrid uses Face ID or Touch ID to secure sensitive actions.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

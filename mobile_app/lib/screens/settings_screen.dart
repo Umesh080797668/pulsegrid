@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:home_widget/home_widget.dart';
 import 'package:local_auth/local_auth.dart';
+import '../services/home_widget_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -34,6 +34,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _biometricReady = success;
       });
 
+      await HomeWidgetService.syncSnapshot(
+        title: 'PulseGrid',
+        message: success
+            ? 'Settings protected by biometrics'
+            : 'Biometric protection is not active',
+        status: success ? 'Biometrics enabled' : 'Biometrics inactive',
+      );
+
       _showSnackBar(
         success ? 'Biometric protection enabled.' : 'Authentication cancelled.',
       );
@@ -44,15 +52,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _refreshWidgetPayload() async {
     try {
-      await HomeWidget.saveWidgetData<String>(
-        'pulsegrid_settings_status',
-        'Biometrics ${_biometricReady ? 'enabled' : 'inactive'}',
+      await HomeWidgetService.syncSnapshot(
+        title: 'PulseGrid',
+        message: 'Biometrics ${_biometricReady ? 'enabled' : 'inactive'}',
+        status: 'Settings updated at ${DateTime.now().toLocal().toIso8601String()}',
       );
-      await HomeWidget.saveWidgetData<String>(
-        'pulsegrid_settings_updated_at',
-        DateTime.now().toIso8601String(),
-      );
-      await HomeWidget.updateWidget(name: 'PulseGridWidgetProvider');
 
       setState(() {
         _widgetUpdated = true;

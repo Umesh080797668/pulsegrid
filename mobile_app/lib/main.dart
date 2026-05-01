@@ -16,6 +16,7 @@ import 'screens/market_screen.dart';
 import 'screens/approvals_screen.dart';
 import 'screens/alert_centre_screen.dart';
 import 'services/api_service.dart';
+import 'services/home_widget_service.dart';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
@@ -40,6 +41,8 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _bootstrapSharing() async {
+    await HomeWidgetService.initialize();
+
     final initialMedia = await ReceiveSharingIntent.instance.getInitialMedia();
     if (initialMedia.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {

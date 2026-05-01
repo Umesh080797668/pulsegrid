@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -32,10 +33,19 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   Future<void> _startScan() async {
     try {
+      final supported = await FlutterBluePlus.isSupported;
+      if (!supported) {
+        _showSnackBar('Bluetooth LE is not supported on this device.');
+        return;
+      }
+
       setState(() {
         _isScanning = true;
       });
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 6));
+      await FlutterBluePlus.startScan(
+        timeout: const Duration(seconds: 6),
+        androidUsesFineLocation: Platform.isAndroid,
+      );
     } catch (e) {
       _showSnackBar('BLE scan failed: $e');
     } finally {
@@ -62,6 +72,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
   Future<void> _pairWithDevice(ScanResult result) async {
     try {
       await result.device.connect(timeout: const Duration(seconds: 12));
+      if (Platform.isAndroid) {
+        await result.device.createBond();
+      }
       setState(() {
         _pairedDeviceId = result.device.remoteId.str;
       });
