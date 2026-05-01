@@ -3,6 +3,7 @@ import { ClientGrpc } from '@nestjs/microservices';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { lastValueFrom } from 'rxjs';
 import { Request as ExpressRequest } from 'express';
+import { StripeConnectService } from '../stripe/stripe-connect.module';
 
 interface PulseCoreService {
   listMarketTemplates(data: { category: string }): any;
@@ -28,6 +29,18 @@ interface AuthenticatedRequest extends ExpressRequest {
   user?: { sub?: string; workspaceId?: string };
 }
 
+interface MarketTemplateResponse {
+  id: string;
+  title: string;
+  description: string;
+  flow_definition: unknown;
+  price_cents: number;
+  category: string;
+  published: boolean;
+  rating_avg?: number;
+  creator_workspace_id?: string;
+}
+
 interface PublishTemplateBody {
   title?: string;
   description?: string;
@@ -45,7 +58,10 @@ interface RateTemplateBody {
 export class MarketController {
   private pulseCoreService!: PulseCoreService;
 
-  constructor(@Inject('PULSECORE_PACKAGE') private client: ClientGrpc) {}
+  constructor(
+    @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
+    private readonly stripeConnectService: StripeConnectService,
+  ) {}
 
   onModuleInit() {
     this.pulseCoreService = this.client.getService<PulseCoreService>('PulseCoreService');
@@ -133,12 +149,62 @@ export class MarketController {
 
   @UseGuards(JwtAuthGuard)
   @Post(':id/install')
-  async installTemplate(@Param('id') id: string, @Request() req: any) {
+  async installTemplate(@Param('id') id: string, @Request() req: AuthenticatedRequest) {
+    const template = await this.getTemplateById(id);
+    const buyerWorkspaceId = req.user?.workspaceId || req.user?.sub || '';
+    if (!buyerWorkspaceId) {
+      throw new BadRequestException('Authenticated workspace id missing');
+    }
+
+    if (template.price_cents > 0) {
+      const creatorWorkspaceId = template.creator_workspace_id;
+      if (!creatorWorkspaceId) {
+        throw new BadRequestException('Template creator workspace is missing');
+      }
+
+      const sellerAccountId = await this.stripeConnectService.getWorkspaceStripeConnectAccountId(creatorWorkspaceId);
+      if (!sellerAccountId) {
+        throw new BadRequestException('Creator has not onboarded Stripe Connect yet');
+      }
+
+      const paymentIntent = await this.stripeConnectService.createTemplatePurchaseIntent({
+        amountCents: template.price_cents,
+        sellerAccountId,
+      });
+
+      return {
+        requires_payment: true,
+        template_id: id,
+        buyer_workspace_id: buyerWorkspaceId,
+        amount_cents: template.price_cents,
+        application_fee_amount: Math.round(template.price_cents * 0.3),
+        payment_intent_id: paymentIntent.id,
+        client_secret: paymentIntent.client_secret,
+      };
+    }
+
     const res = await lastValueFrom(this.pulseCoreService.installTemplate({ 
-        workspaceId: req.user.workspaceId, 
+        workspaceId: buyerWorkspaceId, 
         templateId: id 
     }));
     return res;
+  }
+
+  private async getTemplateById(id: string): Promise<MarketTemplateResponse> {
+    const res = await lastValueFrom(this.pulseCoreService.getMarketTemplate({ templateId: id }));
+    const template = res as any;
+
+    return {
+      id: template.id,
+      title: template.title,
+      description: template.description,
+      flow_definition: this.parseFlowDefinition(template.flow_definition_json ?? template.flowDefinitionJson),
+      price_cents: template.price_cents ?? template.priceCents,
+      category: template.category,
+      published: template.published,
+      rating_avg: template.rating_avg ?? template.ratingAvg,
+      creator_workspace_id: template.creator_workspace_id ?? template.creatorWorkspaceId,
+    };
   }
 
   private parseFlowDefinition(raw: unknown) {

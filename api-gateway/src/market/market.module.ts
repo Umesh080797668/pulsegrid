@@ -3,10 +3,12 @@ import { MarketController } from './market.controller';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { join } from 'path';
 import { AuthModule } from '../auth/auth.module';
+import { StripeConnectModule } from '../stripe/stripe-connect.module';
 
 @Module({
   imports: [
     AuthModule,
+    StripeConnectModule,
     ClientsModule.register([
       {
         name: 'PULSECORE_PACKAGE',
