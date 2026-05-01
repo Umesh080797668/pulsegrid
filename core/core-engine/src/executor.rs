@@ -5,6 +5,7 @@ use futures_util::future::join_all;
 use core_connectors::{
     Connectors, CustomConnectorConfig, DiscordConfig, GithubIssueConfig, GmailSendConfig,
     GoogleSheetsAppendConfig, HttpConfig, NotionCreatePageConfig, TelegramConfig, Credentials,
+    OAuthRefreshConfig,
 };
 use core_vm::CoreVm;
 use rhai::{Dynamic, Engine};
@@ -1089,6 +1090,36 @@ impl FlowExecutor {
             })
         };
 
+        let parse_oauth_refresh = || -> Option<OAuthRefreshConfig> {
+            let oauth = input.get("oauth_refresh")?.as_object()?;
+            let token_url = oauth.get("token_url")?.as_str()?.trim().to_string();
+            let refresh_token = oauth.get("refresh_token")?.as_str()?.trim().to_string();
+            let client_id = oauth.get("client_id")?.as_str()?.trim().to_string();
+            let client_secret = oauth.get("client_secret")?.as_str()?.trim().to_string();
+
+            if token_url.is_empty()
+                || refresh_token.is_empty()
+                || client_id.is_empty()
+                || client_secret.is_empty()
+            {
+                return None;
+            }
+
+            let scope = oauth
+                .get("scope")
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+
+            Some(OAuthRefreshConfig {
+                token_url,
+                refresh_token,
+                client_id,
+                client_secret,
+                scope,
+            })
+        };
+
         // Execute the connector action
         let result = match connector {
             "http" => {
@@ -1110,6 +1141,12 @@ impl FlowExecutor {
                     method,
                     json_body,
                     headers,
+                    oauth_refresh: parse_oauth_refresh(),
+                    oauth_access_token: input
+                        .get("oauth_access_token")
+                        .and_then(Value::as_str)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
                 };
                 connectors
                     .execute_http(&cfg)
@@ -1132,6 +1169,7 @@ impl FlowExecutor {
                     to: get_required("to")?,
                     subject: get_required("subject")?,
                     body: get_required("body")?,
+                    oauth_refresh: parse_oauth_refresh(),
                 };
                 connectors
                     .execute_gmail_send(&cfg)

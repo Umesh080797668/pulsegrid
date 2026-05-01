@@ -21,6 +21,20 @@ pub struct HttpConfig {
     pub method: String, // "GET", "POST", etc.
     pub json_body: Option<serde_json::Value>,
     pub headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    pub oauth_refresh: Option<OAuthRefreshConfig>,
+    #[serde(default)]
+    pub oauth_access_token: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OAuthRefreshConfig {
+    pub token_url: String,
+    pub refresh_token: String,
+    pub client_id: String,
+    pub client_secret: String,
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug)]
@@ -51,6 +65,8 @@ pub struct GmailSendConfig {
     pub to: String,
     pub subject: String,
     pub body: String,
+    #[serde(default)]
+    pub oauth_refresh: Option<OAuthRefreshConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1234,6 +1250,55 @@ impl Connectors {
         }
     }
 
+    async fn refresh_oauth_access_token(
+        &self,
+        oauth_refresh: &OAuthRefreshConfig,
+    ) -> Result<String, ConnectorError> {
+        validate_outbound_url(&oauth_refresh.token_url)?;
+
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", "refresh_token"),
+            ("refresh_token", oauth_refresh.refresh_token.as_str()),
+            ("client_id", oauth_refresh.client_id.as_str()),
+            ("client_secret", oauth_refresh.client_secret.as_str()),
+        ];
+
+        if let Some(scope) = oauth_refresh.scope.as_deref() {
+            if !scope.trim().is_empty() {
+                form.push(("scope", scope));
+            }
+        }
+
+        let response = self
+            .http_client
+            .post(&oauth_refresh.token_url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| ConnectorError::HttpError(format!("oauth refresh request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(ConnectorError::HttpError(format!(
+                "oauth refresh failed with status {}",
+                response.status()
+            )));
+        }
+
+        let token_payload = response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| ConnectorError::HttpError(format!("oauth refresh parse failed: {e}")))?;
+
+        let access_token = token_payload
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ConnectorError::ParseError("oauth refresh response missing access_token".into()))?
+            .to_string();
+
+        Ok(access_token)
+    }
+
     pub async fn execute_http(
         &self,
         config: &HttpConfig,
@@ -1248,11 +1313,17 @@ impl Connectors {
             _ => reqwest::Method::GET,
         };
 
-        let mut req = self.http_client.request(method, &config.url);
+        let mut req = self.http_client.request(method.clone(), &config.url);
 
         if let Some(headers) = &config.headers {
             for (k, v) in headers {
                 req = req.header(k, v);
+            }
+        }
+
+        if let Some(token) = config.oauth_access_token.as_deref() {
+            if !token.trim().is_empty() {
+                req = req.bearer_auth(token.trim());
             }
         }
 
@@ -1265,10 +1336,52 @@ impl Connectors {
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
 
-        let json_resp = resp
+        // If token expired and refresh metadata exists, refresh and retry once.
+        let mut refreshed_access_token: Option<String> = None;
+        let resp = if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(refresh_cfg) = &config.oauth_refresh {
+                let token = self.refresh_oauth_access_token(refresh_cfg).await?;
+                refreshed_access_token = Some(token.clone());
+
+                let mut retry_req = self.http_client.request(method, &config.url);
+                if let Some(headers) = &config.headers {
+                    for (k, v) in headers {
+                        retry_req = retry_req.header(k, v);
+                    }
+                }
+                if let Some(body) = &config.json_body {
+                    retry_req = retry_req.json(body);
+                }
+                retry_req = retry_req.bearer_auth(token);
+
+                retry_req
+                    .send()
+                    .await
+                    .map_err(|e| ConnectorError::HttpError(e.to_string()))?
+            } else {
+                resp
+            }
+        } else {
+            resp
+        };
+
+        if !resp.status().is_success() {
+            return Err(ConnectorError::HttpError(format!(
+                "http connector request failed with status {}",
+                resp.status()
+            )));
+        }
+
+        let mut json_resp = resp
             .json::<serde_json::Value>()
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+
+        if let Some(token) = refreshed_access_token {
+            if let Some(map) = json_resp.as_object_mut() {
+                map.insert("_refreshed_access_token".to_string(), serde_json::Value::String(token));
+            }
+        }
 
         Ok(json_resp)
     }
@@ -1300,6 +1413,26 @@ impl Connectors {
             .await
             .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
 
+        let mut refreshed_access_token: Option<String> = None;
+        let resp = if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(refresh_cfg) = &config.oauth_refresh {
+                let token = self.refresh_oauth_access_token(refresh_cfg).await?;
+                refreshed_access_token = Some(token.clone());
+                self
+                    .http_client
+                    .post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
+                    .bearer_auth(token)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| ConnectorError::HttpError(e.to_string()))?
+            } else {
+                resp
+            }
+        } else {
+            resp
+        };
+
         if !resp.status().is_success() {
             return Err(ConnectorError::HttpError(format!(
                 "gmail send failed with status {}",
@@ -1307,9 +1440,18 @@ impl Connectors {
             )));
         }
 
-        resp.json::<serde_json::Value>()
+        let mut payload = resp
+            .json::<serde_json::Value>()
             .await
-            .map_err(|e| ConnectorError::HttpError(e.to_string()))
+            .map_err(|e| ConnectorError::HttpError(e.to_string()))?;
+
+        if let Some(token) = refreshed_access_token {
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("_refreshed_access_token".to_string(), serde_json::Value::String(token));
+            }
+        }
+
+        Ok(payload)
     }
 
     pub async fn execute_github_issue_create(
