@@ -393,64 +393,188 @@ pub mod pattern_detection {
 pub mod flow_builder {
     use serde_json::{json, Value};
 
-    /// Generates Flow DSL from natural language prompt
+    /// Model providers supported for flow generation
+    #[derive(Debug, Clone)]
+    enum LLMProvider {
+        Anthropic,
+        OpenAI,
+    }
+
+    /// Generates Flow DSL from natural language prompt using LLM.
+    ///
+    /// Supports both Anthropic (Claude) and OpenAI (GPT-4) via environment variables:
+    /// - ANTHROPIC_API_KEY: triggers Anthropic backend
+    /// - OPENAI_API_KEY: triggers OpenAI backend (fallback)
+    ///
+    /// Returns a Flow DSL JSON object suitable for execution.
     pub async fn generate_flow_from_prompt(prompt: &str) -> Result<Value, String> {
+        let provider = detect_provider()?;
+        
+        match provider {
+            LLMProvider::Anthropic => generate_with_anthropic(prompt).await,
+            LLMProvider::OpenAI => generate_with_openai(prompt).await,
+        }
+    }
+
+    fn detect_provider() -> Result<LLMProvider, String> {
+        if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            Ok(LLMProvider::Anthropic)
+        } else if std::env::var("OPENAI_API_KEY").is_ok() {
+            Ok(LLMProvider::OpenAI)
+        } else {
+            Err("Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set".to_string())
+        }
+    }
+
+    async fn generate_with_anthropic(prompt: &str) -> Result<Value, String> {
         let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
-        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-2.1".to_string());
+        let model = std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-opus-20240229".to_string());
         let client = reqwest::Client::new();
 
-        // Optionally include connector catalog JSON in the system prompt
-        let mut catalog_text = String::new();
-        if let Ok(catalog_url) = std::env::var("CONNECTOR_CATALOG_URL") {
-            if let Ok(resp) = client.get(&catalog_url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(body) = resp.text().await {
-                        catalog_text = format!("\n\nConnector Catalog:\n{}", body);
-                    }
-                }
-            }
-        }
+        let catalog_text = fetch_connector_catalog().await.unwrap_or_default();
 
         let system_instruction = format!(
-            "You are a PulseGrid AI assistant. Convert the user's prompt into a valid JSON Flow DSL. Respond ONLY with valid JSON.{}\n\nEnsure the JSON uses connector ids and action names from the catalog when possible.",
+            "You are a PulseGrid Flow DSL expert. Convert the user's natural language \
+            request into a valid JSON Flow DSL object. Respond ONLY with valid JSON.\n\
+            The Flow DSL must have:\n\
+            - trigger (object with connector and event keys)\n\
+            - steps (array of action objects with connector, action, inputs)\n\
+            - timeout_ms (integer, milliseconds)\n\n\
+            Connector Catalog:\n{}",
             catalog_text
         );
 
-        let prompt_payload = format!("{}\n\nUser Prompt: {}", system_instruction, prompt);
-
-        let url = "https://api.anthropic.com/v1/complete";
+        let url = "https://api.anthropic.com/v1/messages";
         let request_body = json!({
             "model": model,
-            "prompt": prompt_payload,
-            "max_tokens": 1500,
-            "temperature": 0.2,
-            "stop_sequences": ["\n\nHuman:"]
+            "max_tokens": 2000,
+            "system": system_instruction,
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
         });
 
         let response = client
             .post(url)
             .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("Network error: {}", e))?;
+            .map_err(|e| format!("Anthropic request failed: {}", e))?;
 
         if !response.status().is_success() {
-            return Err(format!("API request failed: HTTP {}", response.status()));
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("Anthropic API error ({}): {}", status, error_text));
         }
 
-        let resp_json: Value = response.json().await.map_err(|e| e.to_string())?;
-        let generated_text = resp_json["completion"].as_str().unwrap_or("{}");
+        let resp_json: Value = response.json().await.map_err(|e| format!("Failed to parse Anthropic response: {}", e))?;
+        
+        let content = resp_json["content"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("text"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "No text content in Anthropic response".to_string())?;
 
-        // Try to trim fences and stray text
-        let generated_text = generated_text
-            .trim_matches(|c| c == '`' || c == '\n' || c == ' ')
-            .trim_start_matches("json");
+        parse_flow_json(content)
+    }
 
-        let flow: Value = serde_json::from_str(generated_text)
-            .map_err(|e| format!("Failed to parse AI response as JSON: {}", e))?;
+    async fn generate_with_openai(prompt: &str) -> Result<Value, String> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set".to_string())?;
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4-turbo".to_string());
+        let client = reqwest::Client::new();
 
-        Ok(flow)
+        let catalog_text = fetch_connector_catalog().await.unwrap_or_default();
+
+        let system_instruction = format!(
+            "You are a PulseGrid Flow DSL expert. Convert the user's natural language \
+            request into a valid JSON Flow DSL object. Respond ONLY with valid JSON.\n\
+            The Flow DSL must have:\n\
+            - trigger (object with connector and event keys)\n\
+            - steps (array of action objects with connector, action, inputs)\n\
+            - timeout_ms (integer, milliseconds)\n\n\
+            Connector Catalog:\n{}",
+            catalog_text
+        );
+
+        let url = "https://api.openai.com/v1/chat/completions";
+        let request_body = json!({
+            "model": model,
+            "max_tokens": 2000,
+            "temperature": 0.3,
+            "system": system_instruction,
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        });
+
+        let response = client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("OpenAI request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("OpenAI API error ({}): {}", status, error_text));
+        }
+
+        let resp_json: Value = response.json().await.map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
+
+        let content = resp_json["choices"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("message"))
+            .and_then(|msg| msg.get("content"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "No message content in OpenAI response".to_string())?;
+
+        parse_flow_json(content)
+    }
+
+    async fn fetch_connector_catalog() -> Option<String> {
+        if let Ok(catalog_url) = std::env::var("CONNECTOR_CATALOG_URL") {
+            let client = reqwest::Client::new();
+            if let Ok(resp) = client.get(&catalog_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(body) = resp.text().await {
+                        return Some(body);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_flow_json(content: &str) -> Result<Value, String> {
+        // Try to extract JSON from markdown code blocks
+        let json_str = if content.contains("```json") {
+            content
+                .split("```json")
+                .nth(1)
+                .and_then(|s| s.split("```").next())
+                .unwrap_or(content)
+        } else if content.contains("```") {
+            content
+                .split("```")
+                .nth(1)
+                .unwrap_or(content)
+        } else {
+            content
+        };
+
+        let trimmed = json_str
+            .trim_matches(|c: char| c.is_whitespace() || c == '`');
+
+        serde_json::from_str(trimmed)
+            .map_err(|e| format!("Failed to parse Flow DSL JSON: {} (input: {})", e, trimmed))
     }
 }
 
