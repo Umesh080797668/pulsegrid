@@ -168,3 +168,38 @@ export async function revokeApiKey(params: {
 
   return response.ok;
 }
+
+export type DependentFlow = {
+  flow_id: string;
+  flow_name: string;
+  status: string;
+  created_at?: string;
+  last_executed_at?: string | null;
+  execution_count: number;
+};
+
+export type CredentialDependentsResponse = {
+  credential_id: string;
+  connector_id: string;
+  total_flows: number;
+  active_flows: number;
+  flows: DependentFlow[];
+};
+
+export async function getCredentialDependents(params: {
+  credentialId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<CredentialDependentsResponse | null> {
+  const response = await authenticatedFetch(
+    `${apiBase}/credentials/${params.credentialId}/dependents`,
+    params.token,
+    params.setToken,
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return (await response.json()) as CredentialDependentsResponse;
+}

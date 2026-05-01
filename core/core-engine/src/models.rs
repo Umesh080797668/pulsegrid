@@ -220,6 +220,25 @@ pub struct ApiKeyResponse {
     pub scopes: Value,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CredentialDependentFlow {
+    pub flow_id: Uuid,
+    pub flow_name: String,
+    pub status: String, // "active" or "paused"
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_executed_at: Option<DateTime<Utc>>,
+    pub execution_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CredentialDependentsResponse {
+    pub credential_id: Uuid,
+    pub connector_id: String,
+    pub total_flows: i64,
+    pub active_flows: i64,
+    pub flows: Vec<CredentialDependentFlow>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

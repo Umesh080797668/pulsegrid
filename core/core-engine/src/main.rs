@@ -741,6 +741,10 @@ async fn main() {
             "/api/v1/workspaces/{workspace_id}/secrets/{connector_id}",
             delete(delete_workspace_secret),
         )
+        .route(
+            "/api/v1/credentials/{credential_id}/dependents",
+            get(get_credential_dependents),
+        )
         // Flow run endpoints
         .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
         .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
@@ -2922,6 +2926,88 @@ async fn delete_workspace_secret(
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+async fn get_credential_dependents(
+    State(state): State<AppState>,
+    Path(credential_id): Path<uuid::Uuid>,
+) -> Result<Json<models::CredentialDependentsResponse>, (axum::http::StatusCode, String)> {
+    // Fetch the credential to get workspace_id and connector_id
+    let credential = sqlx::query!(
+        "SELECT workspace_id, connector_id FROM credentials WHERE id = $1",
+        credential_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or_else(|| (axum::http::StatusCode::NOT_FOUND, "Credential not found".to_string()))?;
+    
+    let workspace_id = credential.workspace_id;
+    let connector_id = credential.connector_id.clone();
+    
+    // Query all flows in this workspace to find ones that reference this credential
+    // Parse flow definitions to find dependency
+    let flows = sqlx::query!(
+        r#"
+        SELECT id, name, definition, enabled, created_at
+        FROM flows
+        WHERE workspace_id = $1
+        ORDER BY created_at DESC
+        "#,
+        workspace_id
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    // Filter flows that use this credential
+    let mut dependent_flows: Vec<models::CredentialDependentFlow> = Vec::new();
+    
+    for flow in flows {
+        // definition comes as a serde_json::Value from sqlx::query!
+        let flow_str = flow.definition.to_string().to_lowercase();
+        if flow_str.contains(&connector_id.to_lowercase()) {
+            // Get last execution time and count
+            let execution_stats = sqlx::query!(
+                r#"
+                SELECT COUNT(*) as count, MAX(completed_at) as last_completed
+                FROM flow_runs
+                WHERE flow_id = $1 AND workspace_id = $2
+                "#,
+                flow.id,
+                workspace_id
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            
+            let (execution_count, last_executed_at) = if let Some(stats) = execution_stats {
+                (stats.count.unwrap_or(0), stats.last_completed)
+            } else {
+                (0, None)
+            };
+            
+            dependent_flows.push(models::CredentialDependentFlow {
+                flow_id: flow.id,
+                flow_name: flow.name.clone(),
+                status: if flow.enabled.unwrap_or(true) { "active" } else { "paused" }.to_string(),
+                created_at: flow.created_at,
+                last_executed_at,
+                execution_count,
+            });
+        }
+    }
+    
+    let active_flows = dependent_flows.iter().filter(|f| f.status == "active").count() as i64;
+    let total_flows = dependent_flows.len() as i64;
+    
+    Ok(Json(models::CredentialDependentsResponse {
+        credential_id,
+        connector_id,
+        total_flows,
+        active_flows,
+        flows: dependent_flows,
+    }))
 }
 
 async fn list_flow_runs(

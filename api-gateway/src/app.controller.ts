@@ -463,6 +463,16 @@ export class AppController implements OnModuleInit {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('credentials/:credentialId/dependents')
+  async getCredentialDependents(
+    @Param('credentialId', new ParseUUIDPipe({ version: '4' })) credentialId: string,
+  ) {
+    return this.coreRequest(`/api/v1/credentials/${credentialId}/dependents`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('trigger')
   async triggerFlow(@Body() body: TriggerFlowDto, @Req() req: Request) {
     await this.rateLimitService.check(
