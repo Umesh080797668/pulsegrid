@@ -706,6 +706,7 @@ async fn main() {
         )
         .route("/api/v1/workspaces/{workspace_id}", get(get_workspace))
         .route("/api/v1/workspaces/{workspace_id}/upgrade", post(upgrade_workspace))
+        .route("/api/v1/workspaces/{workspace_id}/billing/subscription", get(get_workspace_subscription_status))
         .route("/api/v1/workspaces/{workspace_id}/billing/usage", get(get_workspace_usage))
         .route("/api/v1/workspaces/{workspace_id}/patterns", get(get_detected_patterns))
         // Stripe webhook
@@ -2419,7 +2420,7 @@ async fn upgrade_workspace(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
     Json(payload): Json<UpgradeWorkspaceRequest>,
-) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let plan = payload.plan.trim().to_lowercase();
     if plan.is_empty() {
         return Err((axum::http::StatusCode::BAD_REQUEST, "Plan is required".into()));
@@ -2507,15 +2508,119 @@ async fn upgrade_workspace(
     tx.commit().await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(WorkspaceResponse {
-        id: workspace.id,
-        name: workspace.name,
-        slug: workspace.slug,
-        plan: workspace.plan,
-        owner_user_id: workspace.owner_user_id,
-        settings: workspace.settings.unwrap_or_else(|| serde_json::json!({})),
-        created_at: workspace.created_at,
-    }))
+    // Wait briefly for Stripe webhook to confirm activation so clients don't receive stale plan state.
+    let mut confirmed_status = "pending".to_string();
+    let mut confirmed_plan = workspace.plan.clone();
+    for _ in 0..10 {
+        let row = sqlx::query(
+            r#"
+            SELECT status, plan_tier
+            FROM billing_subscriptions
+            WHERE workspace_id = $1
+            "#,
+        )
+        .bind(workspace.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        if let Some(row) = row {
+            let status: String = row.try_get("status").unwrap_or_else(|_| "pending".to_string());
+            let plan_tier: String = row.try_get("plan_tier").unwrap_or_else(|_| workspace.plan.clone());
+            confirmed_status = status.clone();
+            confirmed_plan = plan_tier;
+            if status.eq_ignore_ascii_case("active") {
+                break;
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    Ok(Json(serde_json::json!({
+        "workspace": {
+            "id": workspace.id,
+            "name": workspace.name,
+            "slug": workspace.slug,
+            "plan": workspace.plan,
+            "owner_user_id": workspace.owner_user_id,
+            "settings": workspace.settings.unwrap_or_else(|| serde_json::json!({})),
+            "created_at": workspace.created_at,
+        },
+        "billing": {
+            "requested_plan": plan,
+            "status": confirmed_status,
+            "confirmed_plan": confirmed_plan,
+            "stripe_customer_id": stripe_customer_id,
+            "stripe_subscription_id": stripe_subscription_id,
+        }
+    })))
+}
+
+async fn get_workspace_subscription_status(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let workspace = sqlx::query(
+        r#"
+        SELECT id, name, slug, plan, owner_user_id, settings, created_at
+        FROM workspaces
+        WHERE id = $1
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Workspace not found".to_string()))?;
+
+    let billing = sqlx::query(
+        r#"
+        SELECT plan_tier, status, stripe_customer_id, stripe_subscription_id, updated_at
+        FROM billing_subscriptions
+        WHERE workspace_id = $1
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let billing_json = if let Some(row) = billing {
+        serde_json::json!({
+            "requested_plan": row.try_get::<String, _>("plan_tier").unwrap_or_else(|_| "free".to_string()),
+            "status": row.try_get::<String, _>("status").unwrap_or_else(|_| "unknown".to_string()),
+            "stripe_customer_id": row.try_get::<Option<String>, _>("stripe_customer_id").ok().flatten(),
+            "stripe_subscription_id": row.try_get::<Option<String>, _>("stripe_subscription_id").ok().flatten(),
+            "updated_at": row
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("updated_at")
+                .ok()
+                .flatten()
+                .map(|v| v.to_rfc3339()),
+        })
+    } else {
+        serde_json::json!({
+            "requested_plan": workspace.try_get::<String, _>("plan").unwrap_or_else(|_| "free".to_string()),
+            "status": "none"
+        })
+    };
+
+    Ok(Json(serde_json::json!({
+        "workspace": {
+            "id": workspace.try_get::<uuid::Uuid, _>("id").unwrap_or(workspace_id),
+            "name": workspace.try_get::<String, _>("name").unwrap_or_default(),
+            "slug": workspace.try_get::<String, _>("slug").unwrap_or_default(),
+            "plan": workspace.try_get::<String, _>("plan").unwrap_or_else(|_| "free".to_string()),
+            "owner_user_id": workspace.try_get::<uuid::Uuid, _>("owner_user_id").unwrap_or_default(),
+            "settings": workspace.try_get::<Option<serde_json::Value>, _>("settings").ok().flatten().unwrap_or_else(|| serde_json::json!({})),
+            "created_at": workspace
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("created_at")
+                .ok()
+                .flatten()
+                .map(|v| v.to_rfc3339()),
+        },
+        "billing": billing_json,
+    })))
 }
 
 async fn list_flows(
@@ -3256,19 +3361,26 @@ async fn stripe_webhook_handler(
                 .and_then(|value| value.as_str())
                 .ok_or_else(|| (axum::http::StatusCode::BAD_REQUEST, "Missing Stripe customer id".to_string()))?;
             let plan_tier = stripe_subscription_plan_tier(&event_object);
+            let status = event_object
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("pending");
+            let activate_plan = matches!(status, "active" | "trialing");
 
             let mut tx = state.pool.begin().await
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-            sqlx::query(
-                "UPDATE workspaces SET plan = $1, stripe_customer_id = COALESCE($3, stripe_customer_id) WHERE id = $2"
-            )
-            .bind(&plan_tier)
-            .bind(workspace_id)
-            .bind(Some(customer_id))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            if activate_plan {
+                sqlx::query(
+                    "UPDATE workspaces SET plan = $1, stripe_customer_id = COALESCE($3, stripe_customer_id) WHERE id = $2"
+                )
+                .bind(&plan_tier)
+                .bind(workspace_id)
+                .bind(Some(customer_id))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            }
 
             sqlx::query(
                 r#"
@@ -3280,13 +3392,13 @@ async fn stripe_webhook_handler(
                     status,
                     updated_at
                 )
-                VALUES ($1, $2, $3, $4, 'active', NOW())
+                VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (workspace_id)
                 DO UPDATE SET
                     stripe_customer_id = EXCLUDED.stripe_customer_id,
                     stripe_subscription_id = EXCLUDED.stripe_subscription_id,
                     plan_tier = EXCLUDED.plan_tier,
-                    status = 'active',
+                    status = EXCLUDED.status,
                     updated_at = NOW()
                 "#,
             )
@@ -3294,12 +3406,28 @@ async fn stripe_webhook_handler(
             .bind(customer_id)
             .bind(subscription_id)
             .bind(&plan_tier)
+            .bind(status)
             .execute(&mut *tx)
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             tx.commit().await
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            let payload = serde_json::json!({
+                "id": uuid::Uuid::new_v4(),
+                "tenant_id": workspace_id,
+                "source": "stripe",
+                "event_type": if activate_plan { "billing.subscription_activated" } else { "billing.subscription_pending" },
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "data": {
+                    "status": status,
+                    "plan_tier": plan_tier,
+                    "subscription_id": subscription_id,
+                    "customer_id": customer_id,
+                }
+            });
+            publish_workspace_stream_event(workspace_id, payload).await?;
         },
         "customer.subscription.updated" => {
             let workspace_id = resolve_workspace_id_for_subscription(&state, &event_object).await?;
@@ -3310,19 +3438,22 @@ async fn stripe_webhook_handler(
                 .get("status")
                 .and_then(|value| value.as_str())
                 .unwrap_or("active");
+            let activate_plan = matches!(status, "active" | "trialing");
 
             let mut tx = state.pool.begin().await
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-            sqlx::query(
-                "UPDATE workspaces SET plan = $1, stripe_customer_id = COALESCE($3, stripe_customer_id) WHERE id = $2"
-            )
-            .bind(&plan_tier)
-            .bind(workspace_id)
-            .bind(customer_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            if activate_plan {
+                sqlx::query(
+                    "UPDATE workspaces SET plan = $1, stripe_customer_id = COALESCE($3, stripe_customer_id) WHERE id = $2"
+                )
+                .bind(&plan_tier)
+                .bind(workspace_id)
+                .bind(customer_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            }
 
             sqlx::query(
                 r#"
@@ -3346,6 +3477,21 @@ async fn stripe_webhook_handler(
 
             tx.commit().await
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            let payload = serde_json::json!({
+                "id": uuid::Uuid::new_v4(),
+                "tenant_id": workspace_id,
+                "source": "stripe",
+                "event_type": if activate_plan { "billing.subscription_activated" } else { "billing.subscription_pending" },
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "data": {
+                    "status": status,
+                    "plan_tier": plan_tier,
+                    "subscription_id": subscription_id,
+                    "customer_id": customer_id,
+                }
+            });
+            publish_workspace_stream_event(workspace_id, payload).await?;
         },
         "customer.subscription.deleted" => {
             let workspace_id = resolve_workspace_id_for_subscription(&state, &event_object).await?;
@@ -3384,6 +3530,20 @@ async fn stripe_webhook_handler(
 
             tx.commit().await
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            let payload = serde_json::json!({
+                "id": uuid::Uuid::new_v4(),
+                "tenant_id": workspace_id,
+                "source": "stripe",
+                "event_type": "billing.subscription_canceled",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "data": {
+                    "plan_tier": "free",
+                    "subscription_id": subscription_id,
+                    "customer_id": customer_id,
+                }
+            });
+            publish_workspace_stream_event(workspace_id, payload).await?;
         },
         "invoice.payment_failed" => {
             let workspace_id = resolve_workspace_id_for_subscription(&state, &event_object).await?;

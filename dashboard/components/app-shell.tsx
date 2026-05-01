@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { Activity, BarChart3, Cable, KeyRound, Layers, LogOut, Store, Vault, Workflow, Zap } from 'lucide-react';
+import { Activity, BarChart3, Cable, CreditCard, LogOut, Store, Vault, Workflow, Zap } from 'lucide-react';
 import { apiBase, authenticatedFetch } from '../lib/api';
 import { useDashboardStore } from '../lib/store';
 
@@ -19,6 +19,7 @@ const navItems: NavItem[] = [
   { href: '/analytics', label: 'Analytics', icon: <BarChart3 size={14} /> },
   { href: '/connectors', label: 'Connectors', icon: <Cable size={14} /> },
   { href: '/market', label: 'Market', icon: <Store size={14} /> },
+  { href: '/settings/billing', label: 'Billing', icon: <CreditCard size={14} /> },
   { href: '/settings/vault', label: 'VaultGuard', icon: <Vault size={14} /> },
 ];
 

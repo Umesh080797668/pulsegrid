@@ -419,6 +419,16 @@ export class AppController implements OnModuleInit {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('workspaces/:workspaceId/billing/subscription')
+  async getWorkspaceSubscription(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+  ) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/billing/subscription`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('trigger')
   async triggerFlow(@Body() body: TriggerFlowDto, @Req() req: Request) {
     await this.rateLimitService.check(
