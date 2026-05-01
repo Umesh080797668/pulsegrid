@@ -4,6 +4,7 @@ import { Request as ExpressRequest } from 'express';
 import { Pool } from 'pg';
 import Stripe from 'stripe';
 import { AuthModule } from '../auth/auth.module';
+import { StripePayoutsService } from './stripe-payouts.service';
 
 interface AuthenticatedRequest extends ExpressRequest {
   user?: { sub?: string; workspaceId?: string };
@@ -197,6 +198,15 @@ export class StripeConnectService implements OnModuleDestroy {
     }
     return { pool: this.pool, stripe: this.stripe };
   }
+
+  // Expose underlying clients for other services (safe wrapper)
+  public getStripeClient(): any {
+    return this.getClients().stripe;
+  }
+
+  public getDbPool(): Pool {
+    return this.getClients().pool;
+  }
 }
 
 @Controller('market')
@@ -219,7 +229,7 @@ export class StripeConnectController {
 @Module({
   imports: [AuthModule],
   controllers: [StripeConnectController],
-  providers: [StripeConnectService],
+  providers: [StripeConnectService, StripePayoutsService],
   exports: [StripeConnectService],
 })
 export class StripeConnectModule {}
