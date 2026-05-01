@@ -88,6 +88,16 @@ struct StripeWebhookData {
     object: serde_json::Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct StripeCustomerCreateResponse {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeSubscriptionCreateResponse {
+    id: String,
+}
+
 const FREE_CONNECTORS: &[&str] = &[
     "GMAIL",
     "SLACK",
@@ -790,6 +800,94 @@ fn stripe_subscription_plan_tier(object: &serde_json::Value) -> String {
         .to_lowercase()
 }
 
+fn stripe_secret_key() -> Result<String, (axum::http::StatusCode, String)> {
+    std::env::var("STRIPE_SECRET_KEY")
+        .map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "STRIPE_SECRET_KEY is not set".to_string()))
+}
+
+fn stripe_pro_price_id() -> Result<String, (axum::http::StatusCode, String)> {
+    std::env::var("PRO_PRICE_ID")
+        .map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "PRO_PRICE_ID is not set".to_string()))
+}
+
+async fn stripe_create_customer(
+    owner_email: &str,
+    workspace_id: uuid::Uuid,
+) -> Result<String, (axum::http::StatusCode, String)> {
+    let secret_key = stripe_secret_key()?;
+    let workspace_id_str = workspace_id.to_string();
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post("https://api.stripe.com/v1/customers")
+        .bearer_auth(secret_key)
+        .form(&[
+            ("email", owner_email),
+            ("metadata[workspace_id]", workspace_id_str.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    let status = response.status();
+    let response_body = response
+        .text()
+        .await
+        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    if !status.is_success() {
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("Stripe customer creation failed: {}", response_body),
+        ));
+    }
+
+    let customer: StripeCustomerCreateResponse = serde_json::from_str(&response_body)
+        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    Ok(customer.id)
+}
+
+async fn stripe_create_subscription(
+    customer_id: &str,
+    workspace_id: uuid::Uuid,
+) -> Result<String, (axum::http::StatusCode, String)> {
+    let secret_key = stripe_secret_key()?;
+    let price_id = stripe_pro_price_id()?;
+    let workspace_id_str = workspace_id.to_string();
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post("https://api.stripe.com/v1/subscriptions")
+        .bearer_auth(secret_key)
+        .form(&[
+            ("customer", customer_id),
+            ("items[0][price]", price_id.as_str()),
+            ("metadata[workspace_id]", workspace_id_str.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    let status = response.status();
+    let response_body = response
+        .text()
+        .await
+        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    if !status.is_success() {
+        return Err((
+            axum::http::StatusCode::BAD_GATEWAY,
+            format!("Stripe subscription creation failed: {}", response_body),
+        ));
+    }
+
+    let subscription: StripeSubscriptionCreateResponse = serde_json::from_str(&response_body)
+        .map_err(|e| (axum::http::StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    Ok(subscription.id)
+}
+
 async fn resolve_workspace_id_for_subscription(
     state: &AppState,
     object: &serde_json::Value,
@@ -845,6 +943,19 @@ async fn resolve_workspace_id_for_subscription(
         axum::http::StatusCode::BAD_REQUEST,
         "Unable to resolve workspace_id for Stripe subscription event".to_string(),
     ))
+}
+
+#[derive(Debug, FromRow)]
+struct UpgradeWorkspaceRow {
+    id: uuid::Uuid,
+    name: String,
+    slug: String,
+    plan: String,
+    owner_user_id: uuid::Uuid,
+    settings: Option<serde_json::Value>,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+    stripe_customer_id: Option<String>,
+    owner_email: String,
 }
 
 async fn publish_workspace_stream_event(
@@ -2204,63 +2315,101 @@ async fn upgrade_workspace(
     Path(workspace_id): Path<uuid::Uuid>,
     Json(payload): Json<UpgradeWorkspaceRequest>,
 ) -> Result<Json<WorkspaceResponse>, (axum::http::StatusCode, String)> {
-    // BILLING STUB: Workspace plan upgrade handler
-    // This endpoint updates the workspace plan and billing subscription.
-    // 
-    // Phase 4 (Full Stripe Integration) will add:
-    // - Stripe API calls to create/update customer subscriptions
-    // - Webhook signature verification from Stripe events
-    // - Subscription lifecycle management (pause, cancel, downgrade)
-    // - Invoice generation and payment processing
-    // - Retry logic for failed payments
-    // - Trial period management for new plans
-    // - Proration calculations for mid-cycle upgrades
-    //
-    // Current limitations (scaffold):
-    // - No Stripe API integration
-    // - No subscription created in Stripe during upgrade
-    // - No webhook handler to sync Stripe changes back to DB
-    // - No cancellation logic if payment fails
     let plan = payload.plan.trim().to_lowercase();
     if plan.is_empty() {
         return Err((axum::http::StatusCode::BAD_REQUEST, "Plan is required".into()));
     }
 
-    let mut tx = state.pool.begin().await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Update workspaces table
-    let row = sqlx::query!(
-        "UPDATE workspaces SET plan = $1 WHERE id = $2 RETURNING id, name, slug, plan, owner_user_id, settings, created_at",
-        plan,
-        workspace_id
+    let workspace = sqlx::query_as::<_, UpgradeWorkspaceRow>(
+        r#"
+        SELECT
+            w.id,
+            w.name,
+            w.slug,
+            w.plan,
+            w.owner_user_id,
+            w.settings,
+            w.created_at,
+            w.stripe_customer_id,
+            u.email AS owner_email
+        FROM workspaces w
+        JOIN users u ON u.id = w.owner_user_id
+        WHERE w.id = $1
+        "#,
     )
-    .fetch_optional(&mut *tx)
+    .bind(workspace_id)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((axum::http::StatusCode::NOT_FOUND, "Workspace not found".to_string()))?;
 
-    // Upsert into billing_subscriptions
-    sqlx::query!(
-        r#"
-        INSERT INTO billing_subscriptions (workspace_id, plan_tier, status)
-        VALUES ($1, $2, 'active')
-        ON CONFLICT (workspace_id) 
-        DO UPDATE SET plan_tier = EXCLUDED.plan_tier, status = 'active', updated_at = NOW()
-        "#,
-        workspace_id, plan
-    ).execute(&mut *tx).await.map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let stripe_customer_id = match workspace.stripe_customer_id.clone() {
+        Some(customer_id) => customer_id,
+        None => {
+            let created_customer_id = stripe_create_customer(&workspace.owner_email, workspace.id).await?;
+            let mut tx = state.pool.begin().await
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    tx.commit().await.map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            sqlx::query(
+                "UPDATE workspaces SET stripe_customer_id = $1 WHERE id = $2",
+            )
+            .bind(&created_customer_id)
+            .bind(workspace.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            tx.commit().await
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            created_customer_id
+        }
+    };
+
+    let stripe_subscription_id = stripe_create_subscription(&stripe_customer_id, workspace.id).await?;
+
+    let mut tx = state.pool.begin().await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO billing_subscriptions (
+            workspace_id,
+            stripe_customer_id,
+            stripe_subscription_id,
+            plan_tier,
+            status,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, 'pending', NOW())
+        ON CONFLICT (workspace_id)
+        DO UPDATE SET
+            stripe_customer_id = EXCLUDED.stripe_customer_id,
+            stripe_subscription_id = EXCLUDED.stripe_subscription_id,
+            plan_tier = EXCLUDED.plan_tier,
+            status = 'pending',
+            updated_at = NOW()
+        "#,
+    )
+    .bind(workspace.id)
+    .bind(&stripe_customer_id)
+    .bind(&stripe_subscription_id)
+    .bind(&plan)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tx.commit().await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(WorkspaceResponse {
-        id: row.id,
-        name: row.name,
-        slug: row.slug,
-        plan: row.plan,
-        owner_user_id: row.owner_user_id,
-        settings: row.settings.unwrap_or_else(|| serde_json::json!({})),
-        created_at: row.created_at,
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug,
+        plan: workspace.plan,
+        owner_user_id: workspace.owner_user_id,
+        settings: workspace.settings.unwrap_or_else(|| serde_json::json!({})),
+        created_at: workspace.created_at,
     }))
 }
 
@@ -3007,10 +3156,11 @@ async fn stripe_webhook_handler(
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             sqlx::query(
-                "UPDATE workspaces SET plan = $1 WHERE id = $2"
+                "UPDATE workspaces SET plan = $1, stripe_customer_id = COALESCE($3, stripe_customer_id) WHERE id = $2"
             )
             .bind(&plan_tier)
             .bind(workspace_id)
+            .bind(Some(customer_id))
             .execute(&mut *tx)
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -3060,10 +3210,11 @@ async fn stripe_webhook_handler(
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             sqlx::query(
-                "UPDATE workspaces SET plan = $1 WHERE id = $2"
+                "UPDATE workspaces SET plan = $1, stripe_customer_id = COALESCE($3, stripe_customer_id) WHERE id = $2"
             )
             .bind(&plan_tier)
             .bind(workspace_id)
+            .bind(customer_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -3100,9 +3251,10 @@ async fn stripe_webhook_handler(
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
             sqlx::query(
-                "UPDATE workspaces SET plan = 'free' WHERE id = $1"
+                "UPDATE workspaces SET plan = 'free', stripe_customer_id = COALESCE($2, stripe_customer_id) WHERE id = $1"
             )
             .bind(workspace_id)
+            .bind(customer_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
