@@ -87,3 +87,84 @@ export async function getWorkspaceSubscriptionStatus(params: {
 
   return (await response.json()) as WorkspaceSubscriptionStatus;
 }
+
+export type ApiKey = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  is_active: boolean;
+  created_at?: string;
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  scopes: string[];
+};
+
+export type CreateApiKeyResponse = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  key: string; // Full key - only returned on creation
+  created_at: string;
+};
+
+export async function createApiKey(params: {
+  workspaceId: string;
+  name: string;
+  description?: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<CreateApiKeyResponse | null> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/api-keys`,
+    params.token,
+    params.setToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: params.name,
+        description: params.description,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return (await response.json()) as CreateApiKeyResponse;
+}
+
+export async function listApiKeys(params: {
+  workspaceId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<ApiKey[] | null> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/api-keys`,
+    params.token,
+    params.setToken,
+  );
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return (await response.json()) as ApiKey[];
+}
+
+export async function revokeApiKey(params: {
+  workspaceId: string;
+  keyId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<boolean> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/api-keys/${params.keyId}`,
+    params.token,
+    params.setToken,
+    { method: 'DELETE' },
+  );
+
+  return response.ok;
+}

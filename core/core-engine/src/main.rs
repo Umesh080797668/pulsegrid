@@ -32,7 +32,9 @@ mod grpc;
 mod models;
 mod cache;
 use cache::LocalCache;
+#[allow(unused_imports)]
 use models::{
+    ApiKey, CreateApiKeyRequest, CreateApiKeyResponse, ApiKeyResponse,
     CreateFlowRequest, CreateWorkspaceRequest, FlowDefinition, FlowResponse, FlowRunResponse,
     PulseEvent, UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceResponse,
     WorkspaceSecretSummary,
@@ -709,6 +711,15 @@ async fn main() {
         .route("/api/v1/workspaces/{workspace_id}/billing/subscription", get(get_workspace_subscription_status))
         .route("/api/v1/workspaces/{workspace_id}/billing/usage", get(get_workspace_usage))
         .route("/api/v1/workspaces/{workspace_id}/patterns", get(get_detected_patterns))
+        // API Keys endpoints
+        .route(
+            "/api/v1/workspaces/{workspace_id}/api-keys",
+            post(create_api_key).get(list_api_keys),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/api-keys/{key_id}",
+            delete(revoke_api_key),
+        )
         // Stripe webhook
         .route("/api/v1/stripe/webhook", post(stripe_webhook_handler))
         // Flow CRUD endpoints
@@ -3414,6 +3425,35 @@ async fn stripe_webhook_handler(
             tx.commit().await
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+            // Automatically generate first API key for Pro users on successful subscription
+            if activate_plan && plan_tier == "pro" {
+                let (key_prefix, _full_key, key_hash) = generate_api_key();
+                let now = chrono::Utc::now();
+                
+                // Try to insert the first API key, but don't fail the webhook if this fails
+                let _ = sqlx::query(
+                    r#"
+                    INSERT INTO api_keys (
+                        id, workspace_id, key_prefix, key_hash, name, description,
+                        is_active, created_at, scopes
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ON CONFLICT DO NOTHING
+                    "#,
+                )
+                .bind(uuid::Uuid::new_v4())
+                .bind(workspace_id)
+                .bind(&key_prefix)
+                .bind(&key_hash)
+                .bind("Default API Key")
+                .bind(Some("Automatically generated on Pro plan upgrade"))
+                .bind(true)
+                .bind(now)
+                .bind(serde_json::json!(["flows:read", "flows:write", "events:read"]))
+                .execute(&state.pool)
+                .await;
+            }
+
             let payload = serde_json::json!({
                 "id": uuid::Uuid::new_v4(),
                 "tenant_id": workspace_id,
@@ -3710,6 +3750,133 @@ async fn get_replay_events(
         "total": parsed_events.len(),
         "events": parsed_events,
     })))
+}
+
+// Generate a new API key: returns (key_prefix, full_key, key_hash)
+fn generate_api_key() -> (String, String, String) {
+    use sha2::{Sha256, Digest};
+    use base64::Engine;
+    
+    // Generate 32 random bytes and encode as base64
+    let random_bytes = uuid::Uuid::new_v4().as_bytes().to_vec();
+    let random_bytes_extended = [
+        random_bytes.as_slice(),
+        uuid::Uuid::new_v4().as_bytes(),
+    ].concat();
+    
+    let engine = base64::engine::general_purpose::STANDARD;
+    let key_str = engine.encode(&random_bytes_extended);
+    let full_key = format!("pk_live_{}", &key_str[..16]); // Prefix + first 16 chars
+    let key_prefix = format!("pk_live_{}", &key_str[..8]); // Used as unique identifier
+    
+    // Hash the full key for storage
+    let mut hasher = Sha256::new();
+    hasher.update(full_key.as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    
+    (key_prefix, full_key, hash)
+}
+
+async fn create_api_key(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+    Json(payload): Json<models::CreateApiKeyRequest>,
+) -> Result<Json<models::CreateApiKeyResponse>, (axum::http::StatusCode, String)> {
+    // Generate new key
+    let (key_prefix, full_key, key_hash) = generate_api_key();
+    
+    // Insert into database
+    let scopes = payload.scopes.unwrap_or_default();
+    let scopes_json = serde_json::to_value(&scopes)
+        .unwrap_or_else(|_| serde_json::json!([]));
+    
+    let id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    
+    sqlx::query(
+        r#"
+        INSERT INTO api_keys (
+            id, workspace_id, key_prefix, key_hash, name, description, 
+            is_active, created_at, expires_at, scopes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        "#,
+    )
+    .bind(id)
+    .bind(workspace_id)
+    .bind(&key_prefix)
+    .bind(&key_hash)
+    .bind(&payload.name)
+    .bind(&payload.description)
+    .bind(true) // is_active
+    .bind(now)
+    .bind(&payload.expires_at)
+    .bind(&scopes_json)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    Ok(Json(models::CreateApiKeyResponse {
+        id,
+        name: payload.name,
+        key_prefix,
+        key: full_key,
+        created_at: now,
+    }))
+}
+
+async fn list_api_keys(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<models::ApiKeyResponse>>, (axum::http::StatusCode, String)> {
+    let keys = sqlx::query_as::<_, models::ApiKey>(
+        r#"
+        SELECT id, workspace_id, key_prefix, key_hash, name, description,
+               is_active, created_at, last_used_at, expires_at, scopes
+        FROM api_keys
+        WHERE workspace_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    let responses = keys.into_iter().map(|key| {
+        models::ApiKeyResponse {
+            id: key.id,
+            name: key.name,
+            key_prefix: key.key_prefix,
+            is_active: key.is_active,
+            created_at: key.created_at,
+            last_used_at: key.last_used_at,
+            expires_at: key.expires_at,
+            scopes: key.scopes,
+        }
+    }).collect();
+    
+    Ok(Json(responses))
+}
+
+async fn revoke_api_key(
+    State(state): State<AppState>,
+    Path((workspace_id, key_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let result = sqlx::query(
+        "UPDATE api_keys SET is_active = false WHERE id = $1 AND workspace_id = $2"
+    )
+    .bind(key_id)
+    .bind(workspace_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    
+    if result.rows_affected() == 0 {
+        return Err((axum::http::StatusCode::NOT_FOUND, "API key not found".to_string()));
+    }
+    
+    Ok(Json(serde_json::json!({ "status": "revoked" })))
 }
 
 fn normalize_slug(slug: &str) -> Result<String, (axum::http::StatusCode, String)> {

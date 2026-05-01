@@ -175,6 +175,51 @@ pub struct StepExecutionResult {
     pub error: Option<String>,
     pub duration_ms: i32,
 }
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct ApiKey {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub key_prefix: String,
+    pub key_hash: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub scopes: Value, // JSON array of permission strings
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateApiKeyRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub scopes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateApiKeyResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub key_prefix: String,
+    pub key: String, // Full key (only returned on creation)
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiKeyResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub key_prefix: String,
+    pub is_active: bool,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub scopes: Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

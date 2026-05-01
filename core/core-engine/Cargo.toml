@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22"
 chrono = { version = "0.4.44", features = ["serde"] }
 core-connectors = { version = "0.1.0", path = "../core-connectors" }
 core-proto = { version = "0.1.0", path = "../core-proto" }
@@ -19,6 +20,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 rhai = { version = "1.24.0", features = ["sync"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.10"
 sqlx = { version = "0.8.6", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "migrate"] }
 tokio = { version = "1.40", features = ["full", "macros"] }
 tokio-stream = "0.1.18"
@@ -27,3 +29,4 @@ uuid = { version = "1.23.1", features = ["v4", "serde"] }
 cron = "0.16.0"
 rocksdb = "0.21"
 urlencoding = "2.1"
+

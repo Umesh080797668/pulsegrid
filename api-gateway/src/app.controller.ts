@@ -429,6 +429,40 @@ export class AppController implements OnModuleInit {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('workspaces/:workspaceId/api-keys')
+  async createApiKey(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Body() body: any,
+  ) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/api-keys`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('workspaces/:workspaceId/api-keys')
+  async listApiKeys(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+  ) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/api-keys`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('workspaces/:workspaceId/api-keys/:keyId')
+  async revokeApiKey(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Param('keyId', new ParseUUIDPipe({ version: '4' })) keyId: string,
+  ) {
+    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/api-keys/${keyId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('trigger')
   async triggerFlow(@Body() body: TriggerFlowDto, @Req() req: Request) {
     await this.rateLimitService.check(
