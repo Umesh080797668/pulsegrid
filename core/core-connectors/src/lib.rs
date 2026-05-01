@@ -9,6 +9,10 @@ use std::str::FromStr;
 use std::time::Duration;
 use async_trait::async_trait;
 
+// Event ingestion modules — Blueprint Milestone 1.1
+pub mod mqtt_bridge;
+pub mod ble_device_listener;
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
