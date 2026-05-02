@@ -1,9 +1,5 @@
-stripe:
-  api:
-    key: ${STRIPE_API_KEY:}
-    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
-
 spring:
-  redis:
-    host: ${REDIS_HOST:localhost}
-    port: ${REDIS_PORT:6379}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
