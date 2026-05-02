@@ -1,0 +1,68 @@
+# =========================
+# Maven
+# =========================
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+
+# Maven Wrapper
+.mvn/wrapper/maven-wrapper.jar
+
+# =========================
+# Java / Spring Boot
+# =========================
+*.log
+*.class
+*.jar
+*.war
+*.ear
+
+# Spring Boot specific
+*.pid
+*.seed
+*.pid.lock
+
+# =========================
+# IDEs
+# =========================
+
+# VS Code
+.vscode/
+
+# IntelliJ / WebStorm
+.idea/
+*.iml
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+*.env
+application-local.yml
+application-local.properties
+
+# =========================
+# Node (if frontend inside project)
+# =========================
+node_modules/
+
+# =========================
+# Logs & temp
+# =========================
+logs/
+*.tmp
+*.swp

@@ -42,7 +42,7 @@
 **Core Engine Language:** Rust  
 **Primary Model:** Freemium SaaS + Marketplace + API Billing  
 
-PulseGrid is a universal real-time automation and intelligence platform. At its core sits **PulseCore** — a high-performance event processing engine written entirely in Rust — surrounded by a complete full-stack ecosystem: a Next.js web dashboard, an Angular enterprise admin panel, a NestJS API gateway, Spring Boot enterprise services, a Flutter mobile app, a React Native companion app, an embeddable Vue SDK, and a Rust-powered CLI.
+PulseGrid is a universal real-time automation and intelligence platform. At its core sits **PulseCore** — a high-performance event processing engine written entirely in Rust — surrounded by a complete full-stack ecosystem: a Next.js web dashboard, an Angular enterprise admin panel, a NestJS API gateway, Spring Boot enterprise services, a Flutter mobile app, an embeddable Vue SDK, and a Rust-powered CLI.
 
 Users connect any digital service, physical device, or data source to PulseGrid and build intelligent automations — called **Flows** — that respond in real time. A flow can be as simple as "send me a Telegram message when my server CPU exceeds 90%" or as complex as "when a new Shopify order comes in, check inventory levels, update the Airtable tracker, charge the customer via Stripe, assign a delivery driver via the logistics API, and post a Slack update to the fulfilment team."
 

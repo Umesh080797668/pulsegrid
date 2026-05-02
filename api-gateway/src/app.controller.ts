@@ -423,9 +423,20 @@ export class AppController implements OnModuleInit {
   async getWorkspaceSubscription(
     @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
   ) {
-    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/billing/subscription`, {
-      method: 'GET',
-    });
+    const enterpriseServiceUrl = process.env.ENTERPRISE_SERVICE_URL || 'http://127.0.0.1:8080';
+    try {
+      const response = await fetch(`${enterpriseServiceUrl}/api/v1/enterprise/billing/subscription/${workspaceId}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`Enterprise service returned ${response.status}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Failed to fetch subscription from enterprise service:', error);
+      throw new InternalServerErrorException('Enterprise service unavailable');
+    }
   }
 
   @UseGuards(JwtAuthGuard)
@@ -981,8 +992,28 @@ export class AppController implements OnModuleInit {
   }
 
   @Get('health')
-  health() {
-    return 'API Gateway OK';
+  async health() {
+    const enterpriseServiceUrl = process.env.ENTERPRISE_SERVICE_URL || 'http://127.0.0.1:8080';
+    let enterpriseStatus = 'unknown';
+
+    try {
+      const response = await fetch(`${enterpriseServiceUrl}/api/v1/enterprise/health`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      enterpriseStatus = response.ok ? 'UP' : 'DOWN';
+    } catch (error) {
+      enterpriseStatus = 'UNREACHABLE';
+    }
+
+    return {
+      status: 'API Gateway OK',
+      services: {
+        gateway: 'UP',
+        enterprise: enterpriseStatus,
+      },
+      timestamp: new Date().toISOString(),
+    };
   }
 
   private getOAuthConfig(connector: string): OAuthProviderConfig | null {
