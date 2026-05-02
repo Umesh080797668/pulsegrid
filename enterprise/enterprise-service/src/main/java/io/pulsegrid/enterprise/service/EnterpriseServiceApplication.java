@@ -5,11 +5,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.context.annotation.ComponentScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @ComponentScan(basePackages = {"io.pulsegrid.enterprise"})
 @EntityScan(basePackages = {"io.pulsegrid.enterprise.domain"})
 @EnableJpaRepositories(basePackages = {"io.pulsegrid.enterprise.service.repository"})
+@EnableScheduling
 public class EnterpriseServiceApplication {
 
     public static void main(String[] args) {

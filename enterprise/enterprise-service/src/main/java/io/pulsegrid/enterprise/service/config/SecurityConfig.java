@@ -1,6 +1,7 @@
 package io.pulsegrid.enterprise.service.config;
 
 import io.pulsegrid.enterprise.domain.SsoConfiguration;
+import io.pulsegrid.enterprise.service.service.LdapAuthenticationProvider;
 import io.pulsegrid.enterprise.service.service.SsoService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -8,9 +9,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.oauth2.client.registration.ClientRegistration;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.saml2.provider.service.registration.RelyingPartyRegistration;
@@ -31,6 +34,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private final SsoService ssoService;
+    private final LdapAuthenticationProvider ldapAuthenticationProvider;
 
     @Value("${enterprise.admin.allowed-origin:http://localhost:4200}")
     private String adminAllowedOrigin;
@@ -50,10 +54,16 @@ public class SecurityConfig {
                         .requestMatchers("/oauth2/**", "/login/oauth2/**", "/saml2/**", "/login/saml2/**").permitAll()
                         .anyRequest().authenticated())
                 .httpBasic(Customizer.withDefaults())
+                .authenticationProvider(ldapAuthenticationProvider)
                 .oauth2Login(Customizer.withDefaults())
                 .saml2Login(Customizer.withDefaults());
 
         return http.build();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration configuration) throws Exception {
+        return configuration.getAuthenticationManager();
     }
 
     @Bean
