@@ -21,6 +21,7 @@ import java.util.UUID;
 public class BillingService {
 
     private final SubscriptionRepository subscriptionRepository;
+    private final io.pulsegrid.enterprise.service.repository.PlanRedisRepository planRedisRepository;
 
     public Optional<Subscription> getSubscriptionByWorkspaceId(UUID workspaceId) {
         return subscriptionRepository.findByWorkspaceId(workspaceId);
@@ -38,7 +39,16 @@ public class BillingService {
         subscription.setCurrentPeriodStart(Instant.now());
         subscription.setCurrentPeriodEnd(Instant.now().plusSeconds(30L * 24 * 3600)); // 30 days
 
-        return subscriptionRepository.save(subscription);
+        Subscription saved = subscriptionRepository.save(subscription);
+
+        // Write plan limits into Redis for PulseCore to read
+        try {
+            planRedisRepository.savePlan(workspaceId, getPlanLimits(plan));
+        } catch (Exception e) {
+            log.warn("Failed to write plan to Redis for workspace {}: {}", workspaceId, e.getMessage());
+        }
+
+        return saved;
     }
 
     public void cancelSubscription(UUID workspaceId) {
@@ -46,7 +56,56 @@ public class BillingService {
             subscription.setStatus("canceled");
             subscription.setUpdatedAt(Instant.now());
             subscriptionRepository.save(subscription);
+            try {
+                planRedisRepository.deletePlan(workspaceId);
+            } catch (Exception e) {
+                log.warn("Failed to delete plan from Redis for workspace {}: {}", workspaceId, e.getMessage());
+            }
             log.info("Subscription canceled for workspace: {}", workspaceId);
         });
+    }
+
+    public void markSubscriptionPastDueByStripeId(String stripeSubscriptionId) {
+        subscriptionRepository.findByStripeSubscriptionId(stripeSubscriptionId).ifPresent(subscription -> {
+            subscription.setStatus("past_due");
+            subscription.setUpdatedAt(Instant.now());
+            subscriptionRepository.save(subscription);
+            // mark in redis so PulseCore can act accordingly
+            try {
+                planRedisRepository.savePlan(subscription.getWorkspaceId(), getPlanLimits(subscription.getPlan()));
+            } catch (Exception e) {
+                log.warn("Failed to update plan in Redis for past_due subscription {}: {}", stripeSubscriptionId, e.getMessage());
+            }
+            log.info("Marked subscription past_due for workspace {}", subscription.getWorkspaceId());
+        });
+    }
+
+    public void handleSubscriptionDeletedByStripeId(String stripeSubscriptionId) {
+        subscriptionRepository.findByStripeSubscriptionId(stripeSubscriptionId).ifPresent(subscription -> {
+            cancelSubscription(subscription.getWorkspaceId());
+        });
+    }
+
+    private java.util.Map<String, Object> getPlanLimits(String plan) {
+        java.util.Map<String, Object> map = new java.util.HashMap<>();
+        if (plan == null) plan = "free";
+        switch (plan.toLowerCase()) {
+            case "business":
+                map.put("plan", "business");
+                map.put("event_quota", 100000);
+                map.put("connectors", "all");
+                break;
+            case "pro":
+                map.put("plan", "pro");
+                map.put("event_quota", 10000);
+                map.put("connectors", "standard");
+                break;
+            default:
+                map.put("plan", "free");
+                map.put("event_quota", 1000);
+                map.put("connectors", "basic");
+                break;
+        }
+        return map;
     }
 }

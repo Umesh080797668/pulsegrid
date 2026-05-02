@@ -18,6 +18,7 @@ import java.util.UUID;
 public class BillingController {
 
     private final BillingService billingService;
+    private final io.pulsegrid.enterprise.service.service.StripeClientService stripeClientService;
 
     @GetMapping("/subscription/{workspaceId}")
     public ResponseEntity<?> getSubscription(@PathVariable UUID workspaceId) {
@@ -35,6 +36,26 @@ public class BillingController {
                 request.getPlan()
         );
         return ResponseEntity.ok(subscription);
+    }
+
+    @PostMapping("/stripe/customer")
+    public ResponseEntity<?> createStripeCustomer(@Valid @RequestBody io.pulsegrid.enterprise.service.dto.CreateStripeCustomerRequest req) {
+        try {
+            com.stripe.model.Customer c = stripeClientService.createCustomer(req.getEmail(), req.getName());
+            return ResponseEntity.ok(c);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/stripe/subscribe")
+    public ResponseEntity<?> createStripeSubscription(@Valid @RequestBody io.pulsegrid.enterprise.service.dto.CreateStripeSubscriptionRequest req) {
+        try {
+            com.stripe.model.Subscription sub = stripeClientService.createSubscriptionForWorkspace(req.getWorkspaceId(), req.getCustomerId(), req.getPriceId(), req.getPlan());
+            return ResponseEntity.ok(sub);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(e.getMessage());
+        }
     }
 
     @DeleteMapping("/subscription/{workspaceId}")

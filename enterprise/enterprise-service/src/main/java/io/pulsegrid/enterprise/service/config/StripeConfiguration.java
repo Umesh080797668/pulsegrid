@@ -12,4 +12,13 @@ import lombok.Setter;
 @ConfigurationProperties(prefix = "stripe.api")
 public class StripeConfiguration {
     private String key;
+    private String webhookSecret;
+
+    public String getWebhookSecret() {
+        return webhookSecret;
+    }
+
+    public void setWebhookSecret(String webhookSecret) {
+        this.webhookSecret = webhookSecret;
+    }
 }

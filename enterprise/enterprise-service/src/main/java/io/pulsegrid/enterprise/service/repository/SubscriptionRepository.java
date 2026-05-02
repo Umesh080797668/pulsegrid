@@ -11,4 +11,5 @@ import java.util.UUID;
 public interface SubscriptionRepository extends JpaRepository<Subscription, UUID> {
     Optional<Subscription> findByWorkspaceId(UUID workspaceId);
     Optional<Subscription> findByStripeCustomerId(String stripeCustomerId);
+    Optional<Subscription> findByStripeSubscriptionId(String stripeSubscriptionId);
 }
