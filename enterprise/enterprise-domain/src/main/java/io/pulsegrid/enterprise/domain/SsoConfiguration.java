@@ -25,10 +25,30 @@ public class SsoConfiguration {
     private UUID workspaceId;
 
     @Column(nullable = false)
-    private String provider; // "saml2", "oidc", "ldap"
+    private String provider; // "saml2" or "oidc"
 
-    @Column(columnDefinition = "jsonb")
-    private String metadata; // SAML metadata XML or OIDC discovery config
+    @Column(name = "entity_id", nullable = false)
+    private String entityId;
+
+    @Column(name = "acs_url", nullable = false)
+    private String acsUrl;
+
+    @Lob
+    @Column(name = "idp_metadata_xml", nullable = false)
+    private String idpMetadataXml;
+
+    @Lob
+    @Column(name = "attribute_mapping_json", nullable = false)
+    private String attributeMappingJson;
+
+    @Column(name = "oidc_issuer_url")
+    private String oidcIssuerUrl;
+
+    @Column(name = "oidc_client_id")
+    private String oidcClientId;
+
+    @Column(name = "oidc_client_secret")
+    private String oidcClientSecret;
 
     @Column(name = "enabled", nullable = false)
     private Boolean enabled = false;

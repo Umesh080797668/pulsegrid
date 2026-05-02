@@ -1,0 +1,60 @@
+:host {
+  display: block;
+  min-height: 100dvh;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.2), transparent 28%),
+    radial-gradient(circle at top right, rgba(99, 102, 241, 0.18), transparent 34%),
+    linear-gradient(180deg, #030712 0%, #07111f 100%);
+  color: #eef4ff;
+}
+
+.shell {
+  min-height: 100dvh;
+  padding: 1.25rem;
+  box-sizing: border-box;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.15rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 20px;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(14px);
+}
+
+.brand-kicker {
+  margin: 0 0 0.15rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+}
+
+.brand {
+  color: #eef4ff;
+  text-decoration: none;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.nav a {
+  color: #9fb2cc;
+  text-decoration: none;
+  padding: 0.55rem 0.85rem;
+  border-radius: 999px;
+}
+
+.nav a.active {
+  color: #fff;
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.page {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+}

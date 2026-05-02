@@ -4,13 +4,11 @@ import com.stripe.Stripe;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Customer;
 import com.stripe.model.PaymentMethod;
-import com.stripe.model.Subscription;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import io.pulsegrid.enterprise.service.config.StripeConfiguration;
-import io.pulsegrid.enterprise.service.repository.PlanRedisRepository;
 
 import java.util.*;
 
@@ -21,7 +19,6 @@ public class StripeClientService {
 
     private final StripeConfiguration stripeConfiguration;
     private final BillingService billingService;
-    private final PlanRedisRepository planRedisRepository;
 
     private void ensureApiKey() {
         if (Stripe.apiKey == null || Stripe.apiKey.isEmpty()) {
