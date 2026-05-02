@@ -1,8 +1,10 @@
 import { Injectable } from '@angular/core';
-import type { LoginUrlResponse, SsoConfigurationModel } from './sso.types';
+import type { LoginUrlResponse, SsoConfigurationModel } from '../../sso.types';
 
-@Injectable({ providedIn: 'root' })
-export class SsoAdminApiService {
+@Injectable({
+  providedIn: 'root',
+})
+export class SsoAdminApi {
   private readonly apiBase = '/api/v1/enterprise';
 
   async loadConfig(workspaceId: string): Promise<SsoConfigurationModel | null> {

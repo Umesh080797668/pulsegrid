@@ -1,0 +1,154 @@
+<section class="hero">
+  <div>
+    <p class="eyebrow">Enterprise SSO</p>
+    <h1>SAML 2.0 / OIDC configuration</h1>
+    <p class="lede">
+      Configure workspace-level identity provider metadata, entity IDs, ACS URLs, attribute mappings, and sign-in links for Okta,
+      Azure AD, and Google Workspace.
+    </p>
+  </div>
+  <div class="hero-card">
+    <div class="hero-card-title">Workspace</div>
+    <label>
+      Workspace ID
+      <input [(ngModel)]="workspaceId" placeholder="6f9f0d3c-…" />
+    </label>
+    <div class="row">
+      <button class="primary" (click)="loadConfig()" [disabled]="busy || !workspaceId">Load</button>
+      <button class="secondary" (click)="resetForm()" [disabled]="busy">Reset</button>
+    </div>
+    <p class="hint">A dedicated SSO configuration page is available for every enterprise workspace.</p>
+  </div>
+</section>
+
+<section class="content-grid">
+  <article class="panel">
+    <div class="panel-header">
+      <div>
+        <h2>Provider setup</h2>
+        <p>Persist per-tenant SSO configuration and supply the correct login URLs for each workspace.</p>
+      </div>
+      <div class="actions">
+        <button class="ghost" (click)="applyPreset('okta')">Okta</button>
+        <button class="ghost" (click)="applyPreset('azure')">Azure AD</button>
+        <button class="ghost" (click)="applyPreset('google')">Google Workspace</button>
+      </div>
+    </div>
+
+    <div class="grid-two">
+      <label>
+        Provider
+        <select [(ngModel)]="config.provider">
+          <option value="saml2">SAML 2.0</option>
+          <option value="oidc">OIDC / OAuth2</option>
+        </select>
+      </label>
+      <label>
+        Enabled
+        <input type="checkbox" [(ngModel)]="config.enabled" />
+      </label>
+    </div>
+
+    <div class="grid-two">
+      <label>
+        Entity ID
+        <input [(ngModel)]="config.entityId" placeholder="urn:pulsegrid:workspace:..." />
+      </label>
+      <label>
+        ACS URL
+        <input [(ngModel)]="config.acsUrl" placeholder="https://enterprise.example.com/api/v1/enterprise/login/saml2/sso/..." />
+      </label>
+    </div>
+
+    <div class="grid-two">
+      <label>
+        Email attribute
+        <input [(ngModel)]="config.emailAttribute" />
+      </label>
+      <label>
+        Role attribute
+        <input [(ngModel)]="config.roleAttribute" />
+      </label>
+    </div>
+
+    <div class="grid-two">
+      <label>
+        Department attribute
+        <input [(ngModel)]="config.departmentAttribute" />
+      </label>
+      <label>
+        Groups attribute
+        <input [(ngModel)]="config.groupsAttribute" />
+      </label>
+    </div>
+
+    <ng-container *ngIf="config.provider === 'saml2'; else oidcFields">
+      <label>
+        IdP metadata XML
+        <textarea [(ngModel)]="config.idpMetadataXml" rows="14" placeholder="Paste Okta, Azure AD, or Google Workspace metadata XML here"></textarea>
+      </label>
+    </ng-container>
+    <ng-template #oidcFields>
+      <div class="grid-two">
+        <label>
+          OIDC issuer URL
+          <input [(ngModel)]="config.oidcIssuerUrl" placeholder="https://login.microsoftonline.com/.../v2.0" />
+        </label>
+        <label>
+          OIDC client ID
+          <input [(ngModel)]="config.oidcClientId" />
+        </label>
+      </div>
+      <label>
+        OIDC client secret
+        <input [(ngModel)]="config.oidcClientSecret" type="password" />
+      </label>
+      <label>
+        IdP metadata XML / discovery note
+        <textarea [(ngModel)]="config.idpMetadataXml" rows="8" placeholder="Store IdP metadata XML or paste a discovery note for admins"></textarea>
+      </label>
+    </ng-template>
+
+    <div class="row">
+      <button class="primary" (click)="saveConfig()" [disabled]="busy || !workspaceId">Save configuration</button>
+      <button class="secondary" (click)="enableConfig()" [disabled]="busy || !workspaceId">Enable</button>
+      <button class="secondary" (click)="disableConfig()" [disabled]="busy || !workspaceId">Disable</button>
+      <button class="ghost danger" (click)="deleteConfig()" [disabled]="busy || !workspaceId">Delete</button>
+    </div>
+
+    <p class="status" [class.error]="!!error">{{ error || info }}</p>
+  </article>
+
+  <aside class="stack">
+    <article class="panel spotlight">
+      <h2>Provider presets</h2>
+      <ul>
+        <li *ngFor="let preset of presets">
+          <strong>{{ preset.label }}</strong>
+          <p>{{ preset.notes }}</p>
+        </li>
+      </ul>
+    </article>
+
+    <article class="panel">
+      <h2>Login URLs</h2>
+      <div class="url-card">
+        <span>SAML login</span>
+        <code>{{ config.samlLoginUrl || 'Load or save a workspace first' }}</code>
+      </div>
+      <div class="url-card">
+        <span>OIDC login</span>
+        <code>{{ config.oidcLoginUrl || 'Load or save a workspace first' }}</code>
+      </div>
+      <div class="row">
+        <button class="ghost" (click)="refreshGeneratedArtifacts()" [disabled]="busy || !workspaceId">Refresh artifacts</button>
+        <button class="ghost" (click)="copyMetadata()" [disabled]="!config.serviceProviderMetadataXml">Copy SP metadata</button>
+      </div>
+    </article>
+
+    <article class="panel">
+      <h2>Service provider metadata</h2>
+      <textarea rows="16" readonly [value]="config.serviceProviderMetadataXml || 'Generated metadata will appear after loading a workspace' "></textarea>
+    </article>
+  </aside>
+</section>
