@@ -1,1 +1,30 @@
-<p>compliance-dashboard works!</p>
+<section class="compliance-dashboard" *ngIf="metrics$ | async as metrics">
+  <div class="header">
+    <h2>Compliance Dashboard</h2>
+    <button mat-flat-button color="primary" (click)="runAudit()">Run Compliance Audit</button>
+  </div>
+
+  <div class="kpis">
+    <article class="kpi">
+      <h3>Overall Score</h3>
+      <p>{{ metrics.overallScore || 0 }}%</p>
+    </article>
+    <article class="kpi">
+      <h3>Policies Checked</h3>
+      <p>{{ metrics.policiesChecked || 0 }}</p>
+    </article>
+    <article class="kpi">
+      <h3>Violations Found</h3>
+      <p>{{ metrics.violationsFound || 0 }}</p>
+    </article>
+    <article class="kpi">
+      <h3>Last Audit</h3>
+      <p>{{ metrics.lastAudit | date:'medium' }}</p>
+    </article>
+  </div>
+
+  <div class="summary">
+    <p><strong>Policies:</strong> {{ (policies$ | async)?.length || 0 }}</p>
+    <p><strong>Violations:</strong> {{ (violations$ | async)?.length || 0 }}</p>
+  </div>
+</section>

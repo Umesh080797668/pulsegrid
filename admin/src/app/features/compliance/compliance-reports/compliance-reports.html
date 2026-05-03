@@ -1,1 +1,32 @@
-<p>compliance-reports works!</p>
+<section class="compliance-reports">
+  <h2>Compliance Reports</h2>
+
+  <mat-form-field appearance="fill" class="full-width">
+    <mat-label>Report ID</mat-label>
+    <input matInput [(ngModel)]="reportId" placeholder="report-2026-05" />
+  </mat-form-field>
+
+  <div class="actions">
+    <button mat-stroked-button color="primary" (click)="exportReport('pdf')" [disabled]="!reportId">
+      Export PDF
+    </button>
+    <button mat-stroked-button color="primary" (click)="exportReport('csv')" [disabled]="!reportId">
+      Export CSV
+    </button>
+  </div>
+
+  <h3>Schedule Audit</h3>
+  <div class="schedule">
+    <mat-form-field appearance="fill">
+      <mat-label>Frequency</mat-label>
+      <input matInput [(ngModel)]="frequency" placeholder="daily/weekly/monthly" />
+    </mat-form-field>
+
+    <mat-form-field appearance="fill">
+      <mat-label>Time (UTC)</mat-label>
+      <input matInput [(ngModel)]="time" placeholder="03:00" />
+    </mat-form-field>
+
+    <button mat-flat-button color="primary" (click)="scheduleAudit()">Save Schedule</button>
+  </div>
+</section>

@@ -1,1 +1,17 @@
-<p>compliance-policies works!</p>
+<section class="compliance-policies">
+  <h2>Compliance Policies</h2>
+
+  <div class="policy-list" *ngIf="policies$ | async as policies">
+    <article class="policy" *ngFor="let p of policies">
+      <div class="meta">
+        <h3>{{ p.name || p.id }}</h3>
+        <p>{{ p.description || 'No description' }}</p>
+      </div>
+      <mat-form-field appearance="fill">
+        <mat-label>Level / Status</mat-label>
+        <input matInput [(ngModel)]="drafts[p.id]" [placeholder]="p.level || p.status || 'required'" />
+      </mat-form-field>
+      <button mat-stroked-button color="primary" (click)="updatePolicy(p)">Save</button>
+    </article>
+  </div>
+</section>

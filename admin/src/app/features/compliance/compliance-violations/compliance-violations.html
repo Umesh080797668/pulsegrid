@@ -1,1 +1,12 @@
-<p>compliance-violations works!</p>
+<section class="compliance-violations">
+  <h2>Compliance Violations</h2>
+
+  <div class="violation-list" *ngIf="violations$ | async as violations">
+    <article class="violation" *ngFor="let v of violations">
+      <h3>{{ v.rule || v.code || 'Violation' }}</h3>
+      <p>{{ v.message || v.description }}</p>
+      <p><strong>Severity:</strong> {{ v.severity || 'medium' }}</p>
+      <p><strong>Resource:</strong> {{ v.resource || v.entity || '-' }}</p>
+    </article>
+  </div>
+</section>
