@@ -4,9 +4,173 @@ import { useEffect, useMemo, useState } from 'react';
 import { getWorkspaceSubscriptionStatus, upgradeWorkspacePlan, type WorkspaceSubscriptionStatus } from '../../../lib/api';
 import { useDashboardStore } from '../../../lib/store';
 
+interface PlanTier {
+  name: string;
+  price: number;
+  billing: string;
+  features: string[];
+  limits: {
+    flows: number | string;
+    events_per_day: number | string;
+    events_per_month: number | string;
+    team_members: number | string;
+    run_history: string;
+    connectors: string;
+    analytics: string;
+    support: string;
+  };
+  recommended?: boolean;
+}
+
+const PLAN_TIERS: Record<string, PlanTier> = {
+  free: {
+    name: 'Free',
+    price: 0,
+    billing: 'forever',
+    features: ['Perfect for getting started', 'Limited flows and events'],
+    limits: {
+      flows: 5,
+      events_per_day: '1,000',
+      events_per_month: '30,000',
+      team_members: 1,
+      run_history: '7 days',
+      connectors: 'Tier 1 only',
+      analytics: 'Basic',
+      support: 'Community',
+    },
+  },
+  pro: {
+    name: 'Pro',
+    price: 12,
+    billing: '/month',
+    features: ['For growing teams', 'Advanced connectors', 'Higher limits'],
+    limits: {
+      flows: 50,
+      events_per_day: '100,000',
+      events_per_month: '3,000,000',
+      team_members: 3,
+      run_history: '90 days',
+      connectors: 'Tier 1 & 2',
+      analytics: 'Standard',
+      support: 'Email',
+    },
+  },
+  business: {
+    name: 'Business',
+    price: 49,
+    billing: '/month',
+    recommended: true,
+    features: [
+      'For scaling businesses',
+      'Full connector access',
+      '25 team members',
+      'Advanced analytics',
+      '1-year run history',
+      'Priority support',
+    ],
+    limits: {
+      flows: 500,
+      events_per_day: '2,000,000',
+      events_per_month: '60,000,000',
+      team_members: 25,
+      run_history: '1 year',
+      connectors: 'All tiers',
+      analytics: 'Advanced',
+      support: 'Priority email',
+    },
+  },
+};
+
 function isFinalStatus(status?: string) {
   const normalized = (status || '').toLowerCase();
   return normalized === 'active' || normalized === 'canceled' || normalized === 'incomplete_expired';
+}
+
+function PlanCard({ planKey, tier, isCurrent, isUpgrade, onUpgrade, loading }: 
+  { planKey: string; tier: PlanTier; isCurrent: boolean; isUpgrade: boolean; onUpgrade: () => void; loading: boolean }) {
+  return (
+    <div className={`plan-card ${isCurrent ? 'current' : ''} ${tier.recommended ? 'recommended' : ''}`} style={{
+      border: tier.recommended ? '2px solid #ff6b35' : '1px solid #ddd',
+      borderRadius: '8px',
+      padding: '24px',
+      marginBottom: '16px',
+      backgroundColor: tier.recommended ? '#fff9f5' : '#fff',
+      position: 'relative',
+    }}>
+      {tier.recommended && (
+        <div style={{
+          position: 'absolute',
+          top: '-12px',
+          left: '16px',
+          backgroundColor: '#ff6b35',
+          color: 'white',
+          padding: '4px 12px',
+          borderRadius: '4px',
+          fontSize: '12px',
+          fontWeight: 'bold',
+        }}>
+          RECOMMENDED
+        </div>
+      )}
+      
+      <div style={{ marginTop: tier.recommended ? '8px' : '0' }}>
+        <h3 style={{ margin: '0 0 8px 0', fontSize: '20px', fontWeight: 'bold' }}>{tier.name}</h3>
+        <div style={{ marginBottom: '16px' }}>
+          <span style={{ fontSize: '32px', fontWeight: 'bold' }}>${tier.price}</span>
+          <span style={{ fontSize: '14px', color: '#666' }}>{tier.billing}</span>
+        </div>
+        
+        <div style={{ marginBottom: '16px' }}>
+          {tier.features.map((feature, idx) => (
+            <div key={idx} style={{ fontSize: '14px', color: '#555', marginBottom: '4px' }}>
+              ✓ {feature}
+            </div>
+          ))}
+        </div>
+        
+        <div style={{ 
+          backgroundColor: '#f5f5f5', 
+          padding: '12px', 
+          borderRadius: '4px', 
+          marginBottom: '16px',
+          fontSize: '13px'
+        }}>
+          <div style={{ marginBottom: '8px' }}><strong>Limits:</strong></div>
+          <div>Flows: {tier.limits.flows}</div>
+          <div>Events/day: {tier.limits.events_per_day}</div>
+          <div>Team members: {tier.limits.team_members}</div>
+          <div>Run history: {tier.limits.run_history}</div>
+          <div>Connectors: {tier.limits.connectors}</div>
+          <div>Analytics: {tier.limits.analytics}</div>
+          <div>Support: {tier.limits.support}</div>
+        </div>
+        
+        {isCurrent ? (
+          <button className="btn btn-disabled" style={{ width: '100%' }}>
+            Current Plan
+          </button>
+        ) : isUpgrade ? (
+          <button 
+            className="btn btn-primary" 
+            onClick={onUpgrade} 
+            disabled={loading}
+            style={{ width: '100%' }}
+          >
+            {loading ? 'Processing…' : `Upgrade to ${tier.name}`}
+          </button>
+        ) : (
+          <button 
+            className="btn btn-secondary" 
+            onClick={onUpgrade} 
+            disabled={loading}
+            style={{ width: '100%' }}
+          >
+            {loading ? 'Processing…' : `Downgrade to ${tier.name}`}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function BillingSettingsPage() {
@@ -15,6 +179,7 @@ export default function BillingSettingsPage() {
   const [loading, setLoading] = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [selectedUpgradePlan, setSelectedUpgradePlan] = useState<string | null>(null);
 
   const currentWorkspace = useMemo(
     () => workspaces.find((ws) => ws.id === workspaceId) || null,
@@ -63,17 +228,18 @@ export default function BillingSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.billing?.status, accessToken, workspaceId]);
 
-  const onUpgradeToPro = async () => {
+  const onUpgradePlan = async (plan: string) => {
     if (!accessToken || !workspaceId) {
       return;
     }
 
     setUpgradeLoading(true);
     setMessage('');
+    setSelectedUpgradePlan(plan);
     try {
       const response = await upgradeWorkspacePlan({
         workspaceId,
-        plan: 'pro',
+        plan,
         token: accessToken,
         setToken: setAccessToken,
       });
@@ -83,15 +249,15 @@ export default function BillingSettingsPage() {
       };
 
       if (!response.ok) {
-        setMessage('Upgrade request failed. Please retry.');
+        setMessage(`Failed to upgrade to ${plan}. Please retry.`);
         return;
       }
 
       setStatus(payload);
       setMessage(
         payload?.billing?.status === 'active'
-          ? 'Upgrade confirmed. Pro plan is active.'
-          : 'Upgrade requested. Waiting for Stripe webhook confirmation…',
+          ? `Upgrade to ${plan.charAt(0).toUpperCase() + plan.slice(1)} confirmed!`
+          : `Upgrade to ${plan.charAt(0).toUpperCase() + plan.slice(1)} requested. Waiting for confirmation…`,
       );
 
       const finalPlan = payload?.billing?.confirmed_plan || payload?.workspace?.plan;
@@ -108,9 +274,10 @@ export default function BillingSettingsPage() {
         );
       }
     } catch {
-      setMessage('Upgrade request failed. Please retry.');
+      setMessage(`Failed to upgrade. Please retry.`);
     } finally {
       setUpgradeLoading(false);
+      setSelectedUpgradePlan(null);
     }
   };
 
@@ -123,7 +290,7 @@ export default function BillingSettingsPage() {
       <div className="page-hd">
         <div>
           <div className="page-title">Billing</div>
-          <div className="page-sub">Upgrade workspace plans and monitor Stripe confirmation status</div>
+          <div className="page-sub">Manage workspace plans, view limits, and upgrade your subscription</div>
         </div>
         <div className="page-actions">
           <button className="btn btn-secondary" onClick={() => void refreshStatus()} disabled={loading}>
@@ -132,7 +299,7 @@ export default function BillingSettingsPage() {
         </div>
       </div>
 
-      {message && <div className="alert alert-success mb-16">{message}</div>}
+      {message && <div className={`alert ${message.includes('Failed') ? 'alert-error' : 'alert-success'} mb-16`}>{message}</div>}
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-hd">
@@ -142,7 +309,7 @@ export default function BillingSettingsPage() {
           <tbody>
             <tr>
               <th style={{ width: 240 }}>Workspace plan</th>
-              <td>{displayPlan}</td>
+              <td style={{ fontWeight: 'bold', color: '#ff6b35' }}>{displayPlan.toUpperCase()}</td>
             </tr>
             <tr>
               <th>Requested plan</th>
@@ -164,15 +331,39 @@ export default function BillingSettingsPage() {
 
       <div className="card">
         <div className="card-hd">
-          <div className="card-title">Upgrade</div>
+          <div className="card-title">Available Plans</div>
         </div>
-        <p className="text-faint" style={{ marginTop: 0 }}>
-          Pro unlocks advanced connectors and higher usage limits.
-        </p>
-        <button className="btn btn-primary" onClick={onUpgradeToPro} disabled={upgradeLoading || !workspaceId}>
-          {upgradeLoading ? 'Requesting upgrade…' : 'Upgrade to Pro'}
-        </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+          {Object.entries(PLAN_TIERS).map(([planKey, tier]) => (
+            <PlanCard
+              key={planKey}
+              planKey={planKey}
+              tier={tier}
+              isCurrent={displayPlan === planKey}
+              isUpgrade={displayPlan === 'free' || (displayPlan === 'pro' && planKey === 'business')}
+              onUpgrade={() => onUpgradePlan(planKey)}
+              loading={upgradeLoading && selectedUpgradePlan === planKey}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: '20px', backgroundColor: '#f0f8ff', borderLeft: '4px solid #0066cc' }}>
+        <div className="card-hd">
+          <div className="card-title">Business Plan Benefits</div>
+        </div>
+        <ul style={{ paddingLeft: '20px', margin: 0 }}>
+          <li>2 million events per day</li>
+          <li>60 million events per month</li>
+          <li>Up to 25 team members</li>
+          <li>1-year run history retention</li>
+          <li>Full access to all 500+ connectors</li>
+          <li>Advanced analytics and reporting</li>
+          <li>Priority email support</li>
+          <li>99.9% SLA guarantee</li>
+        </ul>
       </div>
     </div>
   );
 }
+

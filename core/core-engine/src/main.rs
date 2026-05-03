@@ -157,21 +157,27 @@ const PRO_CONNECTORS: &[&str] = &[
 // - Plan downgrades with data retention options
 fn plan_limits(plan: &str) -> PlanLimits {
     match plan.trim().to_lowercase().as_str() {
+        "business" => PlanLimits {
+            max_flows: 500,
+            max_events_per_month: 60_000_000,
+            max_connectors: 100,
+            allowed_connector_tier: "business",
+        },
         "pro" => PlanLimits {
             max_flows: 50,
-            max_events_per_month: 50_000,
+            max_events_per_month: 3_000_000,
             max_connectors: 10,
             allowed_connector_tier: "pro",
         },
-        "business" | "enterprise" => PlanLimits {
-            max_flows: 500,
-            max_events_per_month: 500_000,
-            max_connectors: 100,
+        "enterprise" => PlanLimits {
+            max_flows: 5000,
+            max_events_per_month: 600_000_000,
+            max_connectors: 1000,
             allowed_connector_tier: "business",
         },
         _ => PlanLimits {
             max_flows: 5,
-            max_events_per_month: 1_000,
+            max_events_per_month: 30_000,
             max_connectors: 3,
             allowed_connector_tier: "free",
         },

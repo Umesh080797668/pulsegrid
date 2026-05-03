@@ -132,16 +132,43 @@ public class BillingService {
         switch (plan.toLowerCase()) {
             case "business":
                 map.put("plan", "business");
-                map.put("event_quota", 100000);
+                map.put("max_events_per_day", 2_000_000L);
+                map.put("max_events_per_month", 60_000_000L);
+                map.put("max_flows", 500);
+                map.put("max_connectors", 100);
+                map.put("max_team_members", 25);
+                map.put("allowed_connector_tier", "business");
+                map.put("run_history_days", 365);
+                map.put("advanced_analytics", true);
+                map.put("priority_support", true);
+                map.put("event_quota", 2_000_000);
                 map.put("connectors", "all");
                 break;
             case "pro":
                 map.put("plan", "pro");
-                map.put("event_quota", 10000);
+                map.put("max_events_per_day", 100_000L);
+                map.put("max_events_per_month", 3_000_000L);
+                map.put("max_flows", 50);
+                map.put("max_connectors", 10);
+                map.put("max_team_members", 3);
+                map.put("allowed_connector_tier", "pro");
+                map.put("run_history_days", 90);
+                map.put("advanced_analytics", false);
+                map.put("priority_support", false);
+                map.put("event_quota", 100_000);
                 map.put("connectors", "standard");
                 break;
             default:
                 map.put("plan", "free");
+                map.put("max_events_per_day", 1_000L);
+                map.put("max_events_per_month", 30_000L);
+                map.put("max_flows", 5);
+                map.put("max_connectors", 3);
+                map.put("max_team_members", 1);
+                map.put("allowed_connector_tier", "free");
+                map.put("run_history_days", 7);
+                map.put("advanced_analytics", false);
+                map.put("priority_support", false);
                 map.put("event_quota", 1000);
                 map.put("connectors", "basic");
                 break;

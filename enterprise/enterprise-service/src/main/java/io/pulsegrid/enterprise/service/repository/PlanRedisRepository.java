@@ -35,4 +35,44 @@ public class PlanRedisRepository {
         String key = "tenant:" + workspaceId + ":plan";
         redisTemplate.delete(key);
     }
+
+    /**
+     * Retrieve plan configuration from Redis cache
+     * Returns default free plan if not found in cache
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> getPlan(UUID workspaceId) {
+        try {
+            String key = "tenant:" + workspaceId + ":plan";
+            String json = redisTemplate.opsForValue().get(key);
+            
+            if (json == null) {
+                // Return default free plan if not cached
+                return getDefaultFreePlan();
+            }
+            
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            log.warn("Failed to deserialize plan for workspace {}: {}", workspaceId, e.getMessage());
+            return getDefaultFreePlan();
+        }
+    }
+
+    /**
+     * Get default free plan configuration
+     */
+    private Map<String, Object> getDefaultFreePlan() {
+        return Map.ofEntries(
+                Map.entry("plan", "free"),
+                Map.entry("max_events_per_day", 1000L),
+                Map.entry("max_events_per_month", 30000L),
+                Map.entry("max_flows", 5),
+                Map.entry("max_connectors", 3),
+                Map.entry("max_team_members", 1),
+                Map.entry("allowed_connector_tier", "free"),
+                Map.entry("run_history_days", 7),
+                Map.entry("advanced_analytics", false),
+                Map.entry("priority_support", false)
+        );
+    }
 }
