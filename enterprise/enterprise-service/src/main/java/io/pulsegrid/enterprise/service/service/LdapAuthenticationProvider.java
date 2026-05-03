@@ -2,6 +2,7 @@ package io.pulsegrid.enterprise.service.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.pulsegrid.enterprise.domain.AuditEventType;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -28,6 +29,7 @@ public class LdapAuthenticationProvider implements AuthenticationProvider {
 
     private final LdapService ldapService;
     private final UserProvisioningService userProvisioningService;
+    private final AuditService auditService;
 
     @Override
     public Authentication authenticate(Authentication authentication) throws AuthenticationException {
@@ -45,6 +47,19 @@ public class LdapAuthenticationProvider implements AuthenticationProvider {
 
             if (ldapUser.isEmpty()) {
                 log.warn("LDAP authentication failed for user: {} in workspace: {}", username, workspaceId);
+                auditService.recordPrivilegedAction(
+                        workspaceId,
+                        null,
+                        AuditEventType.FAILED_LOGIN,
+                        "LDAP login failed",
+                        "authentication",
+                        username,
+                        null,
+                        null,
+                        "Invalid LDAP credentials",
+                        resolveIpAddress(),
+                        resolveUserAgent()
+                );
                 throw new BadCredentialsException("Invalid credentials");
             }
 
@@ -80,6 +95,20 @@ public class LdapAuthenticationProvider implements AuthenticationProvider {
                     authorities
             );
             token.setDetails(userInfo);
+
+                auditService.recordPrivilegedAction(
+                    workspaceId,
+                    null,
+                    AuditEventType.LOGIN,
+                    "LDAP login successful",
+                    "authentication",
+                    username,
+                    null,
+                    userInfo,
+                    "Successful LDAP authentication and JIT provisioning",
+                    resolveIpAddress(),
+                    resolveUserAgent()
+                );
 
             return token;
 
@@ -124,5 +153,26 @@ public class LdapAuthenticationProvider implements AuthenticationProvider {
         }
 
         return null;
+    }
+
+    private String resolveIpAddress() {
+        ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attrs == null) {
+            return "unknown";
+        }
+        HttpServletRequest request = attrs.getRequest();
+        String forwardedFor = request.getHeader("X-Forwarded-For");
+        if (forwardedFor != null && !forwardedFor.isBlank()) {
+            return forwardedFor.split(",")[0].trim();
+        }
+        return request.getRemoteAddr() != null ? request.getRemoteAddr() : "unknown";
+    }
+
+    private String resolveUserAgent() {
+        ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        if (attrs == null) {
+            return null;
+        }
+        return attrs.getRequest().getHeader("User-Agent");
     }
 }

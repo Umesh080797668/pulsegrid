@@ -1,6 +1,7 @@
 package io.pulsegrid.enterprise.service.service;
 
 import io.pulsegrid.enterprise.domain.Subscription;
+import io.pulsegrid.enterprise.domain.AuditEventType;
 import io.pulsegrid.enterprise.service.repository.SubscriptionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,7 @@ public class BillingService {
 
     private final SubscriptionRepository subscriptionRepository;
     private final io.pulsegrid.enterprise.service.repository.PlanRedisRepository planRedisRepository;
+    private final AuditService auditService;
 
     public Optional<Subscription> getSubscriptionByWorkspaceId(UUID workspaceId) {
         return subscriptionRepository.findByWorkspaceId(workspaceId);
@@ -30,6 +32,12 @@ public class BillingService {
     public Subscription createOrUpdateSubscription(UUID workspaceId, String stripeCustomerId, String stripeSubscriptionId, String plan) {
         Subscription subscription = subscriptionRepository.findByWorkspaceId(workspaceId)
                 .orElseGet(() -> new Subscription());
+
+        java.util.Map<String, Object> beforeState = new java.util.LinkedHashMap<>();
+        beforeState.put("status", subscription.getStatus() == null ? "new" : subscription.getStatus());
+        beforeState.put("plan", subscription.getPlan());
+        beforeState.put("stripeSubscriptionId", subscription.getStripeSubscriptionId());
+        beforeState.put("stripeCustomerId", subscription.getStripeCustomerId());
 
         subscription.setWorkspaceId(workspaceId);
         subscription.setStripeCustomerId(stripeCustomerId);
@@ -40,6 +48,20 @@ public class BillingService {
         subscription.setCurrentPeriodEnd(Instant.now().plusSeconds(30L * 24 * 3600)); // 30 days
 
         Subscription saved = subscriptionRepository.save(subscription);
+
+    auditService.recordPrivilegedAction(
+        workspaceId,
+        null,
+        AuditEventType.PLAN_CHANGED,
+        "Subscription plan changed",
+        "subscription",
+        workspaceId.toString(),
+        beforeState,
+        saved,
+        "Billing subscription updated",
+        null,
+        null
+    );
 
         // Write plan limits into Redis for PulseCore to read
         try {
@@ -53,9 +75,27 @@ public class BillingService {
 
     public void cancelSubscription(UUID workspaceId) {
         subscriptionRepository.findByWorkspaceId(workspaceId).ifPresent(subscription -> {
+            java.util.Map<String, Object> beforeState = new java.util.LinkedHashMap<>();
+            beforeState.put("status", subscription.getStatus());
+            beforeState.put("plan", subscription.getPlan());
+            beforeState.put("stripeSubscriptionId", subscription.getStripeSubscriptionId());
+            beforeState.put("stripeCustomerId", subscription.getStripeCustomerId());
             subscription.setStatus("canceled");
             subscription.setUpdatedAt(Instant.now());
             subscriptionRepository.save(subscription);
+            auditService.recordPrivilegedAction(
+                    workspaceId,
+                    null,
+                    AuditEventType.SUBSCRIPTION_CANCELLED,
+                    "Subscription cancelled",
+                    "subscription",
+                    workspaceId.toString(),
+                    beforeState,
+                    subscription,
+                    "Subscription canceled via enterprise billing",
+                    null,
+                    null
+            );
             try {
                 planRedisRepository.deletePlan(workspaceId);
             } catch (Exception e) {

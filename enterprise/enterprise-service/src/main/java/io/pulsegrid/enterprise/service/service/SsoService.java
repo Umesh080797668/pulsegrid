@@ -3,6 +3,7 @@ package io.pulsegrid.enterprise.service.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.pulsegrid.enterprise.domain.SsoConfiguration;
+import io.pulsegrid.enterprise.domain.AuditEventType;
 import io.pulsegrid.enterprise.service.dto.SsoConfigurationRequest;
 import io.pulsegrid.enterprise.service.dto.SsoConfigurationResponse;
 import io.pulsegrid.enterprise.service.model.IdpMetadataDetails;
@@ -45,6 +46,7 @@ public class SsoService {
     private final SsoAttributeMapper ssoAttributeMapper;
     private final SamlAssertionVerifier samlAssertionVerifier;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     public Optional<SsoConfiguration> getSsoConfigurationEntity(UUID workspaceId) {
         return ssoConfigurationRepository.findByWorkspaceId(workspaceId);
@@ -67,6 +69,15 @@ public class SsoService {
         SsoConfiguration config = ssoConfigurationRepository.findByWorkspaceId(request.getWorkspaceId())
                 .orElseGet(SsoConfiguration::new);
 
+        Map<String, Object> beforeState = new java.util.LinkedHashMap<>();
+        beforeState.put("workspaceId", config.getWorkspaceId());
+        beforeState.put("provider", config.getProvider());
+        beforeState.put("enabled", config.getEnabled());
+        beforeState.put("entityId", config.getEntityId());
+        beforeState.put("acsUrl", config.getAcsUrl());
+        beforeState.put("oidcIssuerUrl", config.getOidcIssuerUrl());
+        beforeState.put("oidcClientId", config.getOidcClientId());
+
         config.setWorkspaceId(request.getWorkspaceId());
         config.setProvider(normalizeProvider(request.getProvider()));
         config.setEntityId(request.getEntityId().trim());
@@ -80,20 +91,76 @@ public class SsoService {
         config.setUpdatedAt(Instant.now());
 
         SsoConfiguration saved = ssoConfigurationRepository.save(config);
+        auditService.recordPrivilegedAction(
+                saved.getWorkspaceId(),
+                null,
+                AuditEventType.SSO_CONFIG_UPDATED,
+                "SSO configuration updated",
+                "sso_configuration",
+                saved.getWorkspaceId().toString(),
+                beforeState,
+                saved,
+                "Enterprise SSO configuration was created or updated",
+                null,
+                null
+        );
         log.info("SSO configuration updated for workspace={}, provider={}, registrationId={}", saved.getWorkspaceId(), saved.getProvider(), getRegistrationId(saved));
         return toResponse(saved);
     }
 
     public void enableSso(UUID workspaceId) {
+        SsoConfiguration before = requireConfiguration(workspaceId);
         updateEnabledState(workspaceId, true);
+        auditService.recordPrivilegedAction(
+                workspaceId,
+                null,
+                AuditEventType.SSO_CONFIG_ENABLED,
+                "SSO enabled",
+                "sso_configuration",
+                workspaceId.toString(),
+                before,
+                requireConfiguration(workspaceId),
+                "SSO was enabled for the workspace",
+                null,
+                null
+        );
     }
 
     public void disableSso(UUID workspaceId) {
+        SsoConfiguration before = requireConfiguration(workspaceId);
         updateEnabledState(workspaceId, false);
+        auditService.recordPrivilegedAction(
+                workspaceId,
+                null,
+                AuditEventType.SSO_CONFIG_DISABLED,
+                "SSO disabled",
+                "sso_configuration",
+                workspaceId.toString(),
+                before,
+                requireConfiguration(workspaceId),
+                "SSO was disabled for the workspace",
+                null,
+                null
+        );
     }
 
     public void deleteSsoConfiguration(UUID workspaceId) {
-        ssoConfigurationRepository.findByWorkspaceId(workspaceId).ifPresent(ssoConfigurationRepository::delete);
+        ssoConfigurationRepository.findByWorkspaceId(workspaceId).ifPresent(config -> {
+            auditService.recordPrivilegedAction(
+                    workspaceId,
+                    null,
+                    AuditEventType.SSO_CONFIG_DELETED,
+                    "SSO configuration deleted",
+                    "sso_configuration",
+                    workspaceId.toString(),
+                    config,
+                    null,
+                    "SSO configuration deleted from enterprise administration",
+                    null,
+                    null
+            );
+            ssoConfigurationRepository.delete(config);
+        });
     }
 
     public String buildLoginUrl(UUID workspaceId, String provider, String basePath) {

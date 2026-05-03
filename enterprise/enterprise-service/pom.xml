@@ -98,6 +98,23 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- JSON diff/patch library for audit log comparisons -->
+        <dependency>
+            <groupId>com.flipkart.zjsonpatch</groupId>
+            <artifactId>zjsonpatch</artifactId>
+            <version>0.4.14</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>2.0.29</version>
+        </dependency>
+        <!-- OpenCSV for CSV export -->
+        <dependency>
+            <groupId>com.opencsv</groupId>
+            <artifactId>opencsv</artifactId>
+            <version>5.9</version>
+        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

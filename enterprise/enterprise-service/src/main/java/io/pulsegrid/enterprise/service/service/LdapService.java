@@ -3,6 +3,7 @@ package io.pulsegrid.enterprise.service.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.pulsegrid.enterprise.domain.AuditEventType;
 import io.pulsegrid.enterprise.domain.LdapConfiguration;
 import io.pulsegrid.enterprise.domain.LdapSyncHistory;
 import io.pulsegrid.enterprise.service.dto.LdapConfigurationRequest;
@@ -45,6 +46,7 @@ public class LdapService {
     private final LdapSyncHistoryRepository ldapSyncHistoryRepository;
     private final UserProvisioningService userProvisioningService;
     private final ObjectMapper objectMapper;
+    private final AuditService auditService;
 
     public Optional<LdapConfigurationResponse> getLdapConfiguration(UUID workspaceId) {
         return ldapConfigRepository.findByWorkspaceId(workspaceId).map(this::toResponse);
@@ -59,6 +61,14 @@ public class LdapService {
 
         LdapConfiguration config = ldapConfigRepository.findByWorkspaceId(request.getWorkspaceId())
                 .orElseGet(LdapConfiguration::new);
+
+        Map<String, Object> beforeState = new java.util.LinkedHashMap<>();
+        beforeState.put("workspaceId", config.getWorkspaceId());
+        beforeState.put("ldapUrl", config.getLdapUrl());
+        beforeState.put("baseDn", config.getBaseDn());
+        beforeState.put("bindDn", config.getBindDn());
+        beforeState.put("enabled", config.getEnabled());
+        beforeState.put("syncIntervalMinutes", config.getSyncIntervalMinutes());
 
         config.setWorkspaceId(request.getWorkspaceId());
         config.setLdapUrl(request.getLdapUrl().trim());
@@ -77,7 +87,21 @@ public class LdapService {
         config.setGroupRoleMappingJson(serializeGroupRoleMapping(request.getGroupRoleMapping()));
         config.setSyncIntervalMinutes(request.getSyncIntervalMinutes() != null ? request.getSyncIntervalMinutes() : 60);
 
-        return toResponse(ldapConfigRepository.save(config));
+        LdapConfiguration saved = ldapConfigRepository.save(config);
+        auditService.recordPrivilegedAction(
+            saved.getWorkspaceId(),
+            null,
+            AuditEventType.LDAP_CONFIG_UPDATED,
+            "LDAP configuration updated",
+            "ldap_configuration",
+            saved.getWorkspaceId().toString(),
+            beforeState,
+            saved,
+            "LDAP configuration created or updated",
+            null,
+            null
+        );
+        return toResponse(saved);
     }
 
     public boolean testLdapConnection(UUID workspaceId) {
@@ -280,7 +304,22 @@ public class LdapService {
     }
 
     public void deleteLdapConfiguration(UUID workspaceId) {
-        ldapConfigRepository.findByWorkspaceId(workspaceId).ifPresent(ldapConfigRepository::delete);
+        ldapConfigRepository.findByWorkspaceId(workspaceId).ifPresent(config -> {
+            auditService.recordPrivilegedAction(
+                    workspaceId,
+                    null,
+                    AuditEventType.LDAP_CONFIG_UPDATED,
+                    "LDAP configuration deleted",
+                    "ldap_configuration",
+                    workspaceId.toString(),
+                    config,
+                    null,
+                    "LDAP configuration deleted from enterprise administration",
+                    null,
+                    null
+            );
+            ldapConfigRepository.delete(config);
+        });
     }
 
     private LdapTemplate createLdapTemplate(LdapConfiguration config) {
