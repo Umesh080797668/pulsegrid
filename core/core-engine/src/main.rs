@@ -281,6 +281,63 @@ async fn start_schedule_worker(cron_pool: sqlx::PgPool) {
     }
 }
 
+async fn start_approval_expiry_worker(pg_pool: sqlx::PgPool) {
+    let sweep_seconds = std::env::var("APPROVAL_EXPIRY_SWEEP_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(10);
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(sweep_seconds)).await;
+
+        let approval_manager = ApprovalManager::new(pg_pool.clone());
+        let expired_count = match approval_manager.expire_old_approvals().await {
+            Ok(count) => count,
+            Err(error) => {
+                eprintln!("Failed to expire old approvals: {}", error);
+                continue;
+            }
+        };
+
+        if expired_count == 0 {
+            continue;
+        }
+
+        match sqlx::query!(
+            r#"
+            UPDATE flow_runs fr
+            SET status = 'failed',
+                completed_at = COALESCE(fr.completed_at, NOW()),
+                error_message = 'Approval expired'
+            WHERE fr.status = 'pending_approval'
+              AND EXISTS (
+                  SELECT 1
+                  FROM pending_approvals pa
+                  WHERE pa.flow_run_id = fr.id
+                    AND pa.status = 'expired'
+              )
+            "#
+        )
+        .execute(&pg_pool)
+        .await
+        {
+            Ok(result) => {
+                if result.rows_affected() > 0 {
+                    println!(
+                        "⏱️ Expired {} approvals; failed {} flow runs waiting on approval",
+                        expired_count,
+                        result.rows_affected()
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!("Failed to mark flow runs as failed for expired approvals: {}", error);
+            }
+        }
+    }
+}
+
 async fn start_polling_worker(poll_pool: sqlx::PgPool) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -809,6 +866,7 @@ async fn main() {
     // Spawn background workers for cron/scheduled flows and generic polling triggers
     let cron_pool = pool.clone();
     let polling_pool = pool.clone();
+    let approval_expiry_pool = pool.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -816,7 +874,11 @@ async fn main() {
             .expect("failed to build cron runtime");
 
         rt.block_on(async move {
-            tokio::join!(start_schedule_worker(cron_pool), start_polling_worker(polling_pool));
+            tokio::join!(
+                start_schedule_worker(cron_pool),
+                start_polling_worker(polling_pool),
+                start_approval_expiry_worker(approval_expiry_pool)
+            );
         });
     });
 
@@ -1605,7 +1667,14 @@ async fn start_event_listener(
                                                                 "flow_definition": flow_def_clone,
                                                                 "trigger_event": event_clone,
                                                             });
-                                                            let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+                                                            let timeout_hours = step_clone
+                                                                .approval_config
+                                                                .as_ref()
+                                                                .map(|cfg| cfg.timeout_hours)
+                                                                .unwrap_or(24)
+                                                                .max(1) as i64;
+                                                            let expires_at = chrono::Utc::now()
+                                                                + chrono::Duration::hours(timeout_hours);
                                                             match executor_clone
                                                                 .create_pending_approval(flow_run_id_clone, &step_clone, context_json, expires_at)
                                                                 .await
@@ -2169,7 +2238,14 @@ async fn resume_flow_after_approval(
                             "flow_definition": flow_def_clone,
                             "trigger_event": event_clone,
                         });
-                        let expires_at = chrono::Utc::now() + chrono::Duration::days(7);
+                        let timeout_hours = step_clone
+                            .approval_config
+                            .as_ref()
+                            .map(|cfg| cfg.timeout_hours)
+                            .unwrap_or(24)
+                            .max(1) as i64;
+                        let expires_at = chrono::Utc::now()
+                            + chrono::Duration::hours(timeout_hours);
 
                         match executor_clone
                             .create_pending_approval(flow_run_id_clone, &step_clone, context_json, expires_at)
