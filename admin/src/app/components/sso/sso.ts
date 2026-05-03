@@ -22,8 +22,8 @@ const emptyConfig = (): SsoConfigurationModel => ({
   selector: 'app-sso-admin-page',
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink],
-  templateUrl: './sso-admin-page.html',
-  styleUrl: './sso-admin-page.scss',
+  templateUrl: './sso.html',
+  styleUrl: './sso.scss',
 })
 export class SsoAdminPage implements OnInit {
   private readonly api = inject(SsoAdminApi);
