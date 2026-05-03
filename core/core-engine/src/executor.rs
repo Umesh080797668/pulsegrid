@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+use base64::Engine as Base64Engine;
 
 #[derive(Clone)]
 pub struct FlowExecutor {
@@ -642,6 +643,60 @@ impl FlowExecutor {
                     }
                 }
             }
+            "code" => {
+                // user-provided compiled WASM (base64). Frontend compiles JS/Python -> wasm
+                let Some(code_b64) = step.code.as_deref() else {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("code step is missing base64 wasm in code field".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                };
+
+                let wasm_bytes = match base64::engine::general_purpose::STANDARD.decode(code_b64) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(format!("failed to decode base64 wasm: {}", e)),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                };
+
+                let script_input = json!({
+                    "step_id": step.id,
+                    "language": step.script_language.clone().unwrap_or("wasm".to_string()),
+                    "input": _input_data,
+                    "event": event,
+                    "step_outputs": step_outputs,
+                });
+
+                match self.sandbox.execute_wasm_module(&wasm_bytes, &script_input, 100) {
+                    Ok(output) => json!({
+                        "status": "code_executed",
+                        "language": step.script_language.clone().unwrap_or("wasm".to_string()),
+                        "output": output,
+                    }),
+                    Err(err) => {
+                        return StepExecutionResult {
+                            step_id: step.id.clone(),
+                            status: "failed".to_string(),
+                            output: Value::Null,
+                            error: Some(match err {
+                                core_vm::ExecutionError::ScriptError(message) => message,
+                                core_vm::ExecutionError::SandboxError(message) => message,
+                                core_vm::ExecutionError::UnknownKind(message) => message,
+                            }),
+                            duration_ms: started.elapsed().as_millis() as i32,
+                        };
+                    }
+                }
+            }
             "loop" => {
                 let items_expr = step.loop_items.as_deref().unwrap_or("");
                 let loop_var = step.loop_variable_name.as_deref().unwrap_or("item");
@@ -886,7 +941,7 @@ impl FlowExecutor {
                     step_id: step.id.clone(),
                     status: "failed".to_string(),
                     output: Value::Null,
-                    error: Some(format!("Unknown or unimplemented step type: {other}. Supported types: action, condition, script, loop, parallel, sub_flow, filter, transform, delay, fork")),
+                    error: Some(format!("Unknown or unimplemented step type: {other}. Supported types: action, condition, script, code, loop, parallel, sub_flow, filter, transform, delay, fork, wait_for_approval")),
                     duration_ms: started.elapsed().as_millis() as i32,
                 };
             }

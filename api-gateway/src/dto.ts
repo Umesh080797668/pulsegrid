@@ -147,6 +147,7 @@ export class FlowStepDto {
   @MinLength(1)
   @IsIn([
     'action',
+    'code',
     'trigger',
     'condition',
     'loop',
@@ -188,6 +189,19 @@ export class FlowStepDto {
   @IsString()
   @MinLength(1)
   condition?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  source_language?: string;
+
+  @IsOptional()
+  @IsString()
+  source_code?: string;
+
+  @IsOptional()
+  @IsString()
+  code?: string;
 
   @IsOptional()
   @IsNumber()

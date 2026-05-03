@@ -134,6 +134,144 @@ impl CoreVm {
         }
     }
 
+    pub fn execute_wasm_module(&self, wasm_bytes: &[u8], input: &Value, timeout_ms: u64) -> Result<Value, ExecutionError> {
+        if wasm_bytes.len() > MAX_WASM_MODULE_BYTES {
+            return Err(ExecutionError::SandboxError(
+                "WASM module is larger than allowed limit".to_string(),
+            ));
+        }
+
+        let module = Module::new(&self.wasm_engine, wasm_bytes)
+            .map_err(|e: wasmtime::Error| ExecutionError::SandboxError(e.to_string()))?;
+
+        // We'll create the store and get an interrupt handle so we can cancel long runs.
+        let mut _store = Store::new(&self.wasm_engine, SandboxState::default());
+        let _ = _store.set_fuel(MAX_SCRIPT_FUEL);
+
+        // We'll run the module on a dedicated thread and wait for a limited time.
+        let engine = self.wasm_engine.clone();
+        let input_bytes = serde_json::to_vec(input).map_err(|e| ExecutionError::SandboxError(e.to_string()))?;
+        if input_bytes.len() > MAX_SCRIPT_INPUT_BYTES {
+            return Err(ExecutionError::SandboxError("sandbox input exceeds max size".to_string()));
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let module_clone = module.clone();
+
+        std::thread::spawn(move || {
+            // Instantiate and execute inside thread-local store
+            let mut thread_store = Store::new(&engine, SandboxState::default());
+            let _ = thread_store.set_fuel(MAX_SCRIPT_FUEL);
+            let linker = Linker::new(&engine);
+            let inst = match linker.instantiate(&mut thread_store, &module_clone) {
+                Ok(i) => i,
+                Err(e) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                    return;
+                }
+            };
+
+            let memory = match inst.get_memory(&mut thread_store, "memory") {
+                Some(m) => m,
+                None => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError("sandbox module must export memory".to_string())));
+                    return;
+                }
+            };
+
+            let alloc: TypedFunc<i32, i32> = match inst.get_typed_func(&mut thread_store, "alloc") {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                    return;
+                }
+            };
+
+            let run: TypedFunc<(i32, i32), i64> = match inst.get_typed_func(&mut thread_store, "run") {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                    return;
+                }
+            };
+
+            let input_len = match i32::try_from(input_bytes.len()) {
+                Ok(l) => l,
+                Err(_) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError("input payload too large".to_string())));
+                    return;
+                }
+            };
+
+            let input_ptr = match alloc.call(&mut thread_store, input_len) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                    return;
+                }
+            };
+
+            if let Err(e) = memory.write(&mut thread_store, input_ptr as usize, &input_bytes) {
+                let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                return;
+            }
+
+            let packed_output = match run.call(&mut thread_store, (input_ptr, input_len)) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                    return;
+                }
+            };
+
+            let output_ptr = (packed_output >> 32) as u32 as usize;
+            let output_len = (packed_output & 0xffff_ffff) as u32 as usize;
+
+            if output_len > MAX_SCRIPT_OUTPUT_BYTES {
+                let _ = tx.send(Err(ExecutionError::SandboxError("sandbox output exceeds max size".to_string())));
+                return;
+            }
+
+            if output_len == 0 {
+                let _ = tx.send(Ok(Value::Null));
+                return;
+            }
+
+            let mut output_bytes = vec![0u8; output_len];
+            if let Err(e) = memory.read(&mut thread_store, output_ptr, &mut output_bytes) {
+                let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                return;
+            }
+
+            let output_text = match String::from_utf8(output_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(Err(ExecutionError::SandboxError(e.to_string())));
+                    return;
+                }
+            };
+
+            match serde_json::from_str::<Value>(&output_text) {
+                Ok(value) => {
+                    let _ = tx.send(Ok(value));
+                }
+                Err(_) => {
+                    let _ = tx.send(Ok(Value::String(output_text)));
+                }
+            }
+        });
+
+        // Wait for result with timeout. Note: we rely on fuel exhaustion to bound runaway CPU usage.
+        match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+            Ok(res) => res,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err(ExecutionError::SandboxError("execution timed out".to_string()))
+            }
+            Err(e) => Err(ExecutionError::SandboxError(e.to_string())),
+        }
+    }
+
     pub fn execute_pipeline(
         &self,
         pipeline: &Pipeline,
@@ -274,4 +412,65 @@ mod tests {
 
         assert!(matches!(result, Err(ExecutionError::SandboxError(_))));
     }
+
+        #[test]
+        fn wasm_module_round_trips_json_input() {
+                let vm = CoreVm::new();
+
+                let wasm = wat::parse_str(
+                        r#"
+                        (module
+                            (memory (export "memory") 1)
+                            (global $heap (mut i32) (i32.const 1024))
+                            (data (i32.const 2048) "{\"ok\":true}")
+
+                            (func (export "alloc") (param $size i32) (result i32)
+                                (local $ptr i32)
+                                global.get $heap
+                                local.set $ptr
+                                local.get $ptr
+                                local.get $size
+                                i32.add
+                                global.set $heap
+                                local.get $ptr)
+
+                            (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                                i64.const 2048
+                                i64.const 32
+                                i64.shl
+                                i64.const 12
+                                i64.or))
+                        "#,
+                )
+                .expect("valid wat");
+
+                let result = vm
+                        .execute_wasm_module(&wasm, &serde_json::json!({"hello": "world"}), 100)
+                        .expect("execute wasm module");
+
+                assert_eq!(result, serde_json::json!({"ok": true}));
+        }
+
+        #[test]
+        fn wasm_module_times_out_on_runaway_loop() {
+                let vm = CoreVm::new();
+
+                let wasm = wat::parse_str(
+                        r#"
+                        (module
+                            (memory (export "memory") 1)
+                            (func (export "alloc") (param $size i32) (result i32)
+                                i32.const 0)
+                            (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                                (loop
+                                    br 0)
+                                i64.const 0))
+                        "#,
+                )
+                .expect("valid wat");
+
+                let result = vm.execute_wasm_module(&wasm, &serde_json::json!({"hello": "world"}), 1);
+
+                assert!(matches!(result, Err(ExecutionError::SandboxError(msg)) if msg.contains("timed out")));
+        }
 }

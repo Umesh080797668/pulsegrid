@@ -19,6 +19,7 @@ import {
 } from '@xyflow/react';
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
+import { CodeStepEditor } from './code-step-editor';
 
 type ConnectorCatalogItem = {
   connector: string;
@@ -39,9 +40,9 @@ type FlowDefinition = {
   };
   steps: Array<{
     id: string;
-    type: 'action' | 'parallel' | 'loop' | 'sub_flow';
-    connector: string;
-    action: string;
+    type: 'action' | 'parallel' | 'loop' | 'sub_flow' | 'code';
+    connector?: string;
+    action?: string;
     input_mapping: Record<string, string>;
     depends_on: string[];
     retry_policy: {
@@ -49,6 +50,10 @@ type FlowDefinition = {
       initial_backoff_ms: number;
     };
     condition?: string;
+    script_language?: 'javascript' | 'python';
+    code?: string;
+    source_code?: string;
+    source_language?: 'javascript' | 'python';
   }>;
   error_policy?: {
     on_failure: string;
@@ -106,7 +111,7 @@ export function FlowCanvas({
   // Add step state
   const [newConnector, setNewConnector] = useState(() => connectorOptions[0] || 'custom');
   const [newAction, setNewAction] = useState('call_api');
-  const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'loop' | 'sub_flow'>('action');
+  const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'loop' | 'sub_flow' | 'code'>('action');
 
   const actionOptions = useMemo(
     () => catalog.filter((item) => item.connector === newConnector).map((item) => item.action),
@@ -118,6 +123,12 @@ export function FlowCanvas({
   const [editConnector, setEditConnector] = useState('');
   const [editInputJson, setEditInputJson] = useState('');
   const [editCondition, setEditCondition] = useState('');
+  const [editSourceLanguage, setEditSourceLanguage] = useState<'javascript' | 'python'>('javascript');
+  const [editSourceCode, setEditSourceCode] = useState('');
+  const [editCompiledWasm, setEditCompiledWasm] = useState('');
+  const [compileStatus, setCompileStatus] = useState('');
+  const [compileError, setCompileError] = useState('');
+  const [isCompiling, setIsCompiling] = useState(false);
 
   const parsed = useMemo(() => {
     try {
@@ -132,10 +143,15 @@ export function FlowCanvas({
 
   useEffect(() => {
     if (selectedStep) {
-      setEditAction(selectedStep.action);
-      setEditConnector(selectedStep.connector);
+      setEditAction(selectedStep.action || '');
+      setEditConnector(selectedStep.connector || '');
       setEditInputJson(JSON.stringify(selectedStep.input_mapping, null, 2));
       setEditCondition(selectedStep.condition || '');
+      setEditSourceLanguage(selectedStep.source_language || selectedStep.script_language || 'javascript');
+      setEditSourceCode(selectedStep.source_code || 'function transform(input) {\n  return input;\n}');
+      setEditCompiledWasm(selectedStep.code || '');
+      setCompileStatus(selectedStep.code ? 'WASM artifact attached' : 'Awaiting compile');
+      setCompileError('');
     }
   }, [selectedStepId, selectedStep]);
 
@@ -169,6 +185,8 @@ export function FlowCanvas({
   function addStep() {
     if (!parsed) return;
 
+    const isCodeStep = newStepType === 'code';
+
     updateDefinition({
       ...parsed,
       steps: [
@@ -176,8 +194,16 @@ export function FlowCanvas({
         {
           id: makeStepId(),
           type: newStepType,
-          connector: newConnector,
-          action: newAction,
+          ...(isCodeStep
+            ? {
+                source_language: 'javascript',
+                source_code: 'function transform(input) {\n  return input;\n}',
+                code: '',
+              }
+            : {
+                connector: newConnector,
+                action: newAction,
+              }),
           input_mapping: {},
           depends_on: parsed.steps.length > 0 ? [parsed.steps[parsed.steps.length - 1].id] : [],
           retry_policy: {
@@ -222,15 +248,76 @@ export function FlowCanvas({
         if (step.id === selectedStepId) {
           return {
             ...step,
-            action: editAction,
-            connector: editConnector,
+            action: selectedStep?.type === 'code' ? 'transform' : editAction,
+            connector: selectedStep?.type === 'code' ? '' : editConnector,
             input_mapping: inputMapping,
             condition: editCondition ? editCondition : undefined,
+            source_language: selectedStep?.type === 'code' ? editSourceLanguage : step.source_language,
+            source_code: selectedStep?.type === 'code' ? editSourceCode : step.source_code,
+            code: selectedStep?.type === 'code' ? editCompiledWasm : step.code,
+            script_language: selectedStep?.type === 'code' ? editSourceLanguage : step.script_language,
           };
         }
         return step;
       })
     });
+  }
+
+  async function compileSelectedCodeStep() {
+    if (!parsed || !selectedStep || selectedStep.type !== 'code') {
+      return;
+    }
+
+    setIsCompiling(true);
+    setCompileError('');
+    setCompileStatus('Compiling source to WASM…');
+
+    try {
+      const response = await fetch('/api/code-steps/compile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          language: editSourceLanguage,
+          sourceCode: editSourceCode,
+          stepId: selectedStep.id,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || payload.message || `Compilation failed (${response.status})`);
+      }
+
+      const wasmBase64 = String(payload.wasmBase64 || '');
+      if (!wasmBase64) {
+        throw new Error('Compiler returned an empty WASM artifact');
+      }
+
+      setEditCompiledWasm(wasmBase64);
+      setCompileStatus('Compilation succeeded');
+      updateDefinition({
+        ...parsed,
+        steps: parsed.steps.map((step) =>
+          step.id === selectedStep.id
+            ? {
+                ...step,
+                source_language: editSourceLanguage,
+                source_code: editSourceCode,
+                script_language: editSourceLanguage,
+                code: wasmBase64,
+              }
+            : step
+        ),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCompileStatus('Compilation failed');
+      setCompileError(message);
+    } finally {
+      setIsCompiling(false);
+    }
   }
 
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -295,16 +382,19 @@ export function FlowCanvas({
     });
 
     parsed.steps.forEach((step, index) => {
+      const isCodeStep = step.type === 'code';
       newNodes.push({
         id: step.id,
         position: { x: 0, y: 0 },
         data: { 
-          kind: step.type === 'action' ? `Step ${index + 1}` : `${step.type.toUpperCase()} ${index + 1}`,
-          title: `${step.connector}.${step.action}`, 
+          kind: isCodeStep ? `Code Step ${index + 1}` : step.type === 'action' ? `Step ${index + 1}` : `${step.type.toUpperCase()} ${index + 1}`,
+          title: isCodeStep ? `${step.source_language || step.script_language || 'javascript'} → WASM` : `${step.connector}.${step.action}`, 
           subtitle: step.id,
           stepType: step.type,
+          sourceLanguage: step.source_language || step.script_language || undefined,
+          isCodeStep,
         },
-        type: step.type === 'loop' ? 'loopNode' : step.type === 'parallel' ? 'parallelNode' : 'customNode',
+        type: step.type === 'code' ? 'codeNode' : step.type === 'loop' ? 'loopNode' : step.type === 'parallel' ? 'parallelNode' : 'customNode',
         draggable: true,
       });
 
@@ -336,7 +426,7 @@ export function FlowCanvas({
   }, [definitionJson, parsed]);
 
   const nodeTypes = useMemo(() => ({
-    customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode
+    customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode, codeNode: CodeNode
   }), []);
 
   return (
@@ -376,6 +466,7 @@ export function FlowCanvas({
             <div style={{ display: 'flex', gap: 8 }}>
               <select value={newStepType} onChange={(e) => setNewStepType(e.target.value as any)} style={{ padding: '8px', flex: 1 }}>
                 <option value="action">Action</option>
+                <option value="code">Code</option>
                 <option value="parallel">Parallel</option>
                 <option value="loop">Loop</option>
                 <option value="sub_flow">Sub-Flow</option>
@@ -407,40 +498,64 @@ export function FlowCanvas({
         {selectedStep ? (
           <div style={{ flex: 1, padding: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.02)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>Edit {selectedStep.type} ({selectedStep.id})</h3>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Edit {selectedStep.type} ({selectedStep.id})</h3>
+                {selectedStep.type === 'code' ? (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Build custom JS or Python and compile it to a sandboxed WASM module.
+                  </div>
+                ) : null}
+              </div>
               <button onClick={() => removeStep(selectedStep.id)} style={{ padding: '4px 8px', background: 'transparent', border: '1px solid red', color: 'red', borderRadius: 4, fontSize: 12 }}>
                 Delete
               </button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  style={{ padding: '8px', flex: 1 }}
-                  value={editConnector}
-                  onChange={(e) => setEditConnector(e.target.value)}
-                  placeholder="Connector"
+              {selectedStep.type === 'code' ? (
+                <CodeStepEditor
+                  language={editSourceLanguage}
+                  sourceCode={editSourceCode}
+                  compiledWasmBase64={editCompiledWasm}
+                  compileStatus={compileStatus}
+                  compileError={compileError}
+                  onLanguageChange={(value) => setEditSourceLanguage(value)}
+                  onSourceCodeChange={(value) => setEditSourceCode(value)}
+                  onCompiledWasmChange={(value) => setEditCompiledWasm(value)}
+                  onCompile={compileSelectedCodeStep}
+                  isCompiling={isCompiling}
                 />
-                <input
-                  style={{ padding: '8px', flex: 1 }}
-                  value={editAction}
-                  onChange={(e) => setEditAction(e.target.value)}
-                  placeholder="Action"
-                />
-              </div>
-              <textarea
-                rows={4}
-                value={editInputJson}
-                onChange={(e) => setEditInputJson(e.target.value)}
-                placeholder="Input mapping JSON"
-                style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
-              />
-              {selectedStep.type === 'loop' && (
-                <input
-                  style={{ padding: '8px' }}
-                  value={editCondition}
-                  onChange={(e) => setEditCondition(e.target.value)}
-                  placeholder="Loop Condition (e.g., array length > 0)"
-                />
+              ) : (
+                <>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input
+                      style={{ padding: '8px', flex: 1 }}
+                      value={editConnector}
+                      onChange={(e) => setEditConnector(e.target.value)}
+                      placeholder="Connector"
+                    />
+                    <input
+                      style={{ padding: '8px', flex: 1 }}
+                      value={editAction}
+                      onChange={(e) => setEditAction(e.target.value)}
+                      placeholder="Action"
+                    />
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={editInputJson}
+                    onChange={(e) => setEditInputJson(e.target.value)}
+                    placeholder="Input mapping JSON"
+                    style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
+                  />
+                  {selectedStep.type === 'loop' && (
+                    <input
+                      style={{ padding: '8px' }}
+                      value={editCondition}
+                      onChange={(e) => setEditCondition(e.target.value)}
+                      placeholder="Loop Condition (e.g., array length > 0)"
+                    />
+                  )}
+                </>
               )}
               <button onClick={updateSelectedStep} style={{ padding: '8px', backgroundColor: '#22d674', color: '#000', fontWeight: 'bold' }}>
                 Save Changes
@@ -490,6 +605,44 @@ function CustomNode({ data, selected }: NodeProps) {
         </span>
       </div>
       
+      <Handle type="source" position={Position.Right} style={{ top: '50%', background: borderColor, width: 8, height: 8 }} />
+    </div>
+  );
+}
+
+function CodeNode({ data, selected }: NodeProps) {
+  const borderColor = '#22d674';
+  return (
+    <div
+      style={{
+        minWidth: 240,
+        padding: 14,
+        borderRadius: 14,
+        border: selected ? `1px solid ${borderColor}` : '1px solid rgba(34, 214, 116, 0.35)',
+        background: selected ? `${borderColor}20` : 'rgba(34, 214, 116, 0.07)',
+        boxShadow: selected ? `0 0 0 1px ${borderColor}3d` : 'none',
+        backgroundColor: '#102018',
+        color: '#fff',
+      }}
+    >
+      <Handle type="target" position={Position.Left} style={{ background: borderColor, width: 8, height: 8 }} />
+      <div className="muted" style={{ fontSize: 12, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Code Step
+      </div>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>
+        {typeof data.title === 'string' ? data.title : 'WASM Sandbox'}
+      </div>
+      <div className="muted" style={{ wordBreak: 'break-all', opacity: 0.7, fontSize: 12 }}>
+        {typeof data.subtitle === 'string' ? data.subtitle : 'Subtitle'}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+        <span className="badge b-neutral" style={{ fontSize: 10, borderColor, color: borderColor }}>
+          {String(data.sourceLanguage || 'javascript')}
+        </span>
+        <span className="badge b-neutral" style={{ fontSize: 10, borderColor: '#7c9cff', color: '#7c9cff' }}>
+          wasm
+        </span>
+      </div>
       <Handle type="source" position={Position.Right} style={{ top: '50%', background: borderColor, width: 8, height: 8 }} />
     </div>
   );

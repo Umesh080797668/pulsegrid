@@ -77,7 +77,9 @@ export class FlowValidationService {
     }
 
     // Step 8: Validate at least one executable step exists
-    const hasAction = definition.steps.some((s) => s.type === 'action' || s.type === 'wait_for_approval');
+    const hasAction = definition.steps.some((s) =>
+      s.type === 'action' || s.type === 'code' || s.type === 'wait_for_approval',
+    );
     if (!hasAction) {
       errors.push('Flow must have at least one action or approval step');
     }
@@ -171,6 +173,18 @@ export class FlowValidationService {
           errors.push(
             `Action step "${step.id}" must have both connector and action specified`,
           );
+        }
+        break;
+
+      case 'code':
+        if (!step.source_code) {
+          errors.push(`Code step "${step.id}" must provide source_code`);
+        }
+        if (!step.source_language) {
+          errors.push(`Code step "${step.id}" must provide source_language`);
+        }
+        if (!step.code) {
+          errors.push(`Code step "${step.id}" must provide compiled WASM in code`);
         }
         break;
 
