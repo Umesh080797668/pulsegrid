@@ -1,0 +1,64 @@
+.connector-config-container {
+	padding: 24px;
+	max-width: 900px;
+	margin: 0 auto;
+}
+
+.config-card {
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.config-form {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.full-width {
+	width: 100%;
+}
+
+.two-column {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px;
+}
+
+.button-group {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-top: 16px;
+}
+
+.loading-spinner {
+	display: flex;
+	justify-content: center;
+	padding: 40px;
+}
+
+.error-message {
+	margin-top: 16px;
+	color: #f44336;
+	background: #ffebee;
+	padding: 12px;
+	border-radius: 4px;
+}
+
+@media (max-width: 600px) {
+	.connector-config-container {
+		padding: 12px;
+	}
+
+	.two-column {
+		grid-template-columns: 1fr;
+	}
+
+	.button-group {
+		flex-direction: column;
+
+		button {
+			width: 100%;
+		}
+	}
+}

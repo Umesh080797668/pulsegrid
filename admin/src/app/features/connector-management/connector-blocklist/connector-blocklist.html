@@ -1,1 +1,59 @@
-<p>connector-blocklist works!</p>
+<div class="blocklist-container">
+  <mat-card class="header-card">
+    <mat-card-header>
+      <mat-card-title>Blocked Connectors</mat-card-title>
+      <mat-card-subtitle>Connectors disabled from use in workflows</mat-card-subtitle>
+    </mat-card-header>
+  </mat-card>
+
+  <div *ngIf="loading$ | async" class="loading-spinner">
+    <mat-progress-spinner mode="indeterminate"></mat-progress-spinner>
+  </div>
+
+  <div *ngIf="(loading$ | async) === false" class="connectors-grid">
+    <div
+      *ngFor="let connector of getBlocklistedConnectors((connectors$ | async) || [], (blocklist$ | async) || [])"
+      class="connector-card"
+    >
+      <mat-card>
+        <mat-card-header>
+          <mat-card-title>{{ connector.name }}</mat-card-title>
+          <mat-card-subtitle>{{ connector.type }}</mat-card-subtitle>
+        </mat-card-header>
+
+        <mat-card-content>
+          <div class="info-row">
+            <span class="label">Type:</span>
+            <span class="value">{{ connector.type }}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Status:</span>
+            <mat-chip [color]="connector.status === 'active' ? 'accent' : 'warn'" selected>
+              {{ connector.status }}
+            </mat-chip>
+          </div>
+          <div class="info-row">
+            <span class="label">Last Modified:</span>
+            <span class="value">{{ connector.lastModified | date : 'short' }}</span>
+          </div>
+        </mat-card-content>
+
+        <mat-card-actions>
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="removeFromBlocklist(connector.id)"
+          >
+            <mat-icon>check_circle</mat-icon>
+            Remove from Blocklist
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+
+    <div *ngIf="(getBlocklistedConnectors((connectors$ | async) || [], (blocklist$ | async) || []) || []).length === 0" class="no-connectors">
+      <mat-icon>inbox</mat-icon>
+      <p>No connectors are currently blocked</p>
+    </div>
+  </div>
+</div>

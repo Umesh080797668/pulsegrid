@@ -1,1 +1,59 @@
-<p>connector-allowlist works!</p>
+<div class="allowlist-container">
+  <mat-card class="header-card">
+    <mat-card-header>
+      <mat-card-title>Allowed Connectors</mat-card-title>
+      <mat-card-subtitle>Connectors enabled for use in workflows</mat-card-subtitle>
+    </mat-card-header>
+  </mat-card>
+
+  <div *ngIf="loading$ | async" class="loading-spinner">
+    <mat-progress-spinner mode="indeterminate"></mat-progress-spinner>
+  </div>
+
+  <div *ngIf="(loading$ | async) === false" class="connectors-grid">
+    <div
+      *ngFor="let connector of getAllowlistedConnectors((connectors$ | async) || [], (allowlist$ | async) || [])"
+      class="connector-card"
+    >
+      <mat-card>
+        <mat-card-header>
+          <mat-card-title>{{ connector.name }}</mat-card-title>
+          <mat-card-subtitle>{{ connector.type }}</mat-card-subtitle>
+        </mat-card-header>
+
+        <mat-card-content>
+          <div class="info-row">
+            <span class="label">Type:</span>
+            <span class="value">{{ connector.type }}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Status:</span>
+            <mat-chip [color]="connector.status === 'active' ? 'accent' : 'warn'" selected>
+              {{ connector.status }}
+            </mat-chip>
+          </div>
+          <div class="info-row">
+            <span class="label">Last Modified:</span>
+            <span class="value">{{ connector.lastModified | date : 'short' }}</span>
+          </div>
+        </mat-card-content>
+
+        <mat-card-actions>
+          <button
+            mat-raised-button
+            color="warn"
+            (click)="removeFromAllowlist(connector.id)"
+          >
+            <mat-icon>remove_circle</mat-icon>
+            Remove from Allowlist
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+
+    <div *ngIf="(getAllowlistedConnectors((connectors$ | async) || [], (allowlist$ | async) || []) || []).length === 0" class="no-connectors">
+      <mat-icon>inbox</mat-icon>
+      <p>No connectors are currently allowed</p>
+    </div>
+  </div>
+</div>

@@ -1,1 +1,94 @@
-<p>connector-list works!</p>
+<div class="connector-list-container">
+  <div class="header">
+    <h2>Connector Management</h2>
+    <mat-form-field appearance="outline">
+      <mat-label>Search Connectors</mat-label>
+      <input matInput [value]="searchValue" (keyup)="onSearch($event.target.value)" />
+      <mat-icon matSuffix>search</mat-icon>
+    </mat-form-field>
+  </div>
+
+  <div *ngIf="loading$ | async" class="loading-spinner">
+    <mat-progress-spinner mode="indeterminate"></mat-progress-spinner>
+  </div>
+
+  <div *ngIf="error$ | async as error" class="error-message">
+    {{ error }}
+  </div>
+
+  <table mat-table [dataSource]="dataSource" class="connector-table">
+    <!-- Name Column -->
+    <ng-container matColumnDef="name">
+      <th mat-header-cell *matHeaderCellDef>Name</th>
+      <td mat-cell *matCellDef="let element">{{ element.name }}</td>
+    </ng-container>
+
+    <!-- Type Column -->
+    <ng-container matColumnDef="type">
+      <th mat-header-cell *matHeaderCellDef>Type</th>
+      <td mat-cell *matCellDef="let element">{{ element.type }}</td>
+    </ng-container>
+
+    <!-- Status Column -->
+    <ng-container matColumnDef="status">
+      <th mat-header-cell *matHeaderCellDef>Status</th>
+      <td mat-cell *matCellDef="let element">
+        <mat-chip [color]="element.status === 'active' ? 'accent' : 'warn'" selected>
+          {{ element.status }}
+        </mat-chip>
+      </td>
+    </ng-container>
+
+    <!-- Allowlist Column -->
+    <ng-container matColumnDef="allowlist">
+      <th mat-header-cell *matHeaderCellDef>Allowlisted</th>
+      <td mat-cell *matCellDef="let element">
+        <button
+          mat-icon-button
+          [color]="isInAllowlist(element.id) ? 'primary' : ''"
+          (click)="isInAllowlist(element.id) ? removeFromAllowlist(element.id) : addToAllowlist(element.id)"
+          [matTooltip]="isInAllowlist(element.id) ? 'Remove from allowlist' : 'Add to allowlist'"
+        >
+          <mat-icon>{{ isInAllowlist(element.id) ? 'check_circle' : 'add_circle_outline' }}</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <!-- Blocklist Column -->
+    <ng-container matColumnDef="blocklist">
+      <th mat-header-cell *matHeaderCellDef>Blocklisted</th>
+      <td mat-cell *matCellDef="let element">
+        <button
+          mat-icon-button
+          [color]="isInBlocklist(element.id) ? 'warn' : ''"
+          (click)="isInBlocklist(element.id) ? removeFromBlocklist(element.id) : addToBlocklist(element.id)"
+          [matTooltip]="isInBlocklist(element.id) ? 'Remove from blocklist' : 'Add to blocklist'"
+        >
+          <mat-icon>{{ isInBlocklist(element.id) ? 'block' : 'block_outline' }}</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <!-- Actions Column -->
+    <ng-container matColumnDef="actions">
+      <th mat-header-cell *matHeaderCellDef>Actions</th>
+      <td mat-cell *matCellDef="let element">
+        <button mat-icon-button (click)="testConnector(element.id)" matTooltip="Test connector">
+          <mat-icon>link</mat-icon>
+        </button>
+        <button mat-icon-button (click)="deployConnector(element.id)" matTooltip="Deploy connector">
+          <mat-icon>cloud_upload</mat-icon>
+        </button>
+      </td>
+    </ng-container>
+
+    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+    <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+  </table>
+
+  <mat-paginator
+    [pageSizeOptions]="[10, 25, 50, 100]"
+    showFirstLastButtons
+    #paginator
+  ></mat-paginator>
+</div>

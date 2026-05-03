@@ -1,1 +1,84 @@
-<p>connector-config works!</p>
+<div class="connector-config-container">
+	<mat-card class="config-card">
+		<mat-card-header>
+			<mat-card-title>Connector Configuration</mat-card-title>
+			<mat-card-subtitle>Manage per-connector settings and deployment</mat-card-subtitle>
+		</mat-card-header>
+
+		<mat-card-content>
+			<div *ngIf="loading$ | async" class="loading-spinner">
+				<mat-progress-spinner mode="indeterminate"></mat-progress-spinner>
+			</div>
+
+			<form [formGroup]="configForm" *ngIf="!(loading$ | async)" class="config-form">
+				<mat-form-field appearance="outline" class="full-width">
+					<mat-label>Connector</mat-label>
+					<mat-select formControlName="connectorId" (selectionChange)="onConnectorChange($event.value)">
+						<mat-option *ngFor="let connector of connectors$ | async" [value]="connector.id">
+							{{ connector.name }} ({{ connector.type }})
+						</mat-option>
+					</mat-select>
+					<mat-error *ngIf="configForm.get('connectorId')?.hasError('required')">
+						Connector is required
+					</mat-error>
+				</mat-form-field>
+
+				<mat-form-field appearance="outline" class="full-width">
+					<mat-label>Endpoint</mat-label>
+					<input matInput formControlName="endpoint" placeholder="https://api.example.com" />
+					<mat-error *ngIf="configForm.get('endpoint')?.hasError('required')">
+						Endpoint is required
+					</mat-error>
+				</mat-form-field>
+
+				<div class="two-column">
+					<mat-form-field appearance="outline">
+						<mat-label>API Key</mat-label>
+						<input matInput formControlName="apiKey" type="password" />
+					</mat-form-field>
+
+					<mat-form-field appearance="outline">
+						<mat-label>Secret</mat-label>
+						<input matInput formControlName="secret" type="password" />
+					</mat-form-field>
+				</div>
+
+				<div class="two-column">
+					<mat-form-field appearance="outline">
+						<mat-label>Retry Count</mat-label>
+						<input matInput formControlName="retryCount" type="number" />
+					</mat-form-field>
+
+					<mat-form-field appearance="outline">
+						<mat-label>Timeout (ms)</mat-label>
+						<input matInput formControlName="timeoutMs" type="number" />
+					</mat-form-field>
+				</div>
+
+				<mat-form-field appearance="outline" class="full-width">
+					<mat-label>Metadata (JSON)</mat-label>
+					<textarea matInput rows="6" formControlName="metadata" placeholder='{"region":"us-east"}'></textarea>
+				</mat-form-field>
+
+				<mat-divider></mat-divider>
+
+				<div class="button-group">
+					<button mat-raised-button color="primary" (click)="saveConfig()" [disabled]="!configForm.valid">
+						Save Configuration
+					</button>
+					<button mat-stroked-button color="primary" (click)="testConnector()" [disabled]="!configForm.get('connectorId')?.value">
+						Test Connector
+					</button>
+					<button mat-raised-button color="accent" (click)="deployConnector()" [disabled]="!configForm.get('connectorId')?.value">
+						Deploy Connector
+					</button>
+					<button mat-button (click)="reset()">Reset</button>
+				</div>
+			</form>
+
+			<div *ngIf="error$ | async as error" class="error-message">
+				{{ error }}
+			</div>
+		</mat-card-content>
+	</mat-card>
+</div>
