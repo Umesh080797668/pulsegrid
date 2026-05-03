@@ -1,1 +1,61 @@
-<p>report-builder works!</p>
+<mat-card class="builder-card">
+	<mat-card-header>
+		<mat-card-title>Report Builder</mat-card-title>
+		<mat-card-subtitle>Compose JasperReports requests</mat-card-subtitle>
+	</mat-card-header>
+
+	<mat-card-content>
+		<form [formGroup]="reportForm" class="builder-form">
+			<mat-form-field appearance="outline">
+				<mat-label>Template</mat-label>
+				<mat-select formControlName="templateId">
+					<mat-option *ngFor="let template of templates$ | async" [value]="template.id">
+						{{ template.name }}
+					</mat-option>
+				</mat-select>
+			</mat-form-field>
+
+			<mat-form-field appearance="outline">
+				<mat-label>Report Name</mat-label>
+				<input matInput formControlName="reportName" />
+			</mat-form-field>
+
+			<div class="grid">
+				<mat-form-field appearance="outline">
+					<mat-label>Output Format</mat-label>
+					<mat-select formControlName="outputFormat">
+						<mat-option value="pdf">PDF</mat-option>
+						<mat-option value="csv">CSV</mat-option>
+						<mat-option value="xlsx">XLSX</mat-option>
+					</mat-select>
+				</mat-form-field>
+
+				<mat-form-field appearance="outline">
+					<mat-label>Parameters JSON</mat-label>
+					<textarea matInput rows="5" formControlName="parameters"></textarea>
+				</mat-form-field>
+			</div>
+
+			<div class="actions">
+				<button type="button" mat-raised-button color="primary" (click)="buildDraft()" [disabled]="!reportForm.valid">
+					Build Draft
+				</button>
+				<button type="button" mat-stroked-button color="primary" (click)="previewReport()" [disabled]="!reportForm.valid">
+					Preview
+				</button>
+				<button type="button" mat-raised-button color="accent" (click)="generateReport()" [disabled]="!reportForm.valid">
+					Generate
+				</button>
+			</div>
+		</form>
+
+		<div *ngIf="loading$ | async" class="loading">
+			<mat-icon>hourglass_empty</mat-icon>
+			<span>Processing report request...</span>
+		</div>
+
+		<div *ngIf="message$ | async as message" class="message">
+			{{ message }}
+		</div>
+	</mat-card-content>
+</mat-card>

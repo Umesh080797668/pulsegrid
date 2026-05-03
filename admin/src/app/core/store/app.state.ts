@@ -10,6 +10,7 @@ export interface AppState {
   compliance: ComplianceState;
   connectors: ConnectorState;
   sso: SSOState;
+  reports: ReportsState;
 }
 
 export interface AuthState {
@@ -116,5 +117,15 @@ export interface SSOState {
   ldapLoading: boolean;
   error: string | null;
   testResult: any | null;
+}
+
+export interface ReportsState {
+  templates: any[];
+  draft: any | null;
+  preview: any | null;
+  generated: any | null;
+  loading: boolean;
+  error: string | null;
+  message: string;
 }
 

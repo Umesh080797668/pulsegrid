@@ -1,0 +1,46 @@
+.preview-card {
+  margin: 16px 0;
+}
+
+.loading,
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: #666;
+}
+
+.preview-meta,
+.generated-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+
+.preview-table {
+  width: 100%;
+  margin: 16px 0;
+}
+
+.generated-card {
+  margin-top: 16px;
+  background: #f9f9f9;
+}
+
+.download-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+@media (max-width: 720px) {
+  .preview-meta,
+  .generated-summary {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
