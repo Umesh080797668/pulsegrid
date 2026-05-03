@@ -8,6 +8,12 @@ import { provideStoreDevtools } from '@ngrx/store-devtools';
 
 import { routes } from './app.routes';
 import { httpInterceptor } from './core/interceptors/http-interceptor';
+import { UserEffects } from './core/store/effects/user.effects';
+import { AuditEffects } from './core/store/effects/audit.effects';
+import { WorkspaceEffects } from './core/store/effects/workspace.effects';
+import { BillingEffects } from './core/store/effects/billing.effects';
+import { ComplianceEffects } from './core/store/effects/compliance.effects';
+import { ConnectorEffects } from './core/store/effects/connector.effects';
 import { userReducer } from './core/store/reducers/user.reducer';
 import { authReducer } from './core/store/reducers/auth.reducer';
 import { workspaceReducer } from './core/store/reducers/workspace.reducer';
@@ -28,7 +34,8 @@ export const appConfig: ApplicationConfig = {
       compliance: complianceReducer,
       connectors: connectorReducer,
     }),
-    provideEffects(),
+    provideEffects(UserEffects, AuditEffects, WorkspaceEffects, BillingEffects, ComplianceEffects, ConnectorEffects),
+    // Effects provided in main bootstrap via importProvidersFrom when necessary
     provideStoreDevtools({ maxAge: 25 }),
   ],
 };
