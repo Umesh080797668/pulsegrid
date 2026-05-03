@@ -1,1 +1,19 @@
-<p>workspace-form works!</p>
+<form [formGroup]="form" (ngSubmit)="save()" class="workspace-form">
+	<h2>{{ data?.name ? 'Edit Workspace' : 'Create Workspace' }}</h2>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Name</mat-label>
+		<input matInput formControlName="name" required />
+		<mat-error *ngIf="form.controls['name'].hasError('required')">Name is required</mat-error>
+	</mat-form-field>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Description</mat-label>
+		<textarea matInput formControlName="description" rows="4"></textarea>
+	</mat-form-field>
+
+	<div class="actions">
+		<button mat-stroked-button type="button" (click)="cancel()">Cancel</button>
+		<button mat-flat-button color="primary" type="submit" [disabled]="form.invalid">Save</button>
+	</div>
+</form>
