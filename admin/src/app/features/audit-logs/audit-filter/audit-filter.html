@@ -1,1 +1,31 @@
-<p>audit-filter works!</p>
+<div class="audit-filter">
+	<mat-form-field appearance="outline">
+		<mat-label>Action</mat-label>
+		<input matInput [(ngModel)]="filters.action" placeholder="USER_CREATED" />
+	</mat-form-field>
+
+	<mat-form-field appearance="outline">
+		<mat-label>User</mat-label>
+		<input matInput [(ngModel)]="filters.user" placeholder="admin@company.com" />
+	</mat-form-field>
+
+	<mat-form-field appearance="outline">
+		<mat-label>Resource</mat-label>
+		<input matInput [(ngModel)]="filters.resource" placeholder="workspace" />
+	</mat-form-field>
+
+	<mat-form-field appearance="outline">
+		<mat-label>Start Date</mat-label>
+		<input matInput type="date" [(ngModel)]="filters.startDate" />
+	</mat-form-field>
+
+	<mat-form-field appearance="outline">
+		<mat-label>End Date</mat-label>
+		<input matInput type="date" [(ngModel)]="filters.endDate" />
+	</mat-form-field>
+
+	<div class="actions">
+		<button mat-stroked-button color="primary" (click)="applyFilters()">Apply</button>
+		<button mat-button (click)="clearFilters()">Clear</button>
+	</div>
+</div>

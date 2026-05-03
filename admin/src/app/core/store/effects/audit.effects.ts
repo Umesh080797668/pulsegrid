@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import * as AuditActions from '../actions/audit.actions';
 import { Audit } from '../../services/audit';
-import { catchError, map, mergeMap, of } from 'rxjs';
+import { catchError, map, mergeMap, of, tap } from 'rxjs';
 
 @Injectable()
 export class AuditEffects {
@@ -19,5 +19,40 @@ export class AuditEffects {
         )
       )
     )
+  );
+
+  filterAudit$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AuditActions.filterAuditLogs),
+      map(({ filters }) => AuditActions.loadAuditLogs({ page: 0, size: 25, filters }))
+    )
+  );
+
+  clearFilters$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AuditActions.clearAuditFilters),
+      map(() => AuditActions.loadAuditLogs({ page: 0, size: 25, filters: {} }))
+    )
+  );
+
+  exportAudit$ = createEffect(
+    () =>
+      this.actions$.pipe(
+        ofType(AuditActions.exportAuditLogs),
+        mergeMap(({ format }) =>
+          this.auditService.exportAuditLogs(format).pipe(
+            tap((blob) => {
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `audit-logs.${format}`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }),
+            catchError(() => of(null))
+          )
+        )
+      ),
+    { dispatch: false }
   );
 }
