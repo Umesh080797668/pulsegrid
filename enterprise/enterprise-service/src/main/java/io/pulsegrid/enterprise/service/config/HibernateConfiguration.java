@@ -2,6 +2,7 @@ package io.pulsegrid.enterprise.service.config;
 
 import io.pulsegrid.enterprise.service.tenancy.hibernate.SchemaBasedMultiTenantConnectionProvider;
 import io.pulsegrid.enterprise.service.tenancy.hibernate.PulseGridTenantIdentifierResolver;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
@@ -26,7 +27,8 @@ public class HibernateConfiguration {
     public LocalContainerEntityManagerFactoryBean entityManagerFactory(
             DataSource dataSource,
             SchemaBasedMultiTenantConnectionProvider connectionProvider,
-            PulseGridTenantIdentifierResolver tenantIdentifierResolver) {
+            PulseGridTenantIdentifierResolver tenantIdentifierResolver,
+            @Value("${spring.jpa.hibernate.ddl-auto:validate}") String ddlAuto) {
 
         LocalContainerEntityManagerFactoryBean emf = new LocalContainerEntityManagerFactoryBean();
         emf.setDataSource(dataSource);
@@ -56,8 +58,8 @@ public class HibernateConfiguration {
         properties.put("hibernate.order_inserts", true);
         properties.put("hibernate.order_updates", true);
 
-        // Schema generation - let Flyway handle it
-        properties.put("hibernate.hbm2ddl.auto", "validate");
+        // Schema generation is controlled per environment.
+        properties.put("hibernate.hbm2ddl.auto", ddlAuto);
 
         emf.setJpaPropertyMap(properties);
 
