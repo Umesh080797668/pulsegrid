@@ -12,7 +12,6 @@ import java.util.UUID;
 @AllArgsConstructor
 public class AuditLogRequest {
 
-    @NotNull(message = "workspaceId is required")
     private UUID workspaceId;
 
     @NotNull(message = "userId is required")

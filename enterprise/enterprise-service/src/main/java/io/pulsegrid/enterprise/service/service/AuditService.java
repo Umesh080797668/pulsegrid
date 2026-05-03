@@ -1,6 +1,7 @@
 package io.pulsegrid.enterprise.service.service;
 
 import io.pulsegrid.enterprise.domain.AuditLog;
+import io.pulsegrid.enterprise.service.audit.AuditTenantIsolationService;
 import io.pulsegrid.enterprise.service.repository.AuditLogRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,10 +22,12 @@ import java.util.UUID;
 public class AuditService {
 
     private final AuditLogRepository auditLogRepository;
+    private final AuditTenantIsolationService auditTenantIsolationService;
 
     public AuditLog logAction(UUID workspaceId, UUID userId, String action, String resourceType, String resourceId, String details, String ipAddress, String userAgent) {
+        UUID resolvedWorkspaceId = auditTenantIsolationService.resolveWorkspaceId(workspaceId);
         AuditLog auditLog = new AuditLog();
-        auditLog.setWorkspaceId(workspaceId);
+        auditLog.setWorkspaceId(resolvedWorkspaceId);
         auditLog.setUserId(userId);
         auditLog.setAction(action);
         auditLog.setResourceType(resourceType);
@@ -35,19 +38,25 @@ public class AuditService {
         auditLog.setCreatedAt(Instant.now());
 
         AuditLog saved = auditLogRepository.save(auditLog);
-        log.info("Audit log created: workspaceId={}, action={}, userId={}", workspaceId, action, userId);
+        log.info("Audit log created: workspaceId={}, action={}, userId={}", resolvedWorkspaceId, action, userId);
         return saved;
     }
 
     public List<AuditLog> getAuditLogs(UUID workspaceId) {
-        return auditLogRepository.findByWorkspaceIdOrderByCreatedAtDesc(workspaceId);
+        UUID resolvedWorkspaceId = auditTenantIsolationService.resolveWorkspaceId(workspaceId);
+        auditTenantIsolationService.assertTenantScope(resolvedWorkspaceId);
+        return auditLogRepository.findByWorkspaceIdOrderByCreatedAtDesc(resolvedWorkspaceId);
     }
 
     public List<AuditLog> getAuditLogsSince(UUID workspaceId, Instant since) {
-        return auditLogRepository.findAuditLogsSince(workspaceId, since);
+        UUID resolvedWorkspaceId = auditTenantIsolationService.resolveWorkspaceId(workspaceId);
+        auditTenantIsolationService.assertTenantScope(resolvedWorkspaceId);
+        return auditLogRepository.findAuditLogsSince(resolvedWorkspaceId, since);
     }
 
     public List<AuditLog> getUserAuditLogs(UUID workspaceId, UUID userId) {
-        return auditLogRepository.findByWorkspaceIdAndUserIdOrderByCreatedAtDesc(workspaceId, userId);
+        UUID resolvedWorkspaceId = auditTenantIsolationService.resolveWorkspaceId(workspaceId);
+        auditTenantIsolationService.assertTenantScope(resolvedWorkspaceId);
+        return auditLogRepository.findByWorkspaceIdAndUserIdOrderByCreatedAtDesc(resolvedWorkspaceId, userId);
     }
 }

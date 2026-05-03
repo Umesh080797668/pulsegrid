@@ -3,6 +3,7 @@ package io.pulsegrid.enterprise.service.controller;
 import io.pulsegrid.enterprise.domain.AuditLog;
 import io.pulsegrid.enterprise.service.dto.AuditLogRequest;
 import io.pulsegrid.enterprise.service.service.AuditService;
+import io.pulsegrid.enterprise.service.tenancy.TenantContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -23,8 +24,12 @@ public class AuditController {
 
     @PostMapping("/log")
     public ResponseEntity<AuditLog> logAction(@Valid @RequestBody AuditLogRequest request) {
+        UUID workspaceId = request.getWorkspaceId();
+        if (workspaceId == null && TenantContext.getTenantId() != null) {
+            workspaceId = UUID.fromString(TenantContext.getTenantId());
+        }
         AuditLog auditLog = auditService.logAction(
-                request.getWorkspaceId(),
+                workspaceId,
                 request.getUserId(),
                 request.getAction(),
                 request.getResourceType(),
