@@ -43,6 +43,10 @@ export const userReducer = createReducer(
     ...state,
     roles,
   })),
+  on(UserActions.loadRolesFailure, (state, { error }) => ({
+    ...state,
+    error,
+  })),
   on(UserActions.createUser, (state, { user }) => ({
     ...state,
     users: [...state.users, user],
@@ -54,5 +58,17 @@ export const userReducer = createReducer(
   on(UserActions.deleteUser, (state, { userId }) => ({
     ...state,
     users: state.users.filter((u) => u.id !== userId),
+  })),
+  on(UserActions.createRole, (state, { role }) => ({
+    ...state,
+    roles: [...state.roles, role],
+  })),
+  on(UserActions.updateRole, (state, { roleId, role }) => ({
+    ...state,
+    roles: state.roles.map((r) => (r.id === roleId ? role : r)),
+  })),
+  on(UserActions.deleteRole, (state, { roleId }) => ({
+    ...state,
+    roles: state.roles.filter((r) => r.id !== roleId),
   }))
 );

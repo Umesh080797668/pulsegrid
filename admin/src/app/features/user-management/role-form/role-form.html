@@ -1,1 +1,19 @@
-<p>role-form works!</p>
+<form [formGroup]="form" (ngSubmit)="save()" class="role-form">
+	<h2>{{ data.role ? 'Edit Role' : 'Create Role' }}</h2>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Role name</mat-label>
+		<input matInput formControlName="name" />
+		<mat-error *ngIf="form.controls.name.hasError('required')">Role name is required</mat-error>
+	</mat-form-field>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Description</mat-label>
+		<textarea matInput rows="4" formControlName="description"></textarea>
+	</mat-form-field>
+
+	<div class="actions">
+		<button mat-stroked-button type="button" (click)="cancel()">Cancel</button>
+		<button mat-flat-button color="primary" type="submit" [disabled]="form.invalid">Save</button>
+	</div>
+</form>

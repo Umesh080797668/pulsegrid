@@ -1,1 +1,23 @@
-<p>role-list works!</p>
+<section class="role-list">
+	<div class="header">
+		<h2>Role Management</h2>
+		<button mat-flat-button color="primary" (click)="openCreate()">Create Role</button>
+	</div>
+
+	<div class="role-items" *ngIf="roles$ | async as roles">
+		<article class="role-item" *ngFor="let role of roles">
+			<div>
+				<h3>{{ role.name }}</h3>
+				<p>{{ role.description || 'No description provided.' }}</p>
+			</div>
+			<div class="actions">
+				<button mat-icon-button color="primary" (click)="openEdit(role)">
+					<mat-icon>edit</mat-icon>
+				</button>
+				<button mat-icon-button color="warn" (click)="deleteRole(role.id)">
+					<mat-icon>delete</mat-icon>
+				</button>
+			</div>
+		</article>
+	</div>
+</section>

@@ -1,1 +1,26 @@
-<p>user-form works!</p>
+<form [formGroup]="form" (ngSubmit)="save()" class="user-form">
+	<h2>{{ data.user ? 'Edit User' : 'Create User' }}</h2>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Name</mat-label>
+		<input matInput formControlName="name" />
+		<mat-error *ngIf="form.controls.name.hasError('required')">Name is required</mat-error>
+	</mat-form-field>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Email</mat-label>
+		<input matInput type="email" formControlName="email" />
+		<mat-error *ngIf="form.controls.email.hasError('required')">Email is required</mat-error>
+		<mat-error *ngIf="form.controls.email.hasError('email')">Enter a valid email</mat-error>
+	</mat-form-field>
+
+	<mat-form-field appearance="fill" class="full-width">
+		<mat-label>Roles (comma-separated)</mat-label>
+		<input matInput formControlName="roles" placeholder="admin, auditor" />
+	</mat-form-field>
+
+	<div class="actions">
+		<button mat-stroked-button type="button" (click)="cancel()">Cancel</button>
+		<button mat-flat-button color="primary" type="submit" [disabled]="form.invalid">Save</button>
+	</div>
+</form>
