@@ -14,12 +14,14 @@ import { WorkspaceEffects } from './core/store/effects/workspace.effects';
 import { BillingEffects } from './core/store/effects/billing.effects';
 import { ComplianceEffects } from './core/store/effects/compliance.effects';
 import { ConnectorEffects } from './core/store/effects/connector.effects';
+import { SSOEffects } from './core/store/effects/sso.effects';
 import { userReducer } from './core/store/reducers/user.reducer';
 import { authReducer } from './core/store/reducers/auth.reducer';
 import { workspaceReducer } from './core/store/reducers/workspace.reducer';
 import { auditReducer } from './core/store/reducers/audit.reducer';
 import { complianceReducer } from './core/store/reducers/compliance.reducer';
 import { connectorReducer } from './core/store/reducers/connector.reducer';
+import { ssoReducer } from './core/store/reducers/sso.reducer';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -33,8 +35,9 @@ export const appConfig: ApplicationConfig = {
       audit: auditReducer,
       compliance: complianceReducer,
       connectors: connectorReducer,
+      sso: ssoReducer,
     }),
-    provideEffects(UserEffects, AuditEffects, WorkspaceEffects, BillingEffects, ComplianceEffects, ConnectorEffects),
+    provideEffects(UserEffects, AuditEffects, WorkspaceEffects, BillingEffects, ComplianceEffects, ConnectorEffects, SSOEffects),
     // Effects provided in main bootstrap via importProvidersFrom when necessary
     provideStoreDevtools({ maxAge: 25 }),
   ],

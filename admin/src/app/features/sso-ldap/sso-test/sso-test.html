@@ -1,1 +1,170 @@
-<p>sso-test works!</p>
+<div class="sso-test-container">
+  <mat-card class="header-card">
+    <mat-card-header>
+      <mat-card-title>Connection Diagnostics</mat-card-title>
+      <mat-card-subtitle>Test and verify SSO and LDAP connections</mat-card-subtitle>
+    </mat-card-header>
+  </mat-card>
+
+  <mat-tab-group class="test-tabs">
+    <!-- SSO Test Tab -->
+    <mat-tab label="SSO Connection">
+      <ng-template mat-tab-label>
+        <mat-icon [color]="getStatusColor(ssoStatus)">{{ getStatusIcon(ssoStatus) }}</mat-icon>
+        <span class="tab-label">SSO Connection</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div *ngIf="ssoConfig$ | async as config; else noSSO" class="config-section">
+          <mat-card class="info-card">
+            <mat-card-header>
+              <mat-card-title>Current SSO Configuration</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-item">
+                <span class="label">Provider:</span>
+                <span class="value">{{ config?.provider || 'Not configured' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="label">Client ID:</span>
+                <span class="value">{{ config?.clientId ? config.clientId.substring(0, 10) + '...' : 'Not set' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="label">Callback URL:</span>
+                <span class="value">{{ config?.callbackUrl || 'Not set' }}</span>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card class="test-card">
+            <mat-card-header>
+              <mat-card-title>Test Connection</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="test-controls">
+                <button
+                  mat-raised-button
+                  color="primary"
+                  (click)="testSSO()"
+                  [disabled]="(ssoLoading$ | async)"
+                >
+                  <mat-icon>{{ (ssoLoading$ | async) ? 'hourglass_empty' : 'link' }}</mat-icon>
+                  {{ (ssoLoading$ | async) ? 'Testing...' : 'Test Connection' }}
+                </button>
+                <button
+                  mat-stroked-button
+                  (click)="resetSSO()"
+                  [disabled]="ssoStatus === 'not-tested'"
+                >
+                  Reset
+                </button>
+              </div>
+
+              <div [ngClass]="'test-result ' + ssoStatus" *ngIf="ssoStatus !== 'not-tested'">
+                <div class="status-header">
+                  <mat-icon>{{ getStatusIcon(ssoStatus) }}</mat-icon>
+                  <span class="status-text">
+                    {{ ssoStatus === 'success' ? 'Connection Successful' : ssoStatus === 'failure' ? 'Connection Failed' : 'Testing...' }}
+                  </span>
+                </div>
+                <div *ngIf="ssoTestMessage" class="status-message">
+                  {{ ssoTestMessage }}
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <ng-template #noSSO>
+          <div class="no-config">
+            <mat-icon>settings</mat-icon>
+            <p>No SSO configuration found</p>
+            <p class="hint">Configure SSO settings first in the SSO Configuration tab</p>
+          </div>
+        </ng-template>
+      </div>
+    </mat-tab>
+
+    <!-- LDAP Test Tab -->
+    <mat-tab label="LDAP Connection">
+      <ng-template mat-tab-label>
+        <mat-icon [color]="getStatusColor(ldapStatus)">{{ getStatusIcon(ldapStatus) }}</mat-icon>
+        <span class="tab-label">LDAP Connection</span>
+      </ng-template>
+
+      <div class="tab-content">
+        <div *ngIf="ldapConfig$ | async as config; else noLDAP" class="config-section">
+          <mat-card class="info-card">
+            <mat-card-header>
+              <mat-card-title>Current LDAP Configuration</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="config-item">
+                <span class="label">Server URL:</span>
+                <span class="value">{{ config?.serverUrl || 'Not configured' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="label">Port:</span>
+                <span class="value">{{ config?.port || 'Not set' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="label">Search Base:</span>
+                <span class="value">{{ config?.searchBase || 'Not set' }}</span>
+              </div>
+              <div class="config-item">
+                <span class="label">TLS Enabled:</span>
+                <span class="value">{{ config?.tlsEnabled ? 'Yes' : 'No' }}</span>
+              </div>
+            </mat-card-content>
+          </mat-card>
+
+          <mat-card class="test-card">
+            <mat-card-header>
+              <mat-card-title>Test Connection</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <div class="test-controls">
+                <button
+                  mat-raised-button
+                  color="primary"
+                  (click)="testLDAP()"
+                  [disabled]="(ldapLoading$ | async)"
+                >
+                  <mat-icon>{{ (ldapLoading$ | async) ? 'hourglass_empty' : 'link' }}</mat-icon>
+                  {{ (ldapLoading$ | async) ? 'Testing...' : 'Test Connection' }}
+                </button>
+                <button
+                  mat-stroked-button
+                  (click)="resetLDAP()"
+                  [disabled]="ldapStatus === 'not-tested'"
+                >
+                  Reset
+                </button>
+              </div>
+
+              <div [ngClass]="'test-result ' + ldapStatus" *ngIf="ldapStatus !== 'not-tested'">
+                <div class="status-header">
+                  <mat-icon>{{ getStatusIcon(ldapStatus) }}</mat-icon>
+                  <span class="status-text">
+                    {{ ldapStatus === 'success' ? 'Connection Successful' : ldapStatus === 'failure' ? 'Connection Failed' : 'Testing...' }}
+                  </span>
+                </div>
+                <div *ngIf="ldapTestMessage" class="status-message">
+                  {{ ldapTestMessage }}
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+
+        <ng-template #noLDAP>
+          <div class="no-config">
+            <mat-icon>settings</mat-icon>
+            <p>No LDAP configuration found</p>
+            <p class="hint">Configure LDAP settings first in the LDAP Configuration tab</p>
+          </div>
+        </ng-template>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

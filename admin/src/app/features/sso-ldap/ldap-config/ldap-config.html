@@ -1,1 +1,139 @@
-<p>ldap-config works!</p>
+<div class="ldap-config-container">
+  <mat-card class="config-card">
+    <mat-card-header>
+      <mat-card-title>LDAP Configuration</mat-card-title>
+      <mat-card-subtitle>Manage LDAP/Active Directory settings</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <div *ngIf="loading$ | async" class="loading-spinner">
+        <mat-progress-spinner mode="indeterminate"></mat-progress-spinner>
+      </div>
+
+      <form [formGroup]="ldapForm" *ngIf="!(loading$ | async)">
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Server URL</mat-label>
+          <input matInput formControlName="serverUrl" type="text" placeholder="ldap://ldap.example.com" />
+          <mat-error *ngIf="ldapForm.get('serverUrl')?.hasError('required')">
+            Server URL is required
+          </mat-error>
+          <mat-error *ngIf="ldapForm.get('serverUrl')?.hasError('pattern')">
+            Must be a valid LDAP URL (ldap:// or ldaps://)
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Port</mat-label>
+          <input matInput formControlName="port" type="number" />
+          <mat-error *ngIf="ldapForm.get('port')?.hasError('required')">
+            Port is required
+          </mat-error>
+          <mat-error *ngIf="ldapForm.get('port')?.hasError('min')">
+            Port must be between 1 and 65535
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Bind DN</mat-label>
+          <input matInput formControlName="bindDn" type="text" placeholder="cn=admin,dc=example,dc=com" />
+          <mat-error *ngIf="ldapForm.get('bindDn')?.hasError('required')">
+            Bind DN is required
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Bind Password</mat-label>
+          <input matInput formControlName="bindPassword" type="password" />
+          <mat-error *ngIf="ldapForm.get('bindPassword')?.hasError('required')">
+            Bind Password is required
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Search Base</mat-label>
+          <input matInput formControlName="searchBase" type="text" placeholder="ou=users,dc=example,dc=com" />
+          <mat-error *ngIf="ldapForm.get('searchBase')?.hasError('required')">
+            Search Base is required
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Search Filter</mat-label>
+          <input matInput formControlName="searchFilter" type="text" placeholder="(uid={0})" />
+          <mat-error *ngIf="ldapForm.get('searchFilter')?.hasError('required')">
+            Search Filter is required
+          </mat-error>
+        </mat-form-field>
+
+        <div class="toggle-group">
+          <mat-slide-toggle formControlName="tlsEnabled">
+            Enable TLS
+          </mat-slide-toggle>
+          <mat-slide-toggle formControlName="starttls">
+            Use STARTTLS
+          </mat-slide-toggle>
+        </div>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Groups Base DN (optional)</mat-label>
+          <input matInput formControlName="groupsBaseDn" type="text" placeholder="ou=groups,dc=example,dc=com" />
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Group Search Filter (optional)</mat-label>
+          <input matInput formControlName="groupSearchFilter" type="text" placeholder="(&(objectClass=groupOfNames)(member={0}))" />
+        </mat-form-field>
+
+        <div class="button-group">
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="testConnection()"
+            [disabled]="!(loading$ | async) === false"
+          >
+            Test Connection
+          </button>
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="saveConfig()"
+            [disabled]="!ldapForm.valid || (loading$ | async)"
+          >
+            Save Configuration
+          </button>
+          <button
+            mat-stroked-button
+            (click)="reset()"
+            [disabled]="(loading$ | async)"
+          >
+            Reset
+          </button>
+        </div>
+      </form>
+
+      <div *ngIf="showTestResult" class="test-result-card">
+        <mat-card>
+          <mat-card-title>Test Results</mat-card-title>
+          <mat-card-content>
+            <div [ngClass]="testResultData?.success ? 'success' : 'error'">
+              <strong>Status:</strong> {{ testResultData?.success ? 'Connected' : 'Failed' }}
+            </div>
+            <div *ngIf="testResultData?.message" class="message">
+              <strong>Message:</strong> {{ testResultData.message }}
+            </div>
+            <div *ngIf="testResultData?.error" class="error-message">
+              <strong>Error:</strong> {{ testResultData.error }}
+            </div>
+            <button
+              mat-button
+              (click)="clearTestResult()"
+              class="close-btn"
+            >
+              Dismiss
+            </button>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

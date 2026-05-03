@@ -1,1 +1,112 @@
-<p>sso-config works!</p>
+<div class="sso-config-container">
+  <mat-card class="config-card">
+    <mat-card-header>
+      <mat-card-title>SSO Configuration</mat-card-title>
+      <mat-card-subtitle>Manage Single Sign-On settings</mat-card-subtitle>
+    </mat-card-header>
+
+    <mat-card-content>
+      <div *ngIf="loading$ | async" class="loading-spinner">
+        <mat-progress-spinner mode="indeterminate"></mat-progress-spinner>
+      </div>
+
+      <form [formGroup]="ssoForm" *ngIf="!(loading$ | async)">
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Provider</mat-label>
+          <mat-select formControlName="provider">
+            <mat-option *ngFor="let provider of providers" [value]="provider">
+              {{ provider }}
+            </mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Client ID</mat-label>
+          <input matInput formControlName="clientId" type="text" />
+          <mat-error *ngIf="ssoForm.get('clientId')?.hasError('required')">
+            Client ID is required
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Client Secret</mat-label>
+          <input matInput formControlName="clientSecret" type="password" />
+          <mat-error *ngIf="ssoForm.get('clientSecret')?.hasError('required')">
+            Client Secret is required
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Callback URL</mat-label>
+          <input matInput formControlName="callbackUrl" type="text" />
+          <mat-error *ngIf="ssoForm.get('callbackUrl')?.hasError('required')">
+            Callback URL is required
+          </mat-error>
+          <mat-error *ngIf="ssoForm.get('callbackUrl')?.hasError('pattern')">
+            Must be a valid URL (http/https)
+          </mat-error>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Scope (optional)</mat-label>
+          <input matInput formControlName="scope" type="text" placeholder="openid,profile,email" />
+        </mat-form-field>
+
+        <mat-form-field appearance="outline" class="form-field">
+          <mat-label>Discovery URL (optional)</mat-label>
+          <input matInput formControlName="discoveryUrl" type="text" />
+        </mat-form-field>
+
+        <div class="button-group">
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="testConnection()"
+            [disabled]="!(loading$ | async) === false"
+          >
+            Test Connection
+          </button>
+          <button
+            mat-raised-button
+            color="primary"
+            (click)="saveConfig()"
+            [disabled]="!ssoForm.valid || (loading$ | async)"
+          >
+            Save Configuration
+          </button>
+          <button
+            mat-stroked-button
+            (click)="reset()"
+            [disabled]="(loading$ | async)"
+          >
+            Reset
+          </button>
+        </div>
+      </form>
+
+      <div *ngIf="showTestResult" class="test-result-card">
+        <mat-card>
+          <mat-card-title>Test Results</mat-card-title>
+          <mat-card-content>
+            <div [ngClass]="testResultData?.success ? 'success' : 'error'">
+              <strong>Status:</strong> {{ testResultData?.success ? 'Connected' : 'Failed' }}
+            </div>
+            <div *ngIf="testResultData?.message" class="message">
+              <strong>Message:</strong> {{ testResultData.message }}
+            </div>
+            <div *ngIf="testResultData?.error" class="error-message">
+              <strong>Error:</strong> {{ testResultData.error }}
+            </div>
+            <button
+              mat-button
+              (click)="clearTestResult()"
+              class="close-btn"
+            >
+              Dismiss
+            </button>
+          </mat-card-content>
+        </mat-card>
+      </div>
+    </mat-card-content>
+  </mat-card>
+</div>

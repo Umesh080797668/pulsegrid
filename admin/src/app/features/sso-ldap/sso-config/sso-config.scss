@@ -1,0 +1,98 @@
+.sso-config-container {
+  padding: 24px;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.config-card {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-field {
+  width: 100%;
+}
+
+.button-group {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.button-group button {
+  flex: 1;
+  min-width: 120px;
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  padding: 40px;
+}
+
+.test-result-card {
+  margin-top: 24px;
+  animation: slideIn 0.3s ease-out;
+}
+
+.test-result-card mat-card {
+  background-color: #f5f5f5;
+}
+
+.test-result-card .success {
+  color: #4caf50;
+  padding: 12px;
+  background-color: #e8f5e9;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.test-result-card .error {
+  color: #f44336;
+  padding: 12px;
+  background-color: #ffebee;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.test-result-card .message,
+.test-result-card .error-message {
+  padding: 8px 0;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.close-btn {
+  margin-top: 12px;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 600px) {
+  .sso-config-container {
+    padding: 12px;
+  }
+
+  .button-group {
+    flex-direction: column;
+  }
+
+  .button-group button {
+    width: 100%;
+  }
+}

@@ -9,6 +9,7 @@ export interface AppState {
   audit: AuditState;
   compliance: ComplianceState;
   connectors: ConnectorState;
+  sso: SSOState;
 }
 
 export interface AuthState {
@@ -107,3 +108,13 @@ export interface PaginationState {
   pageSize: number;
   total: number;
 }
+
+export interface SSOState {
+  ssoConfig: any | null;
+  ldapConfig: any | null;
+  ssoLoading: boolean;
+  ldapLoading: boolean;
+  error: string | null;
+  testResult: any | null;
+}
+
