@@ -1,0 +1,48 @@
+.user-manager {
+	padding: 24px;
+	display: grid;
+	gap: 16px;
+}
+
+.toolbar {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+
+.search {
+	width: min(420px, 100%);
+}
+
+.full-width {
+	width: 100%;
+}
+
+.role-section {
+	display: grid;
+	gap: 12px;
+}
+
+.roles {
+	display: grid;
+	gap: 12px;
+}
+
+.role-chip {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 16px;
+	border-radius: 12px;
+	background: #fff;
+	box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.loading-overlay {
+	display: flex;
+	justify-content: center;
+	padding: 24px;
+}
+

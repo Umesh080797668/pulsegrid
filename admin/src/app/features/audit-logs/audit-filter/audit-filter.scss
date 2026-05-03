@@ -1,0 +1,34 @@
+.audit-filter {
+	display: grid;
+	grid-template-columns: repeat(5, minmax(0, 1fr));
+	gap: 16px;
+	align-items: end;
+	padding: 16px;
+	background: #fff;
+	border-radius: 12px;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+}
+
+.audit-filter mat-form-field {
+	width: 100%;
+}
+
+.audit-filter .actions {
+	grid-column: 1 / -1;
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+@media (max-width: 960px) {
+	.audit-filter {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 640px) {
+	.audit-filter {
+		grid-template-columns: 1fr;
+	}
+}
+

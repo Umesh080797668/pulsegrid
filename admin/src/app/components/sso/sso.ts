@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnInit, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute } from '@angular/router';
 import { SsoAdminApi } from '../../services/sso-service/sso-api-service';
 import type { SsoConfigurationModel, SsoPreset } from '../../sso.types';
 
@@ -21,7 +21,7 @@ const emptyConfig = (): SsoConfigurationModel => ({
 @Component({
   selector: 'app-sso-admin-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule],
   templateUrl: './sso.html',
   styleUrl: './sso.scss',
 })

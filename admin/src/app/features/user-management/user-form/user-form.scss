@@ -1,0 +1,16 @@
+.user-form {
+	display: grid;
+	gap: 16px;
+	min-width: min(540px, 92vw);
+}
+
+.full-width {
+	width: 100%;
+}
+
+.actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 12px;
+}
+

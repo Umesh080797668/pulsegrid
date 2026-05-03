@@ -1,0 +1,18 @@
+.invoice-detail {
+	display: grid;
+	gap: 12px;
+}
+
+.invoice-detail h2 {
+	margin: 0 0 8px;
+}
+
+.invoice-detail pre {
+	padding: 16px;
+	border-radius: 12px;
+	background: #0f172a;
+	color: #e2e8f0;
+	overflow: auto;
+	max-height: 320px;
+}
+

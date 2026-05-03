@@ -1,0 +1,21 @@
+.compliance-violations {
+	padding: 24px;
+	display: grid;
+	gap: 16px;
+}
+
+.violation-list {
+	display: grid;
+	gap: 16px;
+}
+
+.violation {
+	display: grid;
+	gap: 8px;
+	padding: 18px;
+	border-left: 4px solid #ef4444;
+	border-radius: 12px;
+	background: #fff;
+	box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+

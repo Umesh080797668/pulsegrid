@@ -1,0 +1,33 @@
+.audit-log-viewer {
+	position: relative;
+	padding: 24px;
+	display: grid;
+	gap: 20px;
+}
+
+.audit-log-viewer h2 {
+	margin: 0;
+}
+
+.full-width {
+	width: 100%;
+}
+
+.audit-log-viewer table {
+	background: #fff;
+	border-radius: 12px;
+	overflow: hidden;
+}
+
+.loading-overlay {
+	display: flex;
+	justify-content: center;
+	padding: 24px;
+}
+
+@media (max-width: 720px) {
+	.audit-log-viewer {
+		padding: 16px;
+	}
+}
+

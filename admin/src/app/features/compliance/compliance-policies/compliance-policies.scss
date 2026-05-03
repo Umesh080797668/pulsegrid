@@ -1,0 +1,25 @@
+.compliance-policies {
+	padding: 24px;
+	display: grid;
+	gap: 16px;
+}
+
+.policy-list {
+	display: grid;
+	gap: 16px;
+}
+
+.policy {
+	display: grid;
+	gap: 12px;
+	padding: 18px;
+	border-radius: 14px;
+	background: #fff;
+	box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.policy .meta h3,
+.policy .meta p {
+	margin: 0;
+}
+

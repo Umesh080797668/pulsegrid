@@ -1,0 +1,21 @@
+.compliance-reports {
+	padding: 24px;
+	display: grid;
+	gap: 16px;
+}
+
+.full-width {
+	width: 100%;
+}
+
+.actions,
+.schedule {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.schedule mat-form-field {
+	min-width: 220px;
+}
+

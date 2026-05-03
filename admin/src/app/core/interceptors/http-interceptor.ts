@@ -17,12 +17,16 @@ export const httpInterceptor: HttpInterceptorFn = (req, next) => {
     });
   }
 
-  // Set content type
-  req = req.clone({
-    setHeaders: {
-      'Content-Type': 'application/json',
-    },
-  });
+  const isFormData = typeof FormData !== 'undefined' && req.body instanceof FormData;
+
+  if (!isFormData && !req.headers.has('Content-Type')) {
+    req = req.clone({
+      setHeaders: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+    });
+  }
 
   return next(req).pipe(
     catchError((error: HttpErrorResponse) => {

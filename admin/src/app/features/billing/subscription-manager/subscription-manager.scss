@@ -1,0 +1,39 @@
+.subscription-manager {
+	padding: 24px;
+	display: grid;
+	gap: 20px;
+}
+
+.subscription-manager h2 {
+	margin: 0;
+}
+
+.cards {
+	display: grid;
+	gap: 16px;
+}
+
+.card {
+	display: grid;
+	gap: 16px;
+	padding: 20px;
+	border-radius: 14px;
+	background: #fff;
+	box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+}
+
+.meta h3,
+.meta p {
+	margin: 0;
+}
+
+.plan-input {
+	width: min(320px, 100%);
+}
+
+.actions {
+	display: flex;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+

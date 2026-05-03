@@ -1,0 +1,27 @@
+.invoice-list {
+	padding: 24px;
+	display: grid;
+	gap: 16px;
+}
+
+.toolbar {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+
+.search {
+	width: min(420px, 100%);
+}
+
+.full-width {
+	width: 100%;
+}
+
+.invoice-list table {
+	background: #fff;
+	border-radius: 12px;
+	overflow: hidden;
+}
+
