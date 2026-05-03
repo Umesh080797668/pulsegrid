@@ -31,15 +31,17 @@ use tokio::sync::broadcast;
 mod grpc;
 mod models;
 mod cache;
+mod approval;
 use cache::LocalCache;
 #[allow(unused_imports)]
 use models::{
     ApiKey, CreateApiKeyRequest, CreateApiKeyResponse, ApiKeyResponse,
     CreateFlowRequest, CreateWorkspaceRequest, FlowDefinition, FlowResponse, FlowRunResponse,
     PulseEvent, UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceResponse,
-    WorkspaceSecretSummary,
+    WorkspaceSecretSummary, ApprovalDecisionRequest, ApprovalDecisionResponse,
 };
 mod executor;
+use approval::ApprovalManager;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
 use executor::FlowExecutor;
 use grpc::MyPulseCoreService;
@@ -767,6 +769,9 @@ async fn main() {
         .route("/api/v1/flows/{flow_id}/runs/{run_id}", get(get_flow_run_details))
         .route("/api/v1/flows/{flow_id}/stats", get(get_flow_stats))
         .route("/api/v1/replay/{workspace_id}", get(get_replay_events))
+        // Approval endpoints
+        .route("/api/v1/approvals/decision", post(approval_decision_handler))
+        .route("/api/v1/approvals/{flow_run_id}/pending", get(get_pending_approvals))
         // WebSocket event stream
         .route("/events/stream", get(events_stream))
         .with_state(state.clone());
@@ -1707,7 +1712,7 @@ async fn start_event_listener(
 
                                         if paused_for_approval {
                                             let _ = sqlx::query!(
-                                                r#"UPDATE flow_runs SET status = 'waiting', steps_log = $1 WHERE id = $2"#,
+                                                r#"UPDATE flow_runs SET status = 'pending_approval', steps_log = $1 WHERE id = $2"#,
                                                 steps_log,
                                                 flow_run_id as _
                                             ).execute(&pg_pool).await;
@@ -1960,6 +1965,7 @@ async fn handle_approval_response_event(
         r#"
         SELECT
             pa.flow_run_id,
+            pa.step_id,
             pa.context_json,
             pa.status,
             fr.workspace_id,
@@ -1987,6 +1993,7 @@ async fn handle_approval_response_event(
     }
 
     let flow_run_id: uuid::Uuid = row.try_get("flow_run_id").map_err(|error| error.to_string())?;
+    let step_id: String = row.try_get("step_id").map_err(|error| error.to_string())?;
     let workspace_id: uuid::Uuid = row.try_get("workspace_id").map_err(|error| error.to_string())?;
     let flow_id: uuid::Uuid = row.try_get("flow_id").map_err(|error| error.to_string())?;
     let flow_name: String = row.try_get("flow_name").map_err(|error| error.to_string())?;
@@ -2069,6 +2076,17 @@ async fn handle_approval_response_event(
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
+
+    let mut step_outputs = step_outputs;
+    step_outputs.insert(
+        step_id.clone(),
+        serde_json::json!({
+            "status": "approved",
+            "decision": decision,
+            "approval_token": approval_token,
+            "approved_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
 
     let start_group_index = context_json
         .get("current_group_index")
@@ -2230,7 +2248,7 @@ async fn resume_flow_after_approval(
 
     if paused_for_approval {
         let _ = sqlx::query(
-            r#"UPDATE flow_runs SET status = 'waiting', steps_log = $1 WHERE id = $2"#,
+            r#"UPDATE flow_runs SET status = 'pending_approval', steps_log = $1 WHERE id = $2"#,
         )
         .bind(steps_log)
         .bind(flow_run_id)
@@ -4088,4 +4106,117 @@ fn normalize_slug(slug: &str) -> Result<String, (axum::http::StatusCode, String)
     }
 
     Ok(trimmed)
+}
+
+// Approval step handlers
+async fn approval_decision_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ApprovalDecisionRequest>,
+) -> Result<Json<ApprovalDecisionResponse>, (axum::http::StatusCode, String)> {
+    let approval_manager = ApprovalManager::new(state.pool.clone());
+
+    // Get the approval by token
+    let approval = approval_manager
+        .get_approval_by_token(payload.token)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                "Approval not found".to_string(),
+            )
+        })?;
+
+    // Check if already decided
+    if approval.status != "pending" {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("Approval already {}", approval.status),
+        ));
+    }
+
+    // Check if expired
+    if approval.expires_at < chrono::Utc::now() {
+        approval_manager
+            .update_approval_decision(payload.token, "expired", None)
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Approval has expired".to_string(),
+        ));
+    }
+
+    // Update approval status
+    approval_manager
+        .update_approval_decision(payload.token, &payload.decision, payload.reason.clone())
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // Update flow run status and resume if approved
+    let decision_status = if payload.decision.eq_ignore_ascii_case("approved") {
+        "pending_approval_approved"
+    } else {
+        "pending_approval_rejected"
+    };
+
+    sqlx::query(
+        "UPDATE flow_runs SET status = $1, updated_at = NOW() WHERE id = $2"
+    )
+    .bind(decision_status)
+    .bind(approval.flow_run_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Store decision in Redis for fast retrieval during resume
+    let redis_url = std::env::var("REDIS_URL")
+        .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    
+    if let Ok(client) = redis::Client::open(redis_url) {
+        if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+            let cache_key = format!(
+                "approval_decision:{}:{}",
+                approval.flow_run_id, approval.step_id
+            );
+            let decision_data = serde_json::json!({
+                "decision": payload.decision,
+                "approver_id": payload.approver_id,
+                "approver_email": payload.approver_email,
+                "reason": payload.reason,
+                "decided_at": chrono::Utc::now().to_rfc3339(),
+            });
+
+            let _: Result<(), _> = redis::AsyncCommands::set_ex(
+                &mut con,
+                &cache_key,
+                serde_json::to_string(&decision_data).unwrap_or_default(),
+                86400, // 24 hour cache
+            )
+            .await;
+        }
+    }
+
+    Ok(Json(ApprovalDecisionResponse {
+        success: true,
+        flow_run_id: approval.flow_run_id,
+        step_id: approval.step_id,
+        decision: payload.decision,
+        message: "Approval decision processed successfully".to_string(),
+    }))
+}
+
+async fn get_pending_approvals(
+    State(state): State<AppState>,
+    Path(flow_run_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<models::PendingApproval>>, (axum::http::StatusCode, String)> {
+    let approval_manager = ApprovalManager::new(state.pool.clone());
+
+    let approvals = approval_manager
+        .get_pending_approvals(flow_run_id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(approvals))
 }

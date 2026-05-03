@@ -910,11 +910,27 @@ impl FlowExecutor {
                 })
             }
             "wait_for_approval" => {
-                json!({
-                    "status": "waiting",
-                    "step_id": step.id,
-                    "approval_required": true,
-                })
+                // Validate that approval_config is present
+                if let Some(approval_config) = &step.approval_config {
+                    // In executor context, just return pending_approval status
+                    // Actual approval request creation happens in main.rs event loop
+                    // (which has access to flow_run_id and full flow context)
+                    json!({
+                        "status": "pending_approval",
+                        "step_id": step.id,
+                        "title": approval_config.title,
+                        "description": approval_config.description,
+                        "message": "Flow paused, awaiting approval",
+                    })
+                } else {
+                    return StepExecutionResult {
+                        step_id: step.id.clone(),
+                        status: "failed".to_string(),
+                        output: Value::Null,
+                        error: Some("wait_for_approval step requires approval_config".to_string()),
+                        duration_ms: started.elapsed().as_millis() as i32,
+                    };
+                }
             }
             "fork" => {
                 let fork_condition = step.condition.as_deref().unwrap_or("");
@@ -1412,7 +1428,25 @@ impl FlowExecutor {
 
         result
     }
+
+    /// Get approval context from database by flow run and step
+    #[allow(dead_code)]
+    pub async fn get_approval_context_for_resume(
+        &self,
+        flow_run_id: uuid::Uuid,
+        step_id: &str,
+    ) -> Result<Option<crate::models::PendingApproval>, String> {
+        sqlx::query_as::<_, crate::models::PendingApproval>(
+            "SELECT * FROM pending_approvals WHERE flow_run_id = $1 AND step_id = $2 ORDER BY created_at DESC LIMIT 1"
+        )
+        .bind(flow_run_id)
+        .bind(step_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to fetch approval context: {}", e))
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1460,28 +1494,6 @@ mod tests {
                 connector: None,
                 action: None,
                 input_mapping: None,
-                depends_on: vec![],
-                retry_policy: Default::default(),
-                condition: None,
-                script_language: None,
-                code: None,
-                loop_items: None,
-                loop_variable_name: None,
-                max_iterations: None,
-                loop_condition: None,
-                parallel_steps: None,
-                sub_flow_id: None,
-                sub_flow_input: None,
-                filter_condition: None,
-                transform_expr: None,
-                delay_ms: None,
-            },
-            FlowStep {
-                id: "step2".into(),
-                r#type: "action".into(),
-                connector: None,
-                action: None,
-                input_mapping: None,
                 depends_on: vec!["step1".into()],
                 retry_policy: Default::default(),
                 condition: None,
@@ -1497,28 +1509,7 @@ mod tests {
                 filter_condition: None,
                 transform_expr: None,
                 delay_ms: None,
-            },
-            FlowStep {
-                id: "step3".into(),
-                r#type: "action".into(),
-                connector: None,
-                action: None,
-                input_mapping: None,
-                depends_on: vec!["step1".into()],
-                retry_policy: Default::default(),
-                condition: None,
-                script_language: None,
-                code: None,
-                loop_items: None,
-                loop_variable_name: None,
-                max_iterations: None,
-                loop_condition: None,
-                parallel_steps: None,
-                sub_flow_id: None,
-                sub_flow_input: None,
-                filter_condition: None,
-                transform_expr: None,
-                delay_ms: None,
+                   approval_config: None,
             },
         ];
 

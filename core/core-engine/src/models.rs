@@ -115,6 +115,29 @@ pub struct FlowStep {
     pub filter_condition: Option<String>,    // Condition for filter steps
     pub transform_expr: Option<String>,      // Expression for transform steps
     pub delay_ms: Option<i32>,               // Delay in milliseconds
+    // Approval step configuration
+    pub approval_config: Option<ApprovalStepConfig>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApprovalStepConfig {
+    pub title: String,
+    pub description: Option<String>,
+    pub timeout_hours: i32, // Auto-reject after N hours
+    pub notification_channels: Vec<String>, // "slack", "email", "push"
+    pub slack_channel: Option<String>,
+    pub notify_emails: Option<Vec<String>>,
+    pub approval_rules: Vec<ApprovalRule>,
+    pub context_data: Option<Value>, // Custom data to include in approval request
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ApprovalRule {
+    pub name: String,
+    pub condition: Option<String>, // Rhai expression: e.g., "{{trigger.data.amount}} > 10000"
+    pub required_approvers: i32,
+    pub required_roles: Option<Vec<String>>, // e.g., ["CFO", "CEO"]
+    pub fallback_email: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -239,6 +262,37 @@ pub struct CredentialDependentsResponse {
     pub flows: Vec<CredentialDependentFlow>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+pub struct PendingApproval {
+    pub id: Uuid,
+    pub flow_run_id: Uuid,
+    pub step_id: String,
+    pub approval_token: Uuid,
+    pub context_json: Value,
+    pub expires_at: DateTime<Utc>,
+    pub status: String, // "pending", "approved", "rejected", "expired"
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalDecisionRequest {
+    pub token: Uuid,
+    pub decision: String, // "approved" or "rejected"
+    pub approver_id: Option<String>,
+    pub approver_email: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApprovalDecisionResponse {
+    pub success: bool,
+    pub flow_run_id: Uuid,
+    pub step_id: String,
+    pub decision: String,
+    pub message: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +370,7 @@ mod tests {
             filter_condition: None,
             transform_expr: None,
             delay_ms: None,
+            approval_config: None,
         };
 
         assert_eq!(step.r#type, "action");
