@@ -1,1 +1,25 @@
-<p>billing-dashboard works!</p>
+<section class="billing-dashboard">
+	<div class="header">
+		<h2>Billing Dashboard</h2>
+		<button mat-flat-button color="primary" (click)="generateCurrentInvoice()">
+			Generate Current Invoice
+		</button>
+	</div>
+
+	<div class="kpis">
+		<article class="kpi">
+			<h3>Total Invoices</h3>
+			<p>{{ (invoices$ | async)?.length || 0 }}</p>
+		</article>
+
+		<article class="kpi">
+			<h3>Active Subscriptions</h3>
+			<p>{{ (subscriptions$ | async)?.length || 0 }}</p>
+		</article>
+
+		<article class="kpi">
+			<h3>Recognized Revenue</h3>
+			<p>{{ trackRevenue((invoices$ | async) || []) | currency }}</p>
+		</article>
+	</div>
+</section>

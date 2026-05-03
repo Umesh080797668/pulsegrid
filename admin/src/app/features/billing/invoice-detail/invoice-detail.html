@@ -1,1 +1,16 @@
-<p>invoice-detail works!</p>
+<h2 mat-dialog-title>Invoice Detail</h2>
+
+<div mat-dialog-content>
+	<p><strong>Invoice ID:</strong> {{ data.invoice?.id }}</p>
+	<p><strong>Customer:</strong> {{ data.invoice?.customerName || data.invoice?.customer || data.invoice?.workspaceId }}</p>
+	<p><strong>Status:</strong> {{ data.invoice?.status || 'issued' }}</p>
+	<p><strong>Total:</strong> {{ data.invoice?.amount || data.invoice?.total || data.invoice?.amountCents / 100 | currency }}</p>
+	<p><strong>Issued:</strong> {{ data.invoice?.issuedAt || data.invoice?.createdAt | date:'medium' }}</p>
+
+	<h3>Raw Payload</h3>
+	<pre>{{ data.invoice | json }}</pre>
+</div>
+
+<div mat-dialog-actions align="end">
+	<button mat-stroked-button mat-dialog-close>Close</button>
+</div>

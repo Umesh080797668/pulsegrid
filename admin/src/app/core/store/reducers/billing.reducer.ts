@@ -37,6 +37,12 @@ export const billingReducer = createReducer(
     ...state,
     loading: true,
   })),
+  on(BillingActions.updateSubscription, (state, { subscriptionId, plan }) => ({
+    ...state,
+    subscriptions: state.subscriptions.map((s) =>
+      s.id === subscriptionId ? { ...s, plan } : s
+    ),
+  })),
   on(BillingActions.cancelSubscription, (state, { subscriptionId }) => ({
     ...state,
     subscriptions: state.subscriptions.filter(

@@ -1,1 +1,52 @@
-<p>invoice-list works!</p>
+<section class="invoice-list">
+	<div class="toolbar">
+		<mat-form-field appearance="outline" class="search">
+			<mat-icon matPrefix>search</mat-icon>
+			<input matInput placeholder="Search invoices" (input)="applyFilter($event)" />
+		</mat-form-field>
+	</div>
+
+	<table mat-table [dataSource]="dataSource" class="mat-elevation-z2 full-width">
+		<ng-container matColumnDef="id">
+			<th mat-header-cell *matHeaderCellDef>Invoice ID</th>
+			<td mat-cell *matCellDef="let row">{{ row.id }}</td>
+		</ng-container>
+
+		<ng-container matColumnDef="customer">
+			<th mat-header-cell *matHeaderCellDef>Customer</th>
+			<td mat-cell *matCellDef="let row">{{ row.customerName || row.customer || row.workspaceId }}</td>
+		</ng-container>
+
+		<ng-container matColumnDef="amount">
+			<th mat-header-cell *matHeaderCellDef>Amount</th>
+			<td mat-cell *matCellDef="let row">{{ row.amount || row.total || row.amountCents / 100 | currency }}</td>
+		</ng-container>
+
+		<ng-container matColumnDef="status">
+			<th mat-header-cell *matHeaderCellDef>Status</th>
+			<td mat-cell *matCellDef="let row">{{ row.status || 'issued' }}</td>
+		</ng-container>
+
+		<ng-container matColumnDef="issuedAt">
+			<th mat-header-cell *matHeaderCellDef>Issued</th>
+			<td mat-cell *matCellDef="let row">{{ row.issuedAt || row.createdAt | date:'medium' }}</td>
+		</ng-container>
+
+		<ng-container matColumnDef="actions">
+			<th mat-header-cell *matHeaderCellDef>Actions</th>
+			<td mat-cell *matCellDef="let row">
+				<button mat-icon-button color="primary" (click)="openInvoice(row)">
+					<mat-icon>visibility</mat-icon>
+				</button>
+				<button mat-icon-button color="primary" (click)="downloadInvoice(row.id, 'pdf')">
+					<mat-icon>download</mat-icon>
+				</button>
+			</td>
+		</ng-container>
+
+		<tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+		<tr mat-row *matRowDef="let row; columns: displayedColumns"></tr>
+	</table>
+
+	<mat-paginator [pageSizeOptions]="[10, 25, 50]" showFirstLastButtons></mat-paginator>
+</section>
