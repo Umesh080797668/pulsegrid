@@ -502,7 +502,8 @@ export class AppController implements OnModuleInit {
 
   @UseGuards(JwtAuthGuard)
   @Post('flows')
-  async createFlow(@Body() body: CreateFlowDto) {
+  async createFlow(@Body() body: CreateFlowDto, @Req() req: Request) {
+    const actorId = this.getJwtUserId(req);
     return this.coreRequest('/api/v1/flows', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -511,6 +512,7 @@ export class AppController implements OnModuleInit {
         name: body.name,
         description: body.description ?? null,
         definition: body.definition,
+        created_by: actorId,
       }),
     });
   }
@@ -538,7 +540,9 @@ export class AppController implements OnModuleInit {
   async updateFlow(
     @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
     @Body() body: UpdateFlowDto,
+    @Req() req: Request,
   ) {
+    const actorId = this.getJwtUserId(req);
     return this.coreRequest(`/api/v1/flow/${flowId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -547,7 +551,111 @@ export class AppController implements OnModuleInit {
         description: body.description,
         definition: body.definition,
         enabled: body.enabled,
+        created_by: actorId,
+        note: body.note,
       }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flows/:flowId/runs')
+  async getFlowRuns(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Query('environment') environment?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const qp = new URLSearchParams();
+    if (environment) qp.set('environment', environment);
+    if (limit) qp.set('limit', limit);
+    if (offset) qp.set('offset', offset);
+    const suffix = qp.toString() ? `?${qp.toString()}` : '';
+
+    return this.coreRequest(`/api/v1/flows/${flowId}/runs${suffix}`, {
+      method: 'GET',
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flows/:flowId/versions')
+  async listFlowVersions(@Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string) {
+    return this.coreRequest(`/api/v1/flows/${flowId}/versions`, { method: 'GET' });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flows/:flowId/versions/:versionId/diff')
+  async getFlowVersionDiff(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Param('versionId', new ParseUUIDPipe({ version: '4' })) versionId: string,
+    @Query('targetVersionId') targetVersionId?: string,
+  ) {
+    const suffix = targetVersionId ? `?target_version_id=${encodeURIComponent(targetVersionId)}` : '';
+    return this.coreRequest(`/api/v1/flows/${flowId}/versions/${versionId}/diff${suffix}`, { method: 'GET' });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('flows/:flowId/rollback/:versionId')
+  async rollbackFlowVersion(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Param('versionId', new ParseUUIDPipe({ version: '4' })) versionId: string,
+    @Req() req: Request,
+    @Body() body: { note?: string },
+  ) {
+    const actorId = this.getJwtUserId(req);
+    return this.coreRequest(`/api/v1/flows/${flowId}/rollback/${versionId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ created_by: actorId, note: body?.note }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('flows/:flowId/environments')
+  async getFlowEnvironments(@Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string) {
+    return this.coreRequest(`/api/v1/flows/${flowId}/environments`, { method: 'GET' });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('flows/:flowId/deploy/staging')
+  async deployFlowToStaging(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Req() req: Request,
+    @Body() body: { note?: string },
+  ) {
+    const actorId = this.getJwtUserId(req);
+    return this.coreRequest(`/api/v1/flows/${flowId}/deploy/staging`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ created_by: actorId, note: body?.note }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('flows/:flowId/promote')
+  async promoteFlowToProduction(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Req() req: Request,
+    @Body() body: { note?: string },
+  ) {
+    const actorId = this.getJwtUserId(req);
+    return this.coreRequest(`/api/v1/flows/${flowId}/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ created_by: actorId, note: body?.note }),
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('flows/:flowId/run/:environment')
+  async runFlowInEnvironment(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Param('environment') environment: string,
+    @Body() body: { input?: Record<string, unknown> },
+  ) {
+    return this.coreRequest(`/api/v1/flows/${flowId}/run/${encodeURIComponent(environment)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: body?.input || {} }),
     });
   }
 
@@ -886,8 +994,12 @@ export class AppController implements OnModuleInit {
 
   @UseGuards(JwtAuthGuard)
   @Get('flow-runs')
-  async listFlowRuns(@Query('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string) {
-    return this.coreRequest(`/api/v1/flow-runs/${workspaceId}`, {
+  async listFlowRuns(
+    @Query('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+    @Query('environment') environment?: string,
+  ) {
+    const suffix = environment ? `?environment=${encodeURIComponent(environment)}` : '';
+    return this.coreRequest(`/api/v1/flow-runs/${workspaceId}${suffix}`, {
       method: 'GET',
     });
   }

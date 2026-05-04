@@ -37,6 +37,7 @@ use cache::LocalCache;
 use models::{
     ApiKey, CreateApiKeyRequest, CreateApiKeyResponse, ApiKeyResponse,
     CreateFlowRequest, CreateWorkspaceRequest, FlowDefinition, FlowResponse, FlowRunResponse,
+    FlowEnvironmentStatus, FlowVersionDiff, FlowVersionResponse,
     PulseEvent, UpdateFlowRequest, UpsertWorkspaceSecretRequest, WorkspaceResponse,
     WorkspaceSecretSummary, ApprovalDecisionRequest, ApprovalDecisionResponse,
 };
@@ -221,7 +222,7 @@ async fn publish_event_to_redis(event: &PulseEvent) {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
     if let Ok(client) = redis::Client::open(redis_url) {
         if let Ok(mut con) = client.get_multiplexed_async_connection().await {
-            let workspace_stream = workspace_stream_key(event.tenant_id);
+            let workspace_stream = workspace_stream_key_for_environment(event.tenant_id, event_environment(event));
             let payload = serde_json::to_string(event).unwrap_or_default();
             let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, &workspace_stream, "*", &[("payload", payload)]).await;
         }
@@ -803,6 +804,31 @@ async fn main() {
             "/api/v1/flow/{flow_id}",
             get(get_flow).put(update_flow).delete(delete_flow),
         )
+        .route("/api/v1/flows/{flow_id}/versions", get(list_flow_versions))
+        .route(
+            "/api/v1/flows/{flow_id}/versions/{version_id}/diff",
+            get(get_flow_version_diff),
+        )
+        .route(
+            "/api/v1/flows/{flow_id}/rollback/{version_id}",
+            post(rollback_flow_version),
+        )
+        .route(
+            "/api/v1/flows/{flow_id}/deploy/{environment}",
+            post(deploy_flow_to_environment),
+        )
+        .route(
+            "/api/v1/flows/{flow_id}/promote",
+            post(promote_flow_environment),
+        )
+        .route(
+            "/api/v1/flows/{flow_id}/environments",
+            get(get_flow_environment_statuses),
+        )
+        .route(
+            "/api/v1/flows/{flow_id}/run/{environment}",
+            post(run_flow_in_environment),
+        )
         // Webhook endpoints
         .route("/api/v1/webhooks/{workspace_id}", post(webhook_receiver))
         .route("/api/v1/webhooks/{workspace_id}/{flow_id}", post(flow_webhook_receiver))
@@ -1204,6 +1230,64 @@ fn workspace_stream_key(workspace_id: uuid::Uuid) -> String {
     format!("stream:events:{}", workspace_id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowEnvironment {
+    Production,
+    Staging,
+}
+
+impl FlowEnvironment {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Staging => "staging",
+        }
+    }
+
+    fn parse(value: Option<&str>) -> Self {
+        match value
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("staging") => Self::Staging,
+            _ => Self::Production,
+        }
+    }
+}
+
+fn workspace_stream_key_for_environment(workspace_id: uuid::Uuid, environment: FlowEnvironment) -> String {
+    match environment {
+        FlowEnvironment::Production => workspace_stream_key(workspace_id),
+        FlowEnvironment::Staging => format!("stream:events:{}:staging", workspace_id),
+    }
+}
+
+fn event_environment(event: &PulseEvent) -> FlowEnvironment {
+    let from_data = event
+        .data
+        .get("environment")
+        .and_then(|value| value.as_str());
+    FlowEnvironment::parse(from_data)
+}
+
+fn clickhouse_db_for_environment(environment: FlowEnvironment) -> Option<String> {
+    match environment {
+        FlowEnvironment::Staging => std::env::var("CLICKHOUSE_DB_STAGING")
+            .ok()
+            .or_else(|| std::env::var("CLICKHOUSE_DB").ok()),
+        FlowEnvironment::Production => std::env::var("CLICKHOUSE_DB").ok(),
+    }
+}
+
+fn invalidate_workspace_flow_cache(cache: &Arc<LocalCache>, workspace_id: uuid::Uuid) {
+    let prod_cache_key = format!("flows:{}:{}", workspace_id, FlowEnvironment::Production.as_str());
+    let staging_cache_key = format!("flows:{}:{}", workspace_id, FlowEnvironment::Staging.as_str());
+    let legacy_cache_key = format!("flows:{}", workspace_id);
+    let _ = cache.delete(&prod_cache_key);
+    let _ = cache.delete(&staging_cache_key);
+    let _ = cache.delete(&legacy_cache_key);
+}
+
 async fn ensure_redis_consumer_group(
     con: &mut redis::aio::MultiplexedConnection,
     stream_key: &str,
@@ -1308,7 +1392,12 @@ async fn start_event_listener(
 
         let mut stream_keys: Vec<String> = workspace_ids
             .into_iter()
-            .map(workspace_stream_key)
+            .flat_map(|workspace_id| {
+                vec![
+                    workspace_stream_key_for_environment(workspace_id, FlowEnvironment::Production),
+                    workspace_stream_key_for_environment(workspace_id, FlowEnvironment::Staging),
+                ]
+            })
             .collect();
         stream_keys.sort();
         stream_keys.dedup();
@@ -1335,6 +1424,11 @@ async fn start_event_listener(
         match result {
             Ok(reply) => {
                 for key in reply.keys {
+                    let stream_environment = if key.key.ends_with(":staging") {
+                        FlowEnvironment::Staging
+                    } else {
+                        FlowEnvironment::Production
+                    };
                     for node in key.ids {
                         // Grab the actual event payload (we assume it's stored under a 'payload' field)
                         if let Some(redis::Value::BulkString(data)) = node.map.get("payload") {
@@ -1343,13 +1437,26 @@ async fn start_event_listener(
                             // Try parsing into our structural PulseEvent model
                             match serde_json::from_str::<PulseEvent>(&payload_str) {
                                 Ok(event) => {
+                                    let payload_environment = event_environment(&event);
+                                    let execution_environment = if stream_environment == FlowEnvironment::Staging
+                                        || payload_environment == FlowEnvironment::Staging
+                                    {
+                                        FlowEnvironment::Staging
+                                    } else {
+                                        FlowEnvironment::Production
+                                    };
+
                                     println!("🔥 Received PulseEvent (ID: {})", node.id);
                                     let _ = event_tx.send(payload_str.to_string());
 
                                     // EVENT REPLAY: Store event in ring buffer (sorted set capped at 500)
                                     // Get current Unix timestamp in milliseconds
                                     let unix_ms = chrono::Utc::now().timestamp_millis();
-                                    let ring_buffer_key = format!("workspace:{}:events", event.tenant_id);
+                                    let ring_buffer_key = format!(
+                                        "workspace:{}:events:{}",
+                                        event.tenant_id,
+                                        execution_environment.as_str()
+                                    );
                                     
                                     // Add event to sorted set with timestamp as score
                                     let _: Result<(), _> = con.zadd(
@@ -1386,11 +1493,12 @@ async fn start_event_listener(
                                             SELECT fr.id, fr.flow_id, fr.started_at, fr.status, fr.steps_log, f.name AS flow_name
                                             FROM flow_runs fr
                                             LEFT JOIN flows f ON f.id = fr.flow_id
-                                            WHERE fr.workspace_id = $1
+                                            WHERE fr.workspace_id = $1 AND fr.environment = $2
                                             ORDER BY fr.started_at DESC
                                             LIMIT 500
                                             "#,
-                                            event.tenant_id as _
+                                            event.tenant_id as _,
+                                            execution_environment.as_str(),
                                         )
                                         .fetch_all(&pg_pool)
                                         .await
@@ -1491,7 +1599,10 @@ async fn start_event_listener(
                                                     if let Err(e) = tx.commit().await {
                                                         eprintln!("Failed to commit pattern inserts: {}", e);
                                                     } else {
-                                                        let workspace_stream = workspace_stream_key(event.tenant_id);
+                                                        let workspace_stream = workspace_stream_key_for_environment(
+                                                            event.tenant_id,
+                                                            execution_environment,
+                                                        );
                                                         for (description, confidence) in anomaly_events.into_iter() {
                                                             let anomaly_payload = serde_json::json!({
                                                                 "event_type": "anomaly_detected",
@@ -1517,24 +1628,42 @@ async fn start_event_listener(
                                     }
 
                                     // Check cache for flow definitions first
-                                    let cache_key = format!("flows:{}", event.tenant_id);
+                                    let cache_key = format!(
+                                        "flows:{}:{}",
+                                        event.tenant_id,
+                                        execution_environment.as_str()
+                                    );
                                     let active_flows = if let Some(cached) = cache.get::<Vec<(uuid::Uuid, String, serde_json::Value)>>(&cache_key) {
                                         println!("   📦 Using cached flows for workspace {}", event.tenant_id);
                                         cached
                                     } else {
                                         // Cache miss: fetch from database
-                                        let flows = sqlx::query!(
+                                        let flows = sqlx::query(
                                             r#"
-                                            SELECT id, name, definition FROM flows 
-                                            WHERE workspace_id = $1 AND enabled = true
+                                            SELECT f.id, f.name, fe.definition
+                                            FROM flows f
+                                            JOIN flow_environments fe ON fe.flow_id = f.id
+                                            WHERE f.workspace_id = $1
+                                              AND fe.environment = $2
+                                              AND fe.enabled = TRUE
                                             "#,
-                                            event.tenant_id as _
                                         )
+                                        .bind(event.tenant_id)
+                                        .bind(execution_environment.as_str())
                                         .fetch_all(&pg_pool)
                                         .await
                                         .unwrap_or_else(|_| vec![]);
-                                        
-                                        let result: Vec<_> = flows.iter().map(|f| (f.id, f.name.clone(), f.definition.clone())).collect();
+
+                                        let result: Vec<_> = flows
+                                            .iter()
+                                            .map(|f| {
+                                                (
+                                                    f.get::<uuid::Uuid, _>("id"),
+                                                    f.get::<String, _>("name"),
+                                                    f.get::<serde_json::Value, _>("definition"),
+                                                )
+                                            })
+                                            .collect();
                                         
                                         // Write to cache with TTL (5 minutes is handled by LocalCache)
                                         let _ = cache.set(&cache_key, result.clone());
@@ -1577,12 +1706,13 @@ async fn start_event_listener(
 
                                         let insert_result = sqlx::query!(
                                             r#"
-                                            INSERT INTO flow_runs (workspace_id, flow_id, status, trigger_event_id, started_at) 
-                                            VALUES ($1, $2, $3, $4, NOW())
+                                            INSERT INTO flow_runs (workspace_id, flow_id, environment, status, trigger_event_id, started_at) 
+                                            VALUES ($1, $2, $3, $4, $5, NOW())
                                             RETURNING id
                                             "#,
                                             event.tenant_id as _,
                                             flow_id as _,
+                                            execution_environment.as_str(),
                                             "running",
                                             event.id as _
                                         )
@@ -1805,7 +1935,7 @@ async fn start_event_listener(
                                         let clickhouse_url = std::env::var("CLICKHOUSE_URL").ok();
                                         let clickhouse_user = std::env::var("CLICKHOUSE_USER").ok();
                                         let clickhouse_password = std::env::var("CLICKHOUSE_PASSWORD").ok();
-                                        let clickhouse_db = std::env::var("CLICKHOUSE_DB").ok();
+                                        let clickhouse_db = clickhouse_db_for_environment(execution_environment);
 
                                         if clickhouse_url.is_some() {
                                             let run_id = flow_run_id;
@@ -1854,7 +1984,10 @@ async fn start_event_listener(
                                         }
 
                                         // Push run-completion event for realtime dashboard updates
-                                        let workspace_stream = format!("stream:events:{}", event.tenant_id);
+                                        let workspace_stream = workspace_stream_key_for_environment(
+                                            event.tenant_id,
+                                            execution_environment,
+                                        );
                                         let completion_payload = serde_json::json!({
                                             "event_type": "flow_run_completed",
                                             "tenant_id": event.tenant_id,
@@ -2364,27 +2497,154 @@ async fn resume_flow_after_approval(
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct FlowRunsQuery {
+    environment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FlowDiffQuery {
+    target_version_id: Option<uuid::Uuid>,
+}
+
+fn step_map(definition: &serde_json::Value) -> std::collections::HashMap<String, serde_json::Value> {
+    definition
+        .get("steps")
+        .and_then(|steps| steps.as_array())
+        .map(|steps| {
+            steps
+                .iter()
+                .filter_map(|step| {
+                    let id = step.get("id").and_then(|value| value.as_str())?;
+                    Some((id.to_string(), step.clone()))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .unwrap_or_default()
+}
+
+fn build_flow_version_diff(from_definition: &serde_json::Value, to_definition: &serde_json::Value) -> FlowVersionDiff {
+    let from_steps = step_map(from_definition);
+    let to_steps = step_map(to_definition);
+
+    let from_ids = from_steps
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let to_ids = to_steps
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut added_nodes: Vec<String> = to_ids
+        .difference(&from_ids)
+        .cloned()
+        .collect();
+    let mut removed_nodes: Vec<String> = from_ids
+        .difference(&to_ids)
+        .cloned()
+        .collect();
+    let mut changed_nodes: Vec<String> = from_ids
+        .intersection(&to_ids)
+        .filter_map(|id| {
+            let from_step = from_steps.get(id)?;
+            let to_step = to_steps.get(id)?;
+            if from_step != to_step {
+                Some(id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    added_nodes.sort();
+    removed_nodes.sort();
+    changed_nodes.sort();
+
+    FlowVersionDiff {
+        added_nodes,
+        removed_nodes,
+        changed_nodes,
+    }
+}
+
 async fn create_flow(
     State(state): State<AppState>,
     Json(payload): Json<CreateFlowRequest>,
 ) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
     // BILLING: Enforce flow creation limit per plan
     enforce_flow_limit(&state.pool, payload.workspace_id).await?;
-    
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let row = sqlx::query!(
         r#"
-        INSERT INTO flows (workspace_id, name, description, definition, enabled, run_count)
-        VALUES ($1, $2, $3, $4, true, 0)
+        INSERT INTO flows (workspace_id, name, description, definition, enabled, run_count, created_by)
+        VALUES ($1, $2, $3, $4, true, 0, $5)
         RETURNING id, workspace_id, name, description, definition, enabled, run_count
         "#,
         payload.workspace_id,
         payload.name,
         payload.description,
         payload.definition,
+        payload.created_by,
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_versions (flow_id, definition, created_by, note)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(row.id)
+    .bind(row.definition.clone())
+    .bind(payload.created_by)
+    .bind(Some("Initial flow version".to_string()))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_environments (flow_id, environment, definition, enabled, deployed_by)
+        VALUES ($1, 'production', $2, $3, $4)
+        ON CONFLICT (flow_id, environment)
+        DO UPDATE SET definition = EXCLUDED.definition, enabled = EXCLUDED.enabled, deployed_by = EXCLUDED.deployed_by, deployed_at = NOW(), updated_at = NOW()
+        "#,
+    )
+    .bind(row.id)
+    .bind(row.definition.clone())
+    .bind(row.enabled.unwrap_or(true))
+    .bind(payload.created_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_environments (flow_id, environment, definition, enabled, deployed_by)
+        VALUES ($1, 'staging', $2, FALSE, $3)
+        ON CONFLICT (flow_id, environment)
+        DO NOTHING
+        "#,
+    )
+    .bind(row.id)
+    .bind(row.definition.clone())
+    .bind(payload.created_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(FlowResponse {
         id: row.id,
@@ -2838,6 +3098,12 @@ async fn update_flow(
     let updated_definition = payload.definition.unwrap_or(existing.definition);
     let updated_enabled = payload.enabled.unwrap_or(existing.enabled.unwrap_or(true));
 
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let row = sqlx::query!(
         r#"
         UPDATE flows
@@ -2855,14 +3121,52 @@ async fn update_flow(
         updated_enabled,
         flow_id
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let version_note = payload
+        .note
+        .clone()
+        .unwrap_or_else(|| "Flow definition updated".to_string());
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_versions (flow_id, definition, created_by, note)
+        VALUES ($1, $2, $3, $4)
+        "#,
+    )
+    .bind(flow_id)
+    .bind(row.definition.clone())
+    .bind(payload.created_by)
+    .bind(Some(version_note))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_environments (flow_id, environment, definition, enabled, deployed_by)
+        VALUES ($1, 'production', $2, $3, $4)
+        ON CONFLICT (flow_id, environment)
+        DO UPDATE SET definition = EXCLUDED.definition, enabled = EXCLUDED.enabled, deployed_by = EXCLUDED.deployed_by, deployed_at = NOW(), updated_at = NOW()
+        "#,
+    )
+    .bind(flow_id)
+    .bind(row.definition.clone())
+    .bind(updated_enabled)
+    .bind(payload.created_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     // Invalidate flow cache for this workspace
     if let Some(ws_id) = workspace_id {
-        let cache_key = format!("flows:{}", ws_id);
-        let _ = state.cache.delete(&cache_key);
+        invalidate_workspace_flow_cache(&state.cache, ws_id);
     }
 
     Ok(Json(FlowResponse {
@@ -2874,6 +3178,469 @@ async fn update_flow(
         enabled: row.enabled.unwrap_or(true),
         run_count: row.run_count.unwrap_or(0),
     }))
+}
+
+async fn list_flow_versions(
+    State(state): State<AppState>,
+    Path(flow_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<FlowVersionResponse>>, (axum::http::StatusCode, String)> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, flow_id, definition, created_at, created_by, note
+        FROM flow_versions
+        WHERE flow_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(flow_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let versions = rows
+        .into_iter()
+        .map(|row| FlowVersionResponse {
+            id: row.get("id"),
+            flow_id: row.get("flow_id"),
+            definition: row.get("definition"),
+            created_at: row.get("created_at"),
+            created_by: row.try_get("created_by").ok(),
+            note: row.try_get("note").ok(),
+        })
+        .collect();
+
+    Ok(Json(versions))
+}
+
+async fn get_flow_version_diff(
+    State(state): State<AppState>,
+    Path((flow_id, version_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    Query(query): Query<FlowDiffQuery>,
+) -> Result<Json<FlowVersionDiff>, (axum::http::StatusCode, String)> {
+    let source = sqlx::query(
+        "SELECT definition FROM flow_versions WHERE id = $1 AND flow_id = $2",
+    )
+    .bind(version_id)
+    .bind(flow_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Version not found".to_string(),
+    ))?;
+
+    let source_definition: serde_json::Value = source.get("definition");
+
+    let target_definition: serde_json::Value = if let Some(target_version_id) = query.target_version_id {
+        let target = sqlx::query(
+            "SELECT definition FROM flow_versions WHERE id = $1 AND flow_id = $2",
+        )
+        .bind(target_version_id)
+        .bind(flow_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((
+            axum::http::StatusCode::NOT_FOUND,
+            "Target version not found".to_string(),
+        ))?;
+        target.get("definition")
+    } else {
+        let live = sqlx::query("SELECT definition FROM flows WHERE id = $1")
+            .bind(flow_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((
+                axum::http::StatusCode::NOT_FOUND,
+                "Flow not found".to_string(),
+            ))?;
+        live.get("definition")
+    };
+
+    Ok(Json(build_flow_version_diff(
+        &source_definition,
+        &target_definition,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct RollbackRequest {
+    created_by: Option<uuid::Uuid>,
+    note: Option<String>,
+}
+
+async fn rollback_flow_version(
+    State(state): State<AppState>,
+    Path((flow_id, version_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    Json(payload): Json<RollbackRequest>,
+) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+    let version = sqlx::query(
+        r#"
+        SELECT definition, created_at
+        FROM flow_versions
+        WHERE id = $1 AND flow_id = $2
+        "#,
+    )
+    .bind(version_id)
+    .bind(flow_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Flow version not found".to_string(),
+    ))?;
+
+    let rollback_definition: serde_json::Value = version.get("definition");
+    let version_created_at: chrono::DateTime<chrono::Utc> = version.get("created_at");
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let row = sqlx::query!(
+        r#"
+        UPDATE flows
+        SET definition = $1, updated_at = NOW()
+        WHERE id = $2
+        RETURNING id, workspace_id, name, description, definition, enabled, run_count
+        "#,
+        rollback_definition,
+        flow_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    let note = payload.note.unwrap_or_else(|| {
+        format!(
+            "Rollback to version {} ({})",
+            version_id,
+            version_created_at.to_rfc3339()
+        )
+    });
+
+    sqlx::query(
+        "INSERT INTO flow_versions (flow_id, definition, created_by, note) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(flow_id)
+    .bind(row.definition.clone())
+    .bind(payload.created_by)
+    .bind(Some(note))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_environments (flow_id, environment, definition, enabled, deployed_by)
+        VALUES ($1, 'production', $2, $3, $4)
+        ON CONFLICT (flow_id, environment)
+        DO UPDATE SET definition = EXCLUDED.definition, enabled = EXCLUDED.enabled, deployed_by = EXCLUDED.deployed_by, deployed_at = NOW(), updated_at = NOW()
+        "#,
+    )
+    .bind(flow_id)
+    .bind(row.definition.clone())
+    .bind(row.enabled.unwrap_or(true))
+    .bind(payload.created_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some(ws_id) = row.workspace_id {
+        invalidate_workspace_flow_cache(&state.cache, ws_id);
+    }
+
+    Ok(Json(FlowResponse {
+        id: row.id,
+        workspace_id: row.workspace_id.unwrap_or_default(),
+        name: row.name,
+        description: row.description,
+        definition: row.definition,
+        enabled: row.enabled.unwrap_or(true),
+        run_count: row.run_count.unwrap_or(0),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeployFlowEnvironmentRequest {
+    created_by: Option<uuid::Uuid>,
+    note: Option<String>,
+}
+
+async fn deploy_flow_to_environment(
+    State(state): State<AppState>,
+    Path((flow_id, environment)): Path<(uuid::Uuid, String)>,
+    Json(payload): Json<DeployFlowEnvironmentRequest>,
+) -> Result<Json<Vec<FlowEnvironmentStatus>>, (axum::http::StatusCode, String)> {
+    let target_env = FlowEnvironment::parse(Some(&environment));
+    if target_env != FlowEnvironment::Staging {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "Only staging deployments are supported from this endpoint".to_string(),
+        ));
+    }
+
+    let flow = sqlx::query!(
+        "SELECT id, definition FROM flows WHERE id = $1",
+        flow_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_environments (flow_id, environment, definition, enabled, deployed_by)
+        VALUES ($1, $2, $3, TRUE, $4)
+        ON CONFLICT (flow_id, environment)
+        DO UPDATE SET definition = EXCLUDED.definition, enabled = TRUE, deployed_by = EXCLUDED.deployed_by, deployed_at = NOW(), updated_at = NOW()
+        "#,
+    )
+    .bind(flow_id)
+    .bind(target_env.as_str())
+    .bind(flow.definition)
+    .bind(payload.created_by)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let note = payload
+        .note
+        .unwrap_or_else(|| "Deployed current flow to staging".to_string());
+    sqlx::query(
+        "INSERT INTO flow_versions (flow_id, definition, created_by, note) SELECT id, definition, $2, $3 FROM flows WHERE id = $1",
+    )
+    .bind(flow_id)
+    .bind(payload.created_by)
+    .bind(Some(note))
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    get_flow_environment_statuses_inner(&state, flow_id).await
+}
+
+async fn promote_flow_environment(
+    State(state): State<AppState>,
+    Path(flow_id): Path<uuid::Uuid>,
+    Json(payload): Json<DeployFlowEnvironmentRequest>,
+) -> Result<Json<FlowResponse>, (axum::http::StatusCode, String)> {
+    let staging = sqlx::query(
+        r#"
+        SELECT definition
+        FROM flow_environments
+        WHERE flow_id = $1 AND environment = 'staging' AND enabled = TRUE
+        "#,
+    )
+    .bind(flow_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        "No active staging deployment found for this flow".to_string(),
+    ))?;
+
+    let staging_definition: serde_json::Value = staging.get("definition");
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let row = sqlx::query!(
+        r#"
+        UPDATE flows
+        SET definition = $1, updated_at = NOW(), enabled = TRUE
+        WHERE id = $2
+        RETURNING id, workspace_id, name, description, definition, enabled, run_count
+        "#,
+        staging_definition,
+        flow_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO flow_environments (flow_id, environment, definition, enabled, deployed_by)
+        VALUES ($1, 'production', $2, TRUE, $3)
+        ON CONFLICT (flow_id, environment)
+        DO UPDATE SET definition = EXCLUDED.definition, enabled = TRUE, deployed_by = EXCLUDED.deployed_by, deployed_at = NOW(), updated_at = NOW()
+        "#,
+    )
+    .bind(flow_id)
+    .bind(row.definition.clone())
+    .bind(payload.created_by)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let note = payload
+        .note
+        .clone()
+        .unwrap_or_else(|| "Promoted staging deployment to production".to_string());
+    sqlx::query(
+        "INSERT INTO flow_versions (flow_id, definition, created_by, note) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(flow_id)
+    .bind(row.definition.clone())
+    .bind(payload.created_by)
+    .bind(Some(note))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some(ws_id) = row.workspace_id {
+        invalidate_workspace_flow_cache(&state.cache, ws_id);
+    }
+
+    Ok(Json(FlowResponse {
+        id: row.id,
+        workspace_id: row.workspace_id.unwrap_or_default(),
+        name: row.name,
+        description: row.description,
+        definition: row.definition,
+        enabled: row.enabled.unwrap_or(true),
+        run_count: row.run_count.unwrap_or(0),
+    }))
+}
+
+async fn get_flow_environment_statuses_inner(
+    state: &AppState,
+    flow_id: uuid::Uuid,
+) -> Result<Json<Vec<FlowEnvironmentStatus>>, (axum::http::StatusCode, String)> {
+    let rows = sqlx::query(
+        r#"
+        SELECT environment, enabled, deployed_at, deployed_by
+        FROM flow_environments
+        WHERE flow_id = $1
+        ORDER BY environment ASC
+        "#,
+    )
+    .bind(flow_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let statuses = rows
+        .into_iter()
+        .map(|row| FlowEnvironmentStatus {
+            environment: row.get::<String, _>("environment"),
+            deployed: true,
+            enabled: row.get::<bool, _>("enabled"),
+            deployed_at: row.try_get("deployed_at").ok(),
+            deployed_by: row.try_get("deployed_by").ok(),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(statuses))
+}
+
+async fn get_flow_environment_statuses(
+    State(state): State<AppState>,
+    Path(flow_id): Path<uuid::Uuid>,
+) -> Result<Json<Vec<FlowEnvironmentStatus>>, (axum::http::StatusCode, String)> {
+    get_flow_environment_statuses_inner(&state, flow_id).await
+}
+
+#[derive(Debug, Deserialize)]
+struct RunFlowEnvironmentRequest {
+    input: Option<serde_json::Value>,
+}
+
+async fn run_flow_in_environment(
+    State(state): State<AppState>,
+    Path((flow_id, environment)): Path<(uuid::Uuid, String)>,
+    Json(payload): Json<RunFlowEnvironmentRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let target_env = FlowEnvironment::parse(Some(&environment));
+    let flow = sqlx::query!(
+        "SELECT workspace_id, name FROM flows WHERE id = $1",
+        flow_id
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    let workspace_id = flow.workspace_id.ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        "Flow has no workspace".to_string(),
+    ))?;
+
+    if target_env == FlowEnvironment::Staging {
+        let staging_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM flow_environments WHERE flow_id = $1 AND environment = 'staging' AND enabled = TRUE)",
+        )
+        .bind(flow_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        if !staging_exists {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "Flow is not deployed to staging".to_string(),
+            ));
+        }
+    }
+
+    let event = serde_json::json!({
+        "id": uuid::Uuid::new_v4(),
+        "tenant_id": workspace_id,
+        "source": "dashboard.manual",
+        "event_type": "manual.run",
+        "data": {
+            "environment": target_env.as_str(),
+            "target_flow_id": flow_id,
+            "payload": payload.input.unwrap_or_else(|| serde_json::json!({}))
+        }
+    });
+
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    let client = redis::Client::open(redis_url)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut con = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let stream_key = workspace_stream_key_for_environment(workspace_id, target_env);
+    let payload_str = serde_json::to_string(&event)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let message_id: String = con
+        .xadd(&stream_key, "*", &[("payload", payload_str)])
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "flow_id": flow_id,
+        "flow_name": flow.name,
+        "environment": target_env.as_str(),
+        "redis_stream": stream_key,
+        "event_id": message_id,
+    })))
 }
 
 async fn delete_flow(
@@ -2914,8 +3681,7 @@ async fn delete_flow(
 
     // Invalidate flow cache for this workspace
     if let Some(ws_id) = workspace_id {
-        let cache_key = format!("flows:{}", ws_id);
-        let _ = state.cache.delete(&cache_key);
+        invalidate_workspace_flow_cache(&state.cache, ws_id);
     }
 
     Ok(Json(
@@ -3122,17 +3888,21 @@ async fn get_credential_dependents(
 async fn list_flow_runs(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
+    Query(query): Query<FlowRunsQuery>,
 ) -> Result<Json<Vec<FlowRunResponse>>, (axum::http::StatusCode, String)> {
-    let rows = sqlx::query!(
+    let environment = FlowEnvironment::parse(query.environment.as_deref());
+
+    let rows = sqlx::query(
         r#"
-        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        SELECT id, flow_id, workspace_id, environment, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
         FROM flow_runs
-        WHERE workspace_id = $1
+        WHERE workspace_id = $1 AND environment = $2
         ORDER BY started_at DESC
         LIMIT 200
         "#,
-        workspace_id
     )
+    .bind(workspace_id)
+    .bind(environment.as_str())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -3140,16 +3910,17 @@ async fn list_flow_runs(
     Ok(Json(
         rows.into_iter()
             .map(|row| FlowRunResponse {
-                id: row.id,
-                flow_id: row.flow_id,
-                workspace_id: row.workspace_id,
-                status: row.status,
-                trigger_event_id: row.trigger_event_id,
-                started_at: row.started_at,
-                completed_at: row.completed_at,
-                duration_ms: row.duration_ms,
-                steps_log: row.steps_log,
-                error_message: row.error_message,
+                id: row.get("id"),
+                flow_id: row.try_get::<Option<uuid::Uuid>, _>("flow_id").ok().flatten(),
+                workspace_id: row.get("workspace_id"),
+                environment: row.try_get::<String, _>("environment").ok(),
+                status: row.get("status"),
+                trigger_event_id: row.try_get::<Option<uuid::Uuid>, _>("trigger_event_id").ok().flatten(),
+                started_at: row.get("started_at"),
+                completed_at: row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").ok().flatten(),
+                duration_ms: row.try_get::<Option<i32>, _>("duration_ms").ok().flatten(),
+                steps_log: row.try_get::<Option<serde_json::Value>, _>("steps_log").ok().flatten(),
+                error_message: row.try_get::<Option<String>, _>("error_message").ok().flatten(),
             })
             .collect(),
     ))
@@ -3159,30 +3930,31 @@ async fn get_flow_run(
     State(state): State<AppState>,
     Path(run_id): Path<uuid::Uuid>,
 ) -> Result<Json<FlowRunResponse>, (axum::http::StatusCode, String)> {
-    let row = sqlx::query!(
+    let row = sqlx::query(
         r#"
-        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        SELECT id, flow_id, workspace_id, environment, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
         FROM flow_runs
         WHERE id = $1
         "#,
-        run_id
     )
+    .bind(run_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow run not found".to_string()))?;
 
     Ok(Json(FlowRunResponse {
-        id: row.id,
-        flow_id: row.flow_id,
-        workspace_id: row.workspace_id,
-        status: row.status,
-        trigger_event_id: row.trigger_event_id,
-        started_at: row.started_at,
-        completed_at: row.completed_at,
-        duration_ms: row.duration_ms,
-        steps_log: row.steps_log,
-        error_message: row.error_message,
+        id: row.get("id"),
+        flow_id: row.try_get::<Option<uuid::Uuid>, _>("flow_id").ok().flatten(),
+        workspace_id: row.get("workspace_id"),
+        environment: row.try_get::<String, _>("environment").ok(),
+        status: row.get("status"),
+        trigger_event_id: row.try_get::<Option<uuid::Uuid>, _>("trigger_event_id").ok().flatten(),
+        started_at: row.get("started_at"),
+        completed_at: row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").ok().flatten(),
+        duration_ms: row.try_get::<Option<i32>, _>("duration_ms").ok().flatten(),
+        steps_log: row.try_get::<Option<serde_json::Value>, _>("steps_log").ok().flatten(),
+        error_message: row.try_get::<Option<String>, _>("error_message").ok().flatten(),
     }))
 }
 
@@ -3325,10 +4097,10 @@ async fn flow_webhook_receiver(
 
     // Create flow run
     let run_id = sqlx::query!("
-        INSERT INTO flow_runs (flow_id, workspace_id, status, started_at) 
-        VALUES ($1, $2, $3, NOW())
+        INSERT INTO flow_runs (flow_id, workspace_id, environment, status, started_at) 
+        VALUES ($1, $2, $3, $4, NOW())
         RETURNING id
-    ", flow_id, workspace_id, "running")
+    ", flow_id, workspace_id, "production", "running")
         .fetch_one(&state.pool)
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -3419,42 +4191,54 @@ async fn get_flow_runs(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let limit = params.get("limit").and_then(|s| s.parse::<i64>().ok()).unwrap_or(50).min(500);
     let offset = params.get("offset").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let environment = FlowEnvironment::parse(params.get("environment").map(String::as_str));
 
-    let rows = sqlx::query!(
+    let rows = sqlx::query(
         r#"
-        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, error_message
+        SELECT id, flow_id, workspace_id, environment, status, trigger_event_id, started_at, completed_at, duration_ms, error_message
         FROM flow_runs
-        WHERE flow_id = $1
+        WHERE flow_id = $1 AND environment = $2
         ORDER BY started_at DESC
-        LIMIT $2 OFFSET $3
+        LIMIT $3 OFFSET $4
         "#,
-        flow_id,
-        limit,
-        offset
     )
+    .bind(flow_id)
+    .bind(environment.as_str())
+    .bind(limit)
+    .bind(offset)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let runs: Vec<serde_json::Value> = rows.iter().map(|row| {
-        serde_json::json!({
-            "id": row.id,
-            "flow_id": row.flow_id,
-            "workspace_id": row.workspace_id,
-            "status": row.status,
-            "trigger_event_id": row.trigger_event_id,
-            "started_at": row.started_at.to_rfc3339(),
-            "completed_at": row.completed_at.as_ref().map(|t| t.to_rfc3339()),
-            "duration_ms": row.duration_ms,
-            "error_message": row.error_message,
+    let runs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            let started_at: chrono::DateTime<chrono::Utc> = row.get("started_at");
+            let completed_at = row
+                .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at")
+                .ok()
+                .flatten();
+            serde_json::json!({
+                "id": row.get::<uuid::Uuid, _>("id"),
+                "flow_id": row.try_get::<Option<uuid::Uuid>, _>("flow_id").ok().flatten(),
+                "workspace_id": row.get::<uuid::Uuid, _>("workspace_id"),
+                "environment": row.try_get::<String, _>("environment").ok(),
+                "status": row.get::<String, _>("status"),
+                "trigger_event_id": row.try_get::<Option<uuid::Uuid>, _>("trigger_event_id").ok().flatten(),
+                "started_at": started_at.to_rfc3339(),
+                "completed_at": completed_at.map(|t| t.to_rfc3339()),
+                "duration_ms": row.try_get::<Option<i32>, _>("duration_ms").ok().flatten(),
+                "error_message": row.try_get::<Option<String>, _>("error_message").ok().flatten(),
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(serde_json::json!({
         "runs": runs,
         "total": runs.len(),
         "limit": limit,
-        "offset": offset
+        "offset": offset,
+        "environment": environment.as_str(),
     })))
 }
 
@@ -3462,31 +4246,32 @@ async fn get_flow_run_details(
     State(state): State<AppState>,
     Path((flow_id, run_id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<Json<FlowRunResponse>, (axum::http::StatusCode, String)> {
-    let row = sqlx::query!(
+    let row = sqlx::query(
         r#"
-        SELECT id, flow_id, workspace_id, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        SELECT id, flow_id, workspace_id, environment, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
         FROM flow_runs
         WHERE id = $1 AND flow_id = $2
         "#,
-        run_id,
-        flow_id
     )
+    .bind(run_id)
+    .bind(flow_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow run not found".to_string()))?;
 
     Ok(Json(FlowRunResponse {
-        id: row.id,
-        flow_id: row.flow_id,
-        workspace_id: row.workspace_id,
-        status: row.status,
-        trigger_event_id: row.trigger_event_id,
-        started_at: row.started_at,
-        completed_at: row.completed_at,
-        duration_ms: row.duration_ms,
-        steps_log: row.steps_log,
-        error_message: row.error_message,
+        id: row.get("id"),
+        flow_id: row.try_get::<Option<uuid::Uuid>, _>("flow_id").ok().flatten(),
+        workspace_id: row.get("workspace_id"),
+        environment: row.try_get::<String, _>("environment").ok(),
+        status: row.get("status"),
+        trigger_event_id: row.try_get::<Option<uuid::Uuid>, _>("trigger_event_id").ok().flatten(),
+        started_at: row.get("started_at"),
+        completed_at: row.try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("completed_at").ok().flatten(),
+        duration_ms: row.try_get::<Option<i32>, _>("duration_ms").ok().flatten(),
+        steps_log: row.try_get::<Option<serde_json::Value>, _>("steps_log").ok().flatten(),
+        error_message: row.try_get::<Option<String>, _>("error_message").ok().flatten(),
     }))
 }
 

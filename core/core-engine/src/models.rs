@@ -34,6 +34,7 @@ pub struct FlowRunResponse {
     pub id: Uuid,
     pub flow_id: Option<Uuid>,
     pub workspace_id: Uuid,
+    pub environment: Option<String>,
     pub status: String,
     pub trigger_event_id: Option<Uuid>,
     pub started_at: DateTime<Utc>,
@@ -195,6 +196,8 @@ pub struct UpdateFlowRequest {
     pub description: Option<String>,
     pub definition: Option<Value>,
     pub enabled: Option<bool>,
+    pub created_by: Option<Uuid>,
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -206,6 +209,32 @@ pub struct FlowResponse {
     pub definition: Value,
     pub enabled: bool,
     pub run_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FlowVersionResponse {
+    pub id: Uuid,
+    pub flow_id: Uuid,
+    pub definition: Value,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<Uuid>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FlowVersionDiff {
+    pub added_nodes: Vec<String>,
+    pub removed_nodes: Vec<String>,
+    pub changed_nodes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FlowEnvironmentStatus {
+    pub environment: String,
+    pub deployed: bool,
+    pub enabled: bool,
+    pub deployed_at: Option<DateTime<Utc>>,
+    pub deployed_by: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

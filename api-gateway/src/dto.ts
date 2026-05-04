@@ -356,6 +356,12 @@ export class UpdateFlowDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  @MinLength(1)
+  note?: string;
 }
 
 export class InstallTemplateDto {

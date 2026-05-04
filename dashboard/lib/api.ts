@@ -169,6 +169,189 @@ export async function revokeApiKey(params: {
   return response.ok;
 }
 
+export type FlowVersion = {
+  id: string;
+  flow_id: string;
+  definition: Record<string, unknown>;
+  created_at: string;
+  created_by?: string | null;
+  note?: string | null;
+};
+
+export type FlowVersionDiff = {
+  added_nodes: string[];
+  removed_nodes: string[];
+  changed_nodes: string[];
+};
+
+export type FlowEnvironmentStatus = {
+  environment: 'staging' | 'production' | string;
+  deployed: boolean;
+  enabled: boolean;
+  deployed_at?: string | null;
+  deployed_by?: string | null;
+};
+
+export async function listFlowVersions(params: {
+  flowId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<FlowVersion[]> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/versions`,
+    params.token,
+    params.setToken,
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load flow versions (${response.status})`);
+  }
+  return (await response.json()) as FlowVersion[];
+}
+
+export async function getFlowVersionDiff(params: {
+  flowId: string;
+  versionId: string;
+  targetVersionId?: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<FlowVersionDiff> {
+  const qp = new URLSearchParams();
+  if (params.targetVersionId) qp.set('targetVersionId', params.targetVersionId);
+  const suffix = qp.toString() ? `?${qp.toString()}` : '';
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/versions/${params.versionId}/diff${suffix}`,
+    params.token,
+    params.setToken,
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load flow diff (${response.status})`);
+  }
+  return (await response.json()) as FlowVersionDiff;
+}
+
+export async function rollbackFlowVersion(params: {
+  flowId: string;
+  versionId: string;
+  note?: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<Record<string, unknown>> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/rollback/${params.versionId}`,
+    params.token,
+    params.setToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: params.note }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to rollback flow version (${response.status})`);
+  }
+  return (await response.json()) as Record<string, unknown>;
+}
+
+export async function getFlowEnvironments(params: {
+  flowId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<FlowEnvironmentStatus[]> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/environments`,
+    params.token,
+    params.setToken,
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load flow environments (${response.status})`);
+  }
+  return (await response.json()) as FlowEnvironmentStatus[];
+}
+
+export async function deployFlowToStaging(params: {
+  flowId: string;
+  note?: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<FlowEnvironmentStatus[]> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/deploy/staging`,
+    params.token,
+    params.setToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: params.note }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to deploy flow to staging (${response.status})`);
+  }
+  return (await response.json()) as FlowEnvironmentStatus[];
+}
+
+export async function promoteFlowToProduction(params: {
+  flowId: string;
+  note?: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<Record<string, unknown>> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/promote`,
+    params.token,
+    params.setToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: params.note }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to promote flow to production (${response.status})`);
+  }
+  return (await response.json()) as Record<string, unknown>;
+}
+
+export async function runFlowInEnvironment(params: {
+  flowId: string;
+  environment: 'staging' | 'production' | string;
+  input?: Record<string, unknown>;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<Record<string, unknown>> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/run/${encodeURIComponent(params.environment)}`,
+    params.token,
+    params.setToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: params.input || {} }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to run flow in ${params.environment} (${response.status})`);
+  }
+  return (await response.json()) as Record<string, unknown>;
+}
+
+export async function getFlowRunsForEnvironment(params: {
+  flowId: string;
+  environment: 'staging' | 'production' | string;
+  token: string;
+  setToken: (token: string) => void;
+}) {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/runs?environment=${encodeURIComponent(params.environment)}`,
+    params.token,
+    params.setToken,
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load ${params.environment} flow runs (${response.status})`);
+  }
+  return (await response.json()) as { runs: Array<Record<string, unknown>>; total: number; limit: number; offset: number; environment: string };
+}
+
 export type DependentFlow = {
   flow_id: string;
   flow_name: string;
