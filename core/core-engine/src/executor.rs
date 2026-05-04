@@ -1,5 +1,5 @@
 use crate::models::{
-    FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition, FlowDefinition,
+    FilterCondition, FlowStep, PulseEvent, StepExecutionResult, TriggerDefinition, FlowDefinition, LoopConcurrency,
 };
 use futures_util::future::join_all;
 use core_connectors::{
@@ -8,7 +8,7 @@ use core_connectors::{
     OAuthRefreshConfig,
 };
 use core_vm::CoreVm;
-use rhai::{Dynamic, Engine};
+use rhai::{Array as RhaiArray, Dynamic, Engine, Map as RhaiMap};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -234,13 +234,15 @@ impl FlowExecutor {
         flow_def: &FlowDefinition,
         event: &PulseEvent,
         depth: i32,
+        initial_outputs: std::collections::HashMap<String, Value>,
     ) -> Result<std::collections::HashMap<String, Value>, String> {
         if depth > 3 {
             return Err("sub-flow depth exceeded".to_string());
         }
 
         let execution_order = self.resolve_execution_order(&flow_def.steps)?;
-        let mut step_outputs: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        let mut step_outputs: std::collections::HashMap<String, Value> = initial_outputs;
+        let flow_def_snapshot = flow_def.clone();
 
         for group in execution_order {
             use std::pin::Pin;
@@ -253,10 +255,37 @@ impl FlowExecutor {
                     let event_clone = event.clone();
                     let outputs_snapshot = step_outputs.clone();
                     let executor = executor.clone();
+                    let flow_def_snapshot = flow_def_snapshot.clone();
 
                     let fut = Box::pin(async move {
-                        // sub_flow special-case
-                        if step_clone.r#type == "sub_flow" {
+                        if step_clone.r#type == "loop" {
+                            let loop_result = executor
+                                .execute_loop_step(
+                                    &flow_def_snapshot,
+                                    &step_clone,
+                                    &outputs_snapshot,
+                                    &event_clone,
+                                    depth,
+                                )
+                                .await;
+
+                            match loop_result {
+                                Ok(output) => StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "success".to_string(),
+                                    output,
+                                    error: None,
+                                    duration_ms: 0,
+                                },
+                                Err(error) => StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "failed".to_string(),
+                                    output: Value::Null,
+                                    error: Some(error),
+                                    duration_ms: 0,
+                                },
+                            }
+                        } else if step_clone.r#type == "sub_flow" {
                             let sub_flow_id = step_clone.sub_flow_id.clone().unwrap_or_default();
                             if sub_flow_id.is_empty() {
                                 return StepExecutionResult {
@@ -339,7 +368,10 @@ impl FlowExecutor {
                             let mut nested_event = event_clone.clone();
                             nested_event.sub_flow_depth = Some(current_depth + 1);
 
-                            match executor.execute_flow(&sub_def, &nested_event, current_depth + 1).await {
+                            match executor
+                                .execute_flow(&sub_def, &nested_event, current_depth + 1, HashMap::new())
+                                .await
+                            {
                                 Ok(outputs) => StepExecutionResult {
                                     step_id: step_clone.id.clone(),
                                     status: "success".to_string(),
@@ -699,49 +731,10 @@ impl FlowExecutor {
                     }
                 }
             }
-            "loop" => {
-                let items_expr = step.loop_items.as_deref().unwrap_or("");
-                let loop_var = step.loop_variable_name.as_deref().unwrap_or("item");
-                let max_iters = step.max_iterations.unwrap_or(100) as usize;
-
-                let items = match self.transform_data(items_expr, step_outputs, event) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return StepExecutionResult {
-                            step_id: step.id.clone(),
-                            status: "failed".to_string(),
-                            output: Value::Null,
-                            error: Some(format!("loop items resolution failed: {e}")),
-                            duration_ms: started.elapsed().as_millis() as i32,
-                        };
-                    }
-                };
-
-                let default_arr = vec![];
-                let arr = items.as_array().unwrap_or(&default_arr);
-                let mut loop_outputs = Vec::new();
-
-                for (idx, item) in arr.iter().take(max_iters).enumerate() {
-                    let mut loop_context = step_outputs.clone();
-                    loop_context.insert(loop_var.to_string(), item.clone());
-                    loop_context.insert("__index".to_string(), json!(idx));
-
-                    if let Some(loop_cond) = &step.loop_condition {
-                        if !self.evaluate_condition(loop_cond, &loop_context, event) {
-                            break;
-                        }
-                    }
-
-                    loop_outputs.push(item.clone());
-                }
-
-                json!({
-                    "status": "loop_completed",
-                    "items_processed": loop_outputs.len(),
-                    "results": loop_outputs,
-                    "loop_variable": loop_var,
-                })
-            }
+            "loop" => json!({
+                "status": "loop_deferred",
+                "note": "Loop steps are executed by the flow executor so child steps can be resolved",
+            }),
             "parallel" | "parallel_split" => {
                 let default_steps = vec![];
                 let step_ids = step.parallel_steps.as_ref().unwrap_or(&default_steps);
@@ -844,7 +837,7 @@ impl FlowExecutor {
                 let mut nested_event = event.clone();
                 nested_event.sub_flow_depth = Some(current_depth + 1);
 
-                match self.execute_flow(&sub_def, &nested_event, current_depth + 1).await {
+                match self.execute_flow(&sub_def, &nested_event, current_depth + 1, HashMap::new()).await {
                     Ok(outputs) => json!({
                         "status": "sub_flow_executed",
                         "sub_flow_id": sub_flow_id,
@@ -981,6 +974,268 @@ impl FlowExecutor {
         }
     }
 
+    async fn execute_loop_step(
+        &self,
+        flow_def: &FlowDefinition,
+        step: &FlowStep,
+        step_outputs: &HashMap<String, Value>,
+        event: &PulseEvent,
+        depth: i32,
+    ) -> Result<Value, String> {
+        let (array_path, variable_name, child_step_ids, concurrency_mode, max_iterations, break_condition) =
+            if let Some(config) = &step.loop_config {
+                (
+                    config.array_path.clone(),
+                    config.variable_name.clone(),
+                    config.child_steps.clone(),
+                    config.concurrency.clone(),
+                    config.max_iterations.unwrap_or(1000).max(1) as usize,
+                    config.break_condition.clone(),
+                )
+            } else {
+                (
+                    step.loop_items.clone().unwrap_or_default(),
+                    step.loop_variable_name.clone().unwrap_or_else(|| "item".to_string()),
+                    Vec::new(),
+                    LoopConcurrency::Sequential,
+                    step.max_iterations.unwrap_or(100).max(1) as usize,
+                    step.loop_condition.clone(),
+                )
+            };
+
+        let items = self.resolve_loop_items(&array_path, step_outputs, event)?;
+        let items_to_process: Vec<(usize, Value)> = items
+            .into_iter()
+            .take(max_iterations)
+            .enumerate()
+            .collect();
+
+        let child_step_ids = if child_step_ids.is_empty() {
+            flow_def
+                .steps
+                .iter()
+                .filter(|candidate| candidate.depends_on.iter().any(|dep| dep == &step.id))
+                .map(|candidate| candidate.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            child_step_ids
+        };
+
+        let mut loop_results = Vec::new();
+
+        match concurrency_mode {
+            LoopConcurrency::Sequential => {
+                for (idx, item) in items_to_process {
+                    if let Some(expr) = &break_condition {
+                        let loop_context = self.build_loop_context(step_outputs, &item, idx, &variable_name);
+                        if self.evaluate_condition(expr, &loop_context, event) {
+                            break;
+                        }
+                    }
+
+                    let loop_context = self.build_loop_context(step_outputs, &item, idx, &variable_name);
+                    let iteration_outputs = self
+                        .execute_loop_iteration(flow_def, &child_step_ids, &loop_context, event, depth)
+                        .await?;
+
+                    loop_results.push(json!({
+                        "index": idx,
+                        "item": item,
+                        "outputs": iteration_outputs,
+                    }));
+                }
+            }
+            LoopConcurrency::Parallel(max_workers) => {
+                let max_concurrent = (max_workers as usize).max(1);
+                for chunk in items_to_process.chunks(max_concurrent) {
+                    let mut futures_vec = Vec::new();
+                    let mut stop_after_chunk = false;
+
+                    for (idx, item) in chunk.iter() {
+                        if let Some(expr) = &break_condition {
+                            let loop_context = self.build_loop_context(step_outputs, item, *idx, &variable_name);
+                            if self.evaluate_condition(expr, &loop_context, event) {
+                                stop_after_chunk = true;
+                                break;
+                            }
+                        }
+
+                        let idx_clone = *idx;
+                        let item_for_result = item.clone();
+                        let item_for_future = item.clone();
+                        let child_ids = child_step_ids.clone();
+                        let loop_context = self.build_loop_context(step_outputs, &item_for_future, idx_clone, &variable_name);
+                        let event_clone = event.clone();
+                        let flow_def_clone = flow_def.clone();
+                        let executor = self.clone();
+
+                        let fut = Box::pin(async move {
+                            executor
+                                .execute_loop_iteration(&flow_def_clone, &child_ids, &loop_context, &event_clone, depth)
+                                .await
+                        });
+
+                        futures_vec.push((idx_clone, item_for_result, fut));
+                    }
+
+                    let results = join_all(futures_vec.into_iter().map(|(idx, item, fut)| async move {
+                        (idx, item, fut.await)
+                    }))
+                    .await;
+
+                    for (idx, item, result) in results {
+                        let iteration_outputs = result?;
+                        loop_results.push(json!({
+                            "index": idx,
+                            "item": item,
+                            "outputs": iteration_outputs,
+                        }));
+                    }
+
+                    if stop_after_chunk {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(json!({
+            "status": "loop_completed",
+            "items_processed": loop_results.len(),
+            "results": loop_results,
+            "loop_variable": variable_name,
+            "loop_step_id": step.id,
+        }))
+    }
+
+    async fn execute_loop_iteration(
+        &self,
+        flow_def: &FlowDefinition,
+        child_step_ids: &[String],
+        loop_context: &HashMap<String, Value>,
+        event: &PulseEvent,
+        depth: i32,
+    ) -> Result<HashMap<String, Value>, String> {
+        let child_steps: Vec<FlowStep> = flow_def
+            .steps
+            .iter()
+            .filter(|candidate| child_step_ids.iter().any(|id| id == &candidate.id))
+            .cloned()
+            .collect();
+
+        if child_step_ids.is_empty() || child_steps.is_empty() {
+            return Ok(loop_context.clone());
+        }
+
+        let child_flow = FlowDefinition {
+            id: format!("{}_loop_iteration", flow_def.id),
+            name: format!("{} loop iteration", flow_def.name),
+            trigger: flow_def.trigger.clone(),
+            steps: child_steps,
+            error_policy: flow_def.error_policy.clone(),
+        };
+
+        self.execute_flow(&child_flow, event, depth + 1, loop_context.clone()).await
+    }
+
+    fn resolve_loop_items(
+        &self,
+        array_path: &str,
+        step_outputs: &HashMap<String, Value>,
+        event: &PulseEvent,
+    ) -> Result<Vec<Value>, String> {
+        let value = if array_path.starts_with("$.") {
+            self.resolve_json_path(&event.data, array_path)?
+        } else if array_path.starts_with("{{") && array_path.ends_with("}}") {
+            self.transform_data(array_path, step_outputs, event)?
+        } else {
+            self.transform_data(&format!("{{{{{}}}}}", array_path), step_outputs, event)?
+        };
+
+        match value {
+            Value::Array(items) => Ok(items),
+            Value::Null => Ok(vec![]),
+            other => Ok(vec![other]),
+        }
+    }
+
+    fn resolve_json_path(&self, data: &Value, path: &str) -> Result<Value, String> {
+        let trimmed = path.strip_prefix("$.").unwrap_or(path.strip_prefix('$').unwrap_or(path));
+        if trimmed.is_empty() {
+            return Ok(data.clone());
+        }
+
+        let mut current = data;
+        for segment in trimmed.split('.') {
+            if segment.is_empty() {
+                continue;
+            }
+
+            if let Ok(index) = segment.parse::<usize>() {
+                current = current
+                    .as_array()
+                    .and_then(|array| array.get(index))
+                    .ok_or_else(|| format!("JSONPath index not found: {index}"))?;
+            } else {
+                current = current
+                    .as_object()
+                    .and_then(|object| object.get(segment))
+                    .ok_or_else(|| format!("JSONPath field not found: {segment}"))?;
+            }
+        }
+
+        Ok(current.clone())
+    }
+
+    fn build_loop_context(
+        &self,
+        base_outputs: &HashMap<String, Value>,
+        loop_item: &Value,
+        loop_index: usize,
+        variable_name: &str,
+    ) -> HashMap<String, Value> {
+        let mut context = base_outputs.clone();
+        context.insert(
+            "loop".to_string(),
+            json!({
+                "item": loop_item,
+                "index": loop_index,
+            }),
+        );
+        context.insert(variable_name.to_string(), loop_item.clone());
+        context.insert("loop.item".to_string(), loop_item.clone());
+        context.insert("loop.index".to_string(), json!(loop_index));
+        context
+    }
+
+    fn json_to_dynamic(value: &Value) -> Dynamic {
+        match value {
+            Value::Null => Dynamic::UNIT,
+            Value::Bool(flag) => Dynamic::from(*flag),
+            Value::Number(number) => {
+                if let Some(value) = number.as_i64() {
+                    Dynamic::from(value)
+                } else if let Some(value) = number.as_u64() {
+                    Dynamic::from(value as i64)
+                } else {
+                    Dynamic::from(number.as_f64().unwrap_or_default())
+                }
+            }
+            Value::String(text) => Dynamic::from(text.clone()),
+            Value::Array(items) => {
+                let array: RhaiArray = items.iter().map(Self::json_to_dynamic).collect();
+                Dynamic::from_array(array)
+            }
+            Value::Object(object) => {
+                let mut map = RhaiMap::new();
+                for (key, value) in object {
+                    map.insert(key.clone().into(), Self::json_to_dynamic(value));
+                }
+                Dynamic::from_map(map)
+            }
+        }
+    }
+
     fn render_input_mapping(
         &self,
         step: &FlowStep,
@@ -1015,15 +1270,10 @@ impl FlowExecutor {
         let mut scope = rhai::Scope::new();
         scope.push_dynamic("event_type", Dynamic::from(event.event_type.clone()));
         scope.push_dynamic("tenant_id", Dynamic::from(event.tenant_id.to_string()));
+        scope.push_dynamic("trigger", Self::json_to_dynamic(&event.data));
 
         for (key, value) in step_outputs {
-            let dynamic = match value {
-                Value::String(text) => Dynamic::from(text.clone()),
-                Value::Bool(flag) => Dynamic::from(*flag),
-                Value::Number(number) => Dynamic::from(number.as_f64().unwrap_or_default()),
-                _ => Dynamic::from(value.to_string()),
-            };
-            scope.push_dynamic(key.as_str(), dynamic);
+            scope.push_dynamic(key.as_str(), Self::json_to_dynamic(value));
         }
 
         self.engine
@@ -1508,6 +1758,7 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_config: None,
                 loop_items: None,
                 loop_variable_name: None,
                 max_iterations: None,
@@ -1531,6 +1782,7 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_config: None,
                 loop_items: None,
                 loop_variable_name: None,
                 max_iterations: None,
@@ -1554,6 +1806,7 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_config: None,
                 loop_items: None,
                 loop_variable_name: None,
                 max_iterations: None,
@@ -1577,6 +1830,7 @@ mod tests {
                 condition: None,
                 script_language: None,
                 code: None,
+                loop_config: None,
                 loop_items: None,
                 loop_variable_name: None,
                 max_iterations: None,

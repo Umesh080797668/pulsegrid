@@ -89,6 +89,22 @@ pub struct FilterCondition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LoopStepConfig {
+    pub array_path: String, // JSONPath expression like "$.order.line_items" or "{{trigger.data.items}}"
+    pub variable_name: String, // Variable name for current item (e.g., "item")
+    pub child_steps: Vec<String>, // Step IDs to execute in each iteration
+    pub concurrency: LoopConcurrency, // Sequential or Parallel(N)
+    pub max_iterations: Option<i32>, // Safety limit (default: 1000)
+    pub break_condition: Option<String>, // Rhai expression to break loop early
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum LoopConcurrency {
+    Sequential,
+    Parallel(i32), // Max workers
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FlowStep {
     pub id: String,
     pub r#type: String, // "action", "condition", "loop", "parallel", "parallel_split", "merge", "sub_flow", "delay", "filter", "transform", "fork", etc.
@@ -102,10 +118,7 @@ pub struct FlowStep {
     pub script_language: Option<String>,
     pub code: Option<String>,
     // Loop configuration
-    pub loop_items: Option<String>,          // Expression evaluating to array: "{{steps.previous.items}}"
-    pub loop_variable_name: Option<String>,  // Variable name for each iteration (e.g., "item")
-    pub max_iterations: Option<i32>,         // Safety limit to prevent infinite loops
-    pub loop_condition: Option<String>,      // Optional condition to continue looping
+    pub loop_config: Option<LoopStepConfig>,
     // Parallel configuration
     pub parallel_steps: Option<Vec<String>>, // Step IDs to execute in parallel
     // Sub-flow configuration
@@ -117,6 +130,11 @@ pub struct FlowStep {
     pub delay_ms: Option<i32>,               // Delay in milliseconds
     // Approval step configuration
     pub approval_config: Option<ApprovalStepConfig>,
+    // Deprecated: kept for backward compatibility
+    pub loop_items: Option<String>,
+    pub loop_variable_name: Option<String>,
+    pub max_iterations: Option<i32>,
+    pub loop_condition: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -360,6 +378,7 @@ mod tests {
             condition: None,
             script_language: None,
             code: None,
+            loop_config: None,
             loop_items: None,
             loop_variable_name: None,
             max_iterations: None,
