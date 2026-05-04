@@ -288,7 +288,7 @@ impl ApprovalManager {
         context: &Value,
     ) -> Result<(), String> {
         let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+            .unwrap_or_else(|_| "redis://localhost:6379/".to_string());
         
         if let Ok(client) = redis::Client::open(redis_url) {
             if let Ok(mut con) = client.get_multiplexed_async_connection().await {
@@ -313,7 +313,7 @@ impl ApprovalManager {
         step_id: &str,
     ) -> Result<Option<Value>, String> {
         let redis_url = std::env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+            .unwrap_or_else(|_| "redis://localhost:6379/".to_string());
         
         if let Ok(client) = redis::Client::open(redis_url) {
             if let Ok(mut con) = client.get_multiplexed_async_connection().await {

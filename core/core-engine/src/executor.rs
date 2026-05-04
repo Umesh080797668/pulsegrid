@@ -42,7 +42,7 @@ impl FlowExecutor {
     #[allow(dead_code)]
     pub async fn check_idempotency(&self, workspace_id: uuid::Uuid, idempotency_key: &str) -> Result<bool, String> {
         // Check Redis cache first (24h TTL)
-        let redis_url = "redis://127.0.0.1:6379/";
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
         if let Ok(client) = redis::Client::open(redis_url) {
             if let Ok(mut con) = client.get_multiplexed_async_connection().await {
                 let cache_key = format!("idempotency:{}:{}", workspace_id, idempotency_key);
@@ -69,7 +69,7 @@ impl FlowExecutor {
 
     /// Track connector call for health monitoring
     async fn track_connector_call(&self, connector: &str) -> Result<(), String> {
-        let redis_url = "redis://127.0.0.1:6379/";
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
         if let Ok(client) = redis::Client::open(redis_url) {
             if let Ok(mut con) = client.get_multiplexed_async_connection().await {
                 let window = std::time::SystemTime::now()
@@ -88,7 +88,7 @@ impl FlowExecutor {
 
     /// Track connector error for health monitoring
     async fn track_connector_error(&self, connector: &str) -> Result<(), String> {
-        let redis_url = "redis://127.0.0.1:6379/";
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
         if let Ok(client) = redis::Client::open(redis_url) {
             if let Ok(mut con) = client.get_multiplexed_async_connection().await {
                 let window = std::time::SystemTime::now()
@@ -107,7 +107,7 @@ impl FlowExecutor {
 
     /// Check if connector circuit breaker is open (error rate > 50%)
     async fn is_circuit_open(&self, connector: &str) -> Result<bool, String> {
-        let redis_url = "redis://127.0.0.1:6379/";
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
         if let Ok(client) = redis::Client::open(redis_url) {
             if let Ok(mut con) = client.get_multiplexed_async_connection().await {
                 let window = std::time::SystemTime::now()

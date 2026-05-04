@@ -27,7 +27,7 @@ impl GuardEventPublisher {
     pub fn new(signal_tx: broadcast::Sender<GuardSignal>) -> Self {
         Self {
             redis_url: std::env::var("REDIS_URL")
-                .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string()),
+                .unwrap_or_else(|_| "redis://localhost:6379/".to_string()),
             deployment_sha: std::env::var("DEPLOYMENT_SHA").unwrap_or_else(|_| "unknown".to_string()),
             signal_tx,
         }

@@ -221,9 +221,93 @@ fn trigger_poll_interval_seconds(definition: &FlowDefinition) -> i64 {
         .unwrap_or(300)
         .clamp(30, 3600)
 }
+async fn run_database_migrations(pool: &sqlx::PgPool) -> Result<u32, Box<dyn std::error::Error>> {
+    // Create migrations table if it doesn't exist
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS _sqlx_migrations (
+            version BIGINT PRIMARY KEY,
+            description TEXT NOT NULL,
+            installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            success BOOLEAN NOT NULL,
+            execution_time BIGINT NOT NULL,
+            installed_by TEXT NOT NULL
+        )
+        "#
+    )
+    .execute(pool)
+    .await?;
 
-async fn publish_event_to_redis(event: &PulseEvent) {
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    // Read migration files from ./migrations directory
+    let migrations_dir = "./migrations";
+    let mut entries = std::fs::read_dir(migrations_dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().map(|ext| ext == "sql").unwrap_or(false) {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    
+    entries.sort();
+    
+    let mut count = 0;
+    for migration_path in entries {
+        let filename = migration_path.file_name().unwrap().to_string_lossy().to_string();
+        // Extract version from filename (format: YYYYMMDDHHMMSS_description.sql)
+        let version_str = filename.split('_').next().unwrap_or("0");
+        if let Ok(version) = version_str.parse::<i64>() {
+            // Check if already applied
+            let already_applied: Option<(i64,)> = sqlx::query_as(
+                "SELECT version FROM _sqlx_migrations WHERE version = $1"
+            )
+            .bind(version)
+            .fetch_optional(pool)
+            .await?;
+            
+            if already_applied.is_none() {
+                let sql_content = std::fs::read_to_string(&migration_path)?;
+                let start = std::time::Instant::now();
+                
+                match sqlx::query(&sql_content).execute(pool).await {
+                    Ok(_) => {
+                        let execution_time = start.elapsed().as_millis() as i64;
+                        sqlx::query(
+                            "INSERT INTO _sqlx_migrations (version, description, success, execution_time, installed_by) VALUES ($1, $2, true, $3, 'pulsegrid-startup')"
+                        )
+                        .bind(version)
+                        .bind(&filename)
+                        .bind(execution_time)
+                        .execute(pool)
+                        .await?;
+                        
+                        println!("  ✅ Applied migration: {}", filename);
+                        count += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("  ❌ Migration failed: {} - {}", filename, e);
+                        sqlx::query(
+                            "INSERT INTO _sqlx_migrations (version, description, success, execution_time, installed_by) VALUES ($1, $2, false, 0, 'pulsegrid-startup')"
+                        )
+                        .bind(version)
+                        .bind(&filename)
+                        .execute(pool)
+                        .await?;
+                        
+                        return Err(Box::new(e));
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(count)
+}
+
+async fn publish_event_to_redis(redis_url: &str, event: &PulseEvent) {
     if let Ok(client) = redis::Client::open(redis_url) {
         if let Ok(mut con) = client.get_multiplexed_async_connection().await {
             let workspace_stream = workspace_stream_key_for_environment(event.tenant_id, event_environment(event));
@@ -233,7 +317,7 @@ async fn publish_event_to_redis(event: &PulseEvent) {
     }
 }
 
-async fn start_schedule_worker(cron_pool: sqlx::PgPool) {
+async fn start_schedule_worker(cron_pool: sqlx::PgPool, redis_url: String) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
@@ -274,7 +358,7 @@ async fn start_schedule_worker(cron_pool: sqlx::PgPool) {
                                 sub_flow_depth: None,
                             };
 
-                            publish_event_to_redis(&event).await;
+                            publish_event_to_redis(&redis_url, &event).await;
                             let _ = sqlx::query!("UPDATE flows SET last_run_at = NOW() WHERE id = $1", row.id as _)
                                 .execute(&cron_pool)
                                 .await;
@@ -343,7 +427,7 @@ async fn start_approval_expiry_worker(pg_pool: sqlx::PgPool) {
     }
 }
 
-async fn start_polling_worker(poll_pool: sqlx::PgPool) {
+async fn start_polling_worker(poll_pool: sqlx::PgPool, redis_url: String) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
@@ -386,7 +470,7 @@ async fn start_polling_worker(poll_pool: sqlx::PgPool) {
                 sub_flow_depth: None,
             };
 
-            publish_event_to_redis(&event).await;
+            publish_event_to_redis(&redis_url, &event).await;
             let _ = sqlx::query!("UPDATE flows SET last_run_at = NOW() WHERE id = $1", row.id as _)
                 .execute(&poll_pool)
                 .await;
@@ -762,6 +846,16 @@ async fn main() {
         .expect("Failed to connect to Postgres");
 
     println!("Connected to PostgreSQL databases!");
+    
+    // Run migrations automatically on startup using runtime approach
+    println!("🔄 Running database migrations...");
+    match run_database_migrations(&pool).await {
+        Ok(count) => println!("✅ Database migrations completed successfully ({} migrations run)", count),
+        Err(e) => {
+            eprintln!("⚠️  Warning: Failed to run migrations: {}", e);
+            eprintln!("Continuing anyway, but schema may not be up-to-date. Check migrations manually.");
+        }
+    }
 
     codebase_indexer::spawn_codebase_indexer(pool.clone());
 
@@ -775,6 +869,10 @@ async fn main() {
     let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
         .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
     let (event_tx, _) = broadcast::channel::<String>(256);
+    
+    // Initialize Redis URL for connection pooling (used by event publishers)
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
+    
     let state = AppState {
         pool: pool.clone(),
         vault: Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes())),
@@ -909,6 +1007,7 @@ async fn main() {
     let polling_pool = pool.clone();
     let approval_expiry_pool = pool.clone();
     let health_check_pool = pool.clone();
+    let redis_url_clone = redis_url.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -917,8 +1016,8 @@ async fn main() {
 
         rt.block_on(async move {
             tokio::join!(
-                start_schedule_worker(cron_pool),
-                start_polling_worker(polling_pool),
+                start_schedule_worker(cron_pool, redis_url_clone.clone()),
+                start_polling_worker(polling_pool, redis_url_clone.clone()),
                 start_approval_expiry_worker(approval_expiry_pool),
                 executor::start_connector_health_check_worker(health_check_pool)
             );
@@ -1198,7 +1297,7 @@ async fn publish_workspace_stream_event(
     workspace_id: uuid::Uuid,
     payload: serde_json::Value,
 ) -> Result<(), (axum::http::StatusCode, String)> {
-    let redis_url = "redis://127.0.0.1:6379/";
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
     let client = redis::Client::open(redis_url)
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut con = client
@@ -1392,7 +1491,7 @@ async fn enqueue_failure_email_notification(
     error: &str,
     email: &str,
 ) {
-    let redis_url = "redis://127.0.0.1:6379/";
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
     if let Ok(client) = redis::Client::open(redis_url) {
         if let Ok(mut con) = client.get_multiplexed_async_connection().await {
             let payload = serde_json::json!({
@@ -1417,7 +1516,7 @@ async fn start_event_listener(
 ) {
     const CONSUMER_GROUP: &str = "pulsegrid-workers";
 
-    let redis_url = "redis://127.0.0.1:6379/";
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
     let client = match redis::Client::open(redis_url) {
         Ok(c) => c,
         Err(e) => {
@@ -1451,6 +1550,10 @@ async fn start_event_listener(
     let executor = Arc::new(FlowExecutor::new(pg_pool.clone(), vault.clone()));
     let mut known_streams: HashSet<String> = HashSet::new();
     let mut event_counter = 0u64;
+    
+    // Workspace list caching: TTL of 30 seconds, with manual invalidation
+    let mut workspace_cache: Option<(Vec<uuid::Uuid>, std::time::Instant)> = None;
+    let workspace_cache_ttl = Duration::from_secs(30);
 
     loop {
         // Periodically clear expired cache entries (every 1000 events)
@@ -1462,10 +1565,22 @@ async fn start_event_listener(
                 println!("🧹 Cache cleared (event counter: {})", event_counter);
             }
         }
-        let workspace_ids = sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM workspaces")
-            .fetch_all(&pg_pool)
-            .await
-            .unwrap_or_default();
+        
+        // Use cached workspace list if available and not expired
+        let workspace_ids = match &workspace_cache {
+            Some((cached_ids, timestamp)) if timestamp.elapsed() < workspace_cache_ttl => {
+                cached_ids.clone()
+            }
+            _ => {
+                // Cache miss or expired - query database
+                let ids = sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM workspaces")
+                    .fetch_all(&pg_pool)
+                    .await
+                    .unwrap_or_default();
+                workspace_cache = Some((ids.clone(), std::time::Instant::now()));
+                ids
+            }
+        };
 
         let mut stream_keys: Vec<String> = workspace_ids
             .into_iter()
