@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use base64::Engine as Base64Engine;
+use sqlx::Row;
 
 #[derive(Clone)]
 pub struct FlowExecutor {
@@ -128,6 +129,298 @@ impl FlowExecutor {
             }
         }
         Ok(false)
+    }
+
+    /// Update connector health metrics in database
+    async fn update_connector_health(
+        &self,
+        connector_id: &str,
+        workspace_id: uuid::Uuid,
+        success: bool,
+        latency_ms: i32,
+    ) -> Result<(), String> {
+        let status = if success { "healthy" } else { "degraded" };
+
+        sqlx::query(
+            r#"
+            INSERT INTO connector_health 
+            (connector_id, workspace_id, status, last_error_at, p95_latency_ms, updated_at)
+            VALUES ($1, $2, $3, CASE WHEN $4::boolean THEN NULL ELSE NOW() END, $5, NOW())
+            ON CONFLICT (connector_id, workspace_id)
+            DO UPDATE SET 
+                status = $3,
+                last_error_at = CASE WHEN NOT $4::boolean THEN NOW() ELSE connector_health.last_error_at END,
+                p95_latency_ms = $5,
+                updated_at = NOW()
+            "#,
+        )
+        .bind(connector_id)
+        .bind(workspace_id)
+        .bind(status)
+        .bind(success)
+        .bind(latency_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to update connector health: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Record connector call latency for metrics
+    async fn record_connector_latency(
+        &self,
+        connector_id: &str,
+        workspace_id: uuid::Uuid,
+        flow_run_id: uuid::Uuid,
+        latency_ms: i32,
+        success: bool,
+        error_code: Option<&str>,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r#"
+            INSERT INTO connector_call_latencies 
+            (connector_id, workspace_id, flow_run_id, latency_ms, success, error_code, recorded_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            "#,
+        )
+        .bind(connector_id)
+        .bind(workspace_id)
+        .bind(flow_run_id)
+        .bind(latency_ms)
+        .bind(success)
+        .bind(error_code)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to record connector latency: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Check if connector is healthy and close circuit if so
+    pub async fn check_connector_health(&self, connector_id: &str, workspace_id: uuid::Uuid) -> Result<bool, String> {
+        // This would perform a test call to the connector
+        // For now, just return true (implementation depends on specific connector)
+        Ok(true)
+    }
+
+    /// Mark flows as paused due to circuit open
+    async fn pause_flows_for_circuit(
+        &self,
+        connector_id: &str,
+        workspace_id: uuid::Uuid,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r#"
+            UPDATE flow_runs
+            SET approval_state = 'paused_circuit_open', 
+                paused_at = NOW(),
+                paused_reason = $1,
+                updated_at = NOW()
+            WHERE status = 'running' 
+            AND flow_id IN (
+                SELECT DISTINCT flow_id FROM flow_connector_impact
+                WHERE connector_id = $2 AND workspace_id = $3
+            )
+            "#,
+        )
+        .bind(format!("Circuit breaker open for connector: {}", connector_id))
+        .bind(connector_id)
+        .bind(workspace_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to pause flows: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Resume flows when circuit closes
+    async fn resume_flows_for_circuit(
+        &self,
+        connector_id: &str,
+        workspace_id: uuid::Uuid,
+    ) -> Result<(), String> {
+        sqlx::query(
+            r#"
+            UPDATE flow_runs
+            SET approval_state = 'none', 
+                paused_at = NULL,
+                paused_reason = NULL,
+                updated_at = NOW()
+            WHERE paused_reason LIKE $1
+            AND flow_id IN (
+                SELECT DISTINCT flow_id FROM flow_connector_impact
+                WHERE connector_id = $2 AND workspace_id = $3
+            )
+            "#,
+        )
+        .bind(format!("Circuit breaker open for connector: {}", connector_id))
+        .bind(connector_id)
+        .bind(workspace_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to resume flows: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Handle approval step execution
+    pub async fn execute_approval_step(
+        &self,
+        step: &FlowStep,
+        flow_run_id: uuid::Uuid,
+        workspace_id: uuid::Uuid,
+        step_outputs: &HashMap<String, Value>,
+        event: &PulseEvent,
+    ) -> Result<Value, String> {
+        // Get approval config from step
+        let approval_config = step.approval_config.as_ref()
+            .ok_or("Approval step missing configuration")?;
+
+        // Store approval in database and return token for client to track
+        let approval_record = sqlx::query(
+            r#"
+            INSERT INTO pending_approvals 
+            (flow_run_id, step_id, context_json, expires_at, status, created_at, updated_at)
+            VALUES ($1, $2, $3, NOW() + INTERVAL '1 hour' * $4, 'pending', NOW(), NOW())
+            RETURNING approval_token, id, expires_at
+            "#,
+        )
+        .bind(flow_run_id)
+        .bind(&step.id)
+            .bind(&json!({
+            "step_id": &step.id,
+            "title": &approval_config.title,
+            "description": &approval_config.description,
+            "step_outputs": step_outputs,
+            "event_data": &event.data,
+            }))
+        .bind(approval_config.timeout_hours)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to create approval: {}", e))?;
+
+        let token: uuid::Uuid = approval_record.get("approval_token");
+        let approval_id: uuid::Uuid = approval_record.get("id");
+        let expires_at: chrono::DateTime<chrono::Utc> = approval_record.get("expires_at");
+
+        // Send notifications through configured channels
+        let approval_url = format!(
+            "{}/approvals/{}",
+            std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
+            token
+        );
+
+        // Send to Slack if configured
+        if approval_config.notification_channels.contains(&"slack".to_string()) {
+            let _ = Self::send_slack_approval_message(
+                &approval_config.title,
+                &approval_config.description.as_deref().unwrap_or("Approval required"),
+                &approval_url,
+                &token,
+            ).await;
+        }
+
+        Ok(json!({
+            "approval_token": token.to_string(),
+            "approval_id": approval_id.to_string(),
+            "status": "pending",
+            "expires_at": expires_at.to_rfc3339(),
+            "message": format!("Approval required for step: {}", step.id)
+        }))
+    }
+
+    /// Send Slack approval message
+    async fn send_slack_approval_message(
+        title: &str,
+        description: &str,
+        approval_url: &str,
+        token: &uuid::Uuid,
+    ) -> Result<(), String> {
+        let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
+            .unwrap_or_else(|_| String::new());
+        
+        if webhook_url.is_empty() {
+            return Ok(()); // Slack not configured
+        }
+
+        let payload = json!({
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": format!("🔔 {}", title),
+                        "emoji": true
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": description
+                    }
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "✅ Approve"
+                            },
+                            "value": "approve",
+                            "action_id": format!("approval_approve_{}", token),
+                            "style": "primary"
+                        },
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "❌ Reject"
+                            },
+                            "value": "reject",
+                            "action_id": format!("approval_reject_{}", token),
+                            "style": "danger"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let client = reqwest::Client::new();
+        let _ = client.post(&webhook_url).json(&payload).send().await;
+        
+        Ok(())
+    }
+
+    /// Resume flow execution from approval
+    pub async fn resume_from_approval(
+        &self,
+        flow_run_id: uuid::Uuid,
+        approval_status: &str,
+    ) -> Result<Value, String> {
+        // Update flow_runs to mark as ready to resume
+        sqlx::query(
+            r#"
+            UPDATE flow_runs
+            SET approval_state = 'none',
+                paused_at = NULL,
+                paused_reason = NULL,
+                updated_at = NOW()
+            WHERE id = $1
+            "#,
+        )
+        .bind(flow_run_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to resume flow: {}", e))?;
+
+        Ok(json!({
+            "flow_run_id": flow_run_id.to_string(),
+            "approval_status": approval_status,
+            "status": "resumed"
+        }))
     }
 
     pub fn matches_trigger(&self, trigger: &TriggerDefinition, event: &PulseEvent) -> bool {
@@ -1955,5 +2248,94 @@ mod tests {
             result,
             Value::String("test@example.com/Imantha".to_string())
         );
+    }
+}
+
+pub async fn start_connector_health_check_worker(pg_pool: sqlx::PgPool) {
+    let vault = Arc::new(core_vault::Vault::new("default_key", b"default_salt"));
+    let executor = Arc::new(FlowExecutor::new(pg_pool.clone(), vault));
+    let check_interval = std::env::var("HEALTH_CHECK_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30)
+        .max(5);
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(check_interval)).await;
+
+        // Get all connectors with open circuits from connector_health table
+        let open_circuits = sqlx::query!(
+            r#"
+            SELECT DISTINCT connector_id, workspace_id
+            FROM connector_health
+            WHERE status = 'circuit_open'
+            "#
+        )
+        .fetch_all(&pg_pool)
+        .await
+        .unwrap_or_default();
+
+        for circuit in open_circuits {
+            // Try to perform a health check on the connector
+            let health_ok = match check_connector_health(&executor, &circuit.connector_id, &circuit.workspace_id).await {
+                Ok(true) => true,
+                _ => false,
+            };
+
+            if health_ok {
+                // Circuit has recovered - close it
+                let _ = sqlx::query!(
+                    r#"
+                    UPDATE connector_health
+                    SET status = 'healthy', circuit_open_at = NULL, healthy_check_passed_at = NOW()
+                    WHERE connector_id = $1 AND workspace_id = $2
+                    "#,
+                    circuit.connector_id,
+                    circuit.workspace_id
+                )
+                .execute(&pg_pool)
+                .await;
+
+                // Resume flows that were paused due to this connector
+                let _ = sqlx::query!(
+                    r#"
+                    UPDATE flow_runs
+                    SET paused_at = NULL, paused_reason = NULL
+                    WHERE workspace_id = $1
+                      AND paused_reason LIKE $2
+                      AND status = 'running'
+                    "#,
+                    circuit.workspace_id,
+                    format!("circuit_open:{}", circuit.connector_id)
+                )
+                .execute(&pg_pool)
+                .await;
+
+                println!("✅ Circuit breaker CLOSED for connector {} - flows resumed", circuit.connector_id);
+            }
+        }
+    }
+}
+
+async fn check_connector_health(_executor: &Arc<FlowExecutor>, _connector_id: &str, _workspace_id: &uuid::Uuid) -> Result<bool, String> {
+    // Build a minimal health check based on connector type
+    // This is a stub - extend with actual health checks per connector
+    match _connector_id.to_uppercase().as_str() {
+        "SLACK" | "DISCORD" | "TELEGRAM" => {
+            // These connectors typically don't need active health checks
+            Ok(true)
+        }
+        "HTTP" | "WEBHOOK" => {
+            // Could implement HTTP endpoint checks
+            Ok(true)
+        }
+        "NOTION" | "GOOGLE_SHEETS" | "GITHUB" => {
+            // Could implement OAuth token refresh checks
+            Ok(true)
+        }
+        _ => {
+            // Default: assume healthy unless we can prove otherwise
+            Ok(true)
+        }
     }
 }

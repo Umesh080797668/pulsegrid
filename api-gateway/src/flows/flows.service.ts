@@ -514,4 +514,37 @@ export class FlowsService implements OnModuleDestroy {
       client.release();
     }
   }
+
+  /**
+   * Resume a flow after approval is granted
+   */
+  async resumeApprovedFlow(flowRunId: string): Promise<void> {
+    try {
+      // Update the flow run to mark it as approved and ready to resume
+      const query = `
+        UPDATE flow_runs
+        SET approval_state = NULL,
+            paused_at = NULL,
+            paused_reason = NULL,
+            status = 'running',
+            updated_at = NOW()
+        WHERE id = $1
+      `;
+
+      await this.pool.query(query, [flowRunId]);
+
+      this.logger.log(`Flow run ${flowRunId} marked for resumption after approval`);
+
+      // Optionally, trigger resume via gRPC call to PulseCore
+      // const resumeRequest = {
+      //   flowRunId: flowRunId,
+      //   action: 'resume',
+      // };
+      // await firstValueFrom(this.flowService.resumeFlowExecution(resumeRequest));
+    } catch (error) {
+      this.logger.error(`Failed to resume approved flow ${flowRunId}:`, error);
+      throw error;
+    }
+  }
 }
+

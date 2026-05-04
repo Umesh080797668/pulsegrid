@@ -145,6 +145,141 @@ impl ApprovalManager {
         Ok(result.rows_affected())
     }
 
+    /// Add approvers to an approval request
+    pub async fn add_approvers(
+        &self,
+        approval_id: Uuid,
+        approvers: Vec<(Uuid, String)>, // (user_id, email)
+    ) -> Result<(), String> {
+        for (user_id, email) in approvers {
+            sqlx::query(
+                r#"
+                INSERT INTO approval_approvers 
+                (approval_id, approver_id, approver_email, status, created_at, updated_at)
+                VALUES ($1, $2, $3, 'pending', NOW(), NOW())
+                ON CONFLICT DO NOTHING
+                "#,
+            )
+            .bind(approval_id)
+            .bind(user_id)
+            .bind(email)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| format!("Failed to add approver: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// Get all approvers for an approval
+    pub async fn get_approvers(
+        &self,
+        approval_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, String)>, String> { // (user_id, email, status)
+        sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT approver_id, approver_email, status FROM approval_approvers WHERE approval_id = $1 ORDER BY created_at"
+        )
+        .bind(approval_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to fetch approvers: {}", e))
+    }
+
+    /// Record an approver's decision
+    pub async fn record_approver_decision(
+        &self,
+        approval_id: Uuid,
+        approver_id: Uuid,
+        decision: &str,
+        comment: Option<String>,
+    ) -> Result<(), String> {
+        let status = if decision.eq_ignore_ascii_case("approved") {
+            "approved"
+        } else {
+            "rejected"
+        };
+
+        sqlx::query(
+            r#"
+            UPDATE approval_approvers
+            SET status = $1, approved_at = NOW(), decision_comment = $2, updated_at = NOW()
+            WHERE approval_id = $3 AND approver_id = $4
+            "#,
+        )
+        .bind(status)
+        .bind(comment)
+        .bind(approval_id)
+        .bind(approver_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to record approval decision: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Check if all required approvers have approved
+    pub async fn check_all_approved(
+        &self,
+        approval_id: Uuid,
+    ) -> Result<bool, String> {
+        let result = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT COUNT(*) = SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END)
+            FROM approval_approvers
+            WHERE approval_id = $1
+            "#,
+        )
+        .bind(approval_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to check approval status: {}", e))?;
+
+        Ok(result)
+    }
+
+    /// Check if any approver has rejected
+    pub async fn check_any_rejected(
+        &self,
+        approval_id: Uuid,
+    ) -> Result<bool, String> {
+        let result = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM approval_approvers
+                WHERE approval_id = $1 AND status = 'rejected'
+            )
+            "#,
+        )
+        .bind(approval_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to check rejection status: {}", e))?;
+
+        Ok(result)
+    }
+
+    /// Get approval status summary
+    pub async fn get_approval_status_summary(
+        &self,
+        approval_id: Uuid,
+    ) -> Result<(i64, i64, i64), String> { // (total, approved, rejected)
+        let result = sqlx::query_as::<_, (i64, i64, i64)>(
+            r#"
+            SELECT 
+                COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) as approved,
+                COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) as rejected
+            FROM approval_approvers
+            WHERE approval_id = $1
+            "#,
+        )
+        .bind(approval_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to get approval summary: {}", e))?;
+
+        Ok(result)
+    }
+
     /// Store approval context in Redis for fast resume
     pub async fn cache_approval_context(
         &self,

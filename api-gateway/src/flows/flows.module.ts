@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { join } from 'path';
 import { FlowsController } from './flows.controller';
+import { ApprovalsController } from './approvals.controller';
 import { FlowsService } from './flows.service';
 import { FlowValidationService } from './flow-validation.service';
 import { FlowVersionsService } from './flow-versions.service';
@@ -24,7 +25,7 @@ import { ConnectorsModule } from '../connectors/connectors.module';
     AuthModule,
     ConnectorsModule,
   ],
-  controllers: [FlowsController],
+  controllers: [FlowsController, ApprovalsController],
   providers: [FlowsService, FlowValidationService, FlowVersionsService],
   exports: [FlowsService, FlowValidationService, FlowVersionsService],
 })

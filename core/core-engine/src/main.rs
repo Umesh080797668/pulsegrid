@@ -894,6 +894,7 @@ async fn main() {
     let cron_pool = pool.clone();
     let polling_pool = pool.clone();
     let approval_expiry_pool = pool.clone();
+    let health_check_pool = pool.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -904,7 +905,8 @@ async fn main() {
             tokio::join!(
                 start_schedule_worker(cron_pool),
                 start_polling_worker(polling_pool),
-                start_approval_expiry_worker(approval_expiry_pool)
+                start_approval_expiry_worker(approval_expiry_pool),
+                executor::start_connector_health_check_worker(health_check_pool)
             );
         });
     });
