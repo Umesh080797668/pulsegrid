@@ -576,7 +576,7 @@ impl FlowExecutor {
             "action" => {
                 let connector_name = step.connector.clone().unwrap_or_default().to_lowercase();
                 let action_name = step.action.clone().unwrap_or_default().to_lowercase();
-                let mut input_obj = resolved_input.as_object().cloned().unwrap_or_default();
+                let input_obj = resolved_input.as_object().cloned().unwrap_or_default();
                 let input = serde_json::Value::Object(input_obj);
                 let connectors = self.connectors.clone();
                 let max_attempts = (step.retry_policy.max_retries + 1).max(1) as usize;
@@ -698,8 +698,8 @@ impl FlowExecutor {
                 };
 
                 let wasm_bytes = match base64::engine::general_purpose::STANDARD.decode(code_b64) {
-                    Ok(b) => b,
-                        "input": resolved_input,
+                    Ok(bytes) => bytes,
+                    Err(e) => {
                         return StepExecutionResult {
                             step_id: step.id.clone(),
                             status: "failed".to_string(),
@@ -713,7 +713,7 @@ impl FlowExecutor {
                 let script_input = json!({
                     "step_id": step.id,
                     "language": step.script_language.clone().unwrap_or("wasm".to_string()),
-                    "input": _input_data,
+                    "input": resolved_input,
                     "event": event,
                     "step_outputs": step_outputs,
                 });
