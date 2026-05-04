@@ -556,6 +556,9 @@ impl FlowExecutor {
         event: &PulseEvent,
     ) -> StepExecutionResult {
         let started = std::time::Instant::now();
+        let resolved_input = self
+            .build_step_input(step, _input_data.clone(), step_outputs, event)
+            .await;
 
         if let Some(condition) = &step.condition {
             if !self.evaluate_condition(condition, step_outputs, event) {
@@ -573,24 +576,7 @@ impl FlowExecutor {
             "action" => {
                 let connector_name = step.connector.clone().unwrap_or_default().to_lowercase();
                 let action_name = step.action.clone().unwrap_or_default().to_lowercase();
-                let input = self.render_input_mapping(step, step_outputs, event);
-                let mut input_obj = input.as_object().cloned().unwrap_or_default();
-                let upper_connector = connector_name.to_uppercase();
-                if let Ok(row) = sqlx::query!("SELECT encrypted_blob, nonce FROM credentials WHERE workspace_id = $1 AND connector_id = $2", event.tenant_id, upper_connector)
-                    .fetch_one(&self.pool)
-                    .await
-                {
-                    if let Ok(decrypted) = self.vault.decrypt(&row.encrypted_blob, &row.nonce) {
-                        if let Ok(secret_json) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&decrypted) {
-                            for (k, v) in secret_json {
-                                input_obj.entry(k).or_insert(v);
-                            }
-                        } else {
-                            input_obj.entry("access_token".to_string()).or_insert(serde_json::Value::String(decrypted.clone()));
-                            input_obj.entry("bot_token".to_string()).or_insert(serde_json::Value::String(decrypted));
-                        }
-                    }
-                }
+                let mut input_obj = resolved_input.as_object().cloned().unwrap_or_default();
                 let input = serde_json::Value::Object(input_obj);
                 let connectors = self.connectors.clone();
                 let max_attempts = (step.retry_policy.max_retries + 1).max(1) as usize;
@@ -673,7 +659,7 @@ impl FlowExecutor {
                 let script_input = json!({
                     "step_id": step.id,
                     "script_language": script_language,
-                    "input": _input_data,
+                    "input": resolved_input,
                     "event": event,
                     "step_outputs": step_outputs,
                 });
@@ -713,7 +699,7 @@ impl FlowExecutor {
 
                 let wasm_bytes = match base64::engine::general_purpose::STANDARD.decode(code_b64) {
                     Ok(b) => b,
-                    Err(e) => {
+                        "input": resolved_input,
                         return StepExecutionResult {
                             step_id: step.id.clone(),
                             status: "failed".to_string(),
@@ -915,7 +901,7 @@ impl FlowExecutor {
                     "status": "filter_evaluated",
                     "condition": filter_cond,
                     "passed": passes,
-                    "input": _input_data,
+                    "input": resolved_input,
                 })
             }
             "transform" => {
@@ -1016,6 +1002,48 @@ impl FlowExecutor {
             error: None,
             duration_ms: started.elapsed().as_millis() as i32,
         }
+    }
+
+    pub async fn build_step_input(
+        &self,
+        step: &FlowStep,
+        input_data: Value,
+        step_outputs: &HashMap<String, Value>,
+        event: &PulseEvent,
+    ) -> Value {
+        if step.r#type != "action" {
+            return input_data;
+        }
+
+        let connector_name = step.connector.clone().unwrap_or_default().to_lowercase();
+        let upper_connector = connector_name.to_uppercase();
+        let mut input_obj = self.render_input_mapping(step, step_outputs, event).as_object().cloned().unwrap_or_default();
+
+        if let Ok(row) = sqlx::query!(
+            "SELECT encrypted_blob, nonce FROM credentials WHERE workspace_id = $1 AND connector_id = $2",
+            event.tenant_id,
+            upper_connector
+        )
+        .fetch_one(&self.pool)
+        .await
+        {
+            if let Ok(decrypted) = self.vault.decrypt(&row.encrypted_blob, &row.nonce) {
+                if let Ok(secret_json) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&decrypted) {
+                    for (k, v) in secret_json {
+                        input_obj.entry(k).or_insert(v);
+                    }
+                } else {
+                    input_obj
+                        .entry("access_token".to_string())
+                        .or_insert(serde_json::Value::String(decrypted.clone()));
+                    input_obj
+                        .entry("bot_token".to_string())
+                        .or_insert(serde_json::Value::String(decrypted));
+                }
+            }
+        }
+
+        serde_json::Value::Object(input_obj)
     }
 
     async fn execute_loop_step(

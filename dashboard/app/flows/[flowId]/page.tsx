@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { FlowCanvas } from '../../../components/flow-canvas';
+import { StepIoViewer } from '../../../components/step-io-viewer';
 import {
   apiBase,
   authenticatedFetch,
@@ -14,6 +15,7 @@ import {
   promoteFlowToProduction,
   rollbackFlowVersion,
   runFlowInEnvironment,
+  type FlowRunRecord,
   type FlowEnvironmentStatus,
   type FlowVersion,
   type FlowVersionDiff,
@@ -60,7 +62,8 @@ export default function FlowEditorPage() {
   const [versionDiff, setVersionDiff] = useState<FlowVersionDiff | null>(null);
   const [versionBusy, setVersionBusy] = useState(false);
   const [environments, setEnvironments] = useState<FlowEnvironmentStatus[]>([]);
-  const [environmentRuns, setEnvironmentRuns] = useState<Array<Record<string, unknown>>>([]);
+  const [environmentRuns, setEnvironmentRuns] = useState<FlowRunRecord[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState('');
 
   const loadVersionAndEnvironmentData = async (token: string, wsFlowId: string) => {
     const [versionRows, envRows, runRows] = await Promise.all([
@@ -136,6 +139,22 @@ export default function FlowEditorPage() {
     () => workspaceFlows.filter((item) => item.id !== flowId),
     [flowId, workspaceFlows],
   );
+
+  const selectedRun = useMemo(
+    () => environmentRuns.find((run) => String(run.id) === selectedRunId) || null,
+    [environmentRuns, selectedRunId],
+  );
+
+  useEffect(() => {
+    if (environmentRuns.length === 0) {
+      setSelectedRunId('');
+      return;
+    }
+
+    if (!selectedRunId || !environmentRuns.some((run) => String(run.id) === selectedRunId)) {
+      setSelectedRunId(String(environmentRuns[0]!.id));
+    }
+  }, [environmentRuns, selectedRunId]);
 
   const saveFlow = async () => {
     if (!flow || !workspaceId) {
@@ -306,6 +325,9 @@ export default function FlowEditorPage() {
         setToken: setAccessToken,
       });
       setEnvironmentRuns(runs.runs || []);
+      if (runs.runs?.length > 0) {
+        setSelectedRunId(String(runs.runs[0]!.id));
+      }
     } catch (runError) {
       setError(runError instanceof Error ? runError.message : String(runError));
     } finally {
@@ -392,13 +414,28 @@ export default function FlowEditorPage() {
                 <div className="muted" style={{ fontSize: 12 }}>No runs yet for {activeEnvironment}.</div>
               ) : (
                 environmentRuns.slice(0, 30).map((run) => (
-                  <div key={String(run.id)} style={{ padding: 8, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', display: 'grid', gap: 4 }}>
+                  <button
+                    key={String(run.id)}
+                    type="button"
+                    onClick={() => setSelectedRunId(String(run.id))}
+                    style={{
+                      padding: 8,
+                      borderRadius: 8,
+                      border: String(run.id) === selectedRunId ? '1px solid rgba(90,125,255,0.72)' : '1px solid rgba(255,255,255,0.08)',
+                      background: String(run.id) === selectedRunId ? 'rgba(90,125,255,0.08)' : 'rgba(255,255,255,0.02)',
+                      color: 'inherit',
+                      display: 'grid',
+                      gap: 4,
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                    }}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                       <span style={{ fontSize: 12, fontWeight: 700 }}>{String(run.status || 'unknown')}</span>
                       <span className="muted" style={{ fontSize: 11 }}>{String(run.started_at || '')}</span>
                     </div>
                     <div className="muted" style={{ fontSize: 11, wordBreak: 'break-all' }}>{String(run.id || '')}</div>
-                  </div>
+                  </button>
                 ))
               )}
             </div>
@@ -477,6 +514,37 @@ export default function FlowEditorPage() {
             )}
           </div>
         </aside>
+      </div>
+
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="card-title">Step I/O timeline</div>
+        {selectedRun ? (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <span className={`badge ${selectedRun.status === 'failed' ? 'b-error' : selectedRun.status === 'running' ? 'b-running' : 'b-success'}`}>
+                {selectedRun.status || 'unknown'}
+              </span>
+              <span className="badge b-neutral">Run {selectedRun.id}</span>
+              <span className="badge b-neutral">{selectedRun.duration_ms ?? 0}ms</span>
+              <span className="badge b-neutral">{selectedRun.steps_log?.length || 0} steps</span>
+            </div>
+            {selectedRun.error_message ? (
+              <div className="alert alert-error" style={{ marginBottom: 0 }}>
+                {selectedRun.error_message}
+              </div>
+            ) : null}
+            <StepIoViewer
+              flowId={flowId}
+              runId={selectedRun.id}
+              stepsLog={selectedRun.steps_log || []}
+            />
+          </>
+        ) : (
+          <div className="empty-state" style={{ padding: '26px 20px' }}>
+            <div className="empty-title">Select a run</div>
+            <div className="empty-sub">Pick a run from the history to inspect frozen step input, output, and replay.</div>
+          </div>
+        )}
       </div>
 
       <div className="card">

@@ -1012,6 +1012,19 @@ export class AppController implements OnModuleInit {
     });
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('flows/:flowId/runs/:runId/steps/:stepId/replay')
+  async replayFlowRunStep(
+    @Param('flowId', new ParseUUIDPipe({ version: '4' })) flowId: string,
+    @Param('runId', new ParseUUIDPipe({ version: '4' })) runId: string,
+    @Param('stepId') stepId: string,
+  ) {
+    const encodedStepId = encodeURIComponent(stepId);
+    return this.coreRequest(`/api/v1/flows/${flowId}/runs/${runId}/steps/${encodedStepId}/replay`, {
+      method: 'POST',
+    });
+  }
+
   @Post('webhook/:tenantId')
   async handleWebhook(
     @Param('tenantId', new ParseUUIDPipe({ version: '4' })) tenantId: string,

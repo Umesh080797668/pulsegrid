@@ -850,6 +850,7 @@ async fn main() {
         .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
         .route("/api/v1/flows/{flow_id}/runs", get(get_flow_runs))
         .route("/api/v1/flows/{flow_id}/runs/{run_id}", get(get_flow_run_details))
+        .route("/api/v1/flows/{flow_id}/runs/{run_id}/steps/{step_id}/replay", post(replay_flow_run_step))
         .route("/api/v1/flows/{flow_id}/stats", get(get_flow_stats))
         .route("/api/v1/replay/{workspace_id}", get(get_replay_events))
         // Approval endpoints
@@ -1197,6 +1198,66 @@ async fn publish_workspace_stream_event(
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(())
+}
+
+async fn publish_step_io_event(
+    workspace_id: uuid::Uuid,
+    flow_run_id: uuid::Uuid,
+    steps_log: &serde_json::Value,
+    payload: serde_json::Value,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    let client = redis::Client::open(redis_url)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut con = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let cache_key = format!("flow_run:{}:step_outputs", flow_run_id);
+    let steps_json = serde_json::to_string(steps_log)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _: () = con
+        .set_ex(&cache_key, steps_json, 60 * 60 * 24)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let stream_key = workspace_stream_key(workspace_id);
+    let payload_str = serde_json::to_string(&payload)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    con.xadd::<_, _, _, _, ()>(&stream_key, "*", &[("payload", payload_str)])
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(())
+}
+
+fn build_step_io_log_entry(
+    step_id: &str,
+    status: &str,
+    duration_ms: i32,
+    error: Option<String>,
+    input: serde_json::Value,
+    output: serde_json::Value,
+    step_outputs_snapshot: serde_json::Value,
+    trigger_event: &models::PulseEvent,
+    flow_run_id: uuid::Uuid,
+    flow_id: uuid::Uuid,
+    group_index: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "step_id": step_id,
+        "status": status,
+        "duration_ms": duration_ms,
+        "error": error,
+        "input": input,
+        "output": output,
+        "step_outputs_snapshot": step_outputs_snapshot,
+        "trigger_event": trigger_event,
+        "flow_run_id": flow_run_id,
+        "flow_id": flow_id,
+        "group_index": group_index,
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 async fn verify_stripe_webhook_signature(
@@ -1766,7 +1827,7 @@ async fn start_event_listener(
                                             use std::future::Future;
                                             use std::pin::Pin;
 
-                                            let mut futures_vec: Vec<Pin<Box<dyn Future<Output = models::StepExecutionResult> + '_>>> = Vec::new();
+                                            let mut futures_vec: Vec<Pin<Box<dyn Future<Output = (models::StepExecutionResult, serde_json::Value, serde_json::Value)> + '_>>> = Vec::new();
 
                                             for step_id in group {
                                                 if let Some(step) =
@@ -1782,6 +1843,17 @@ async fn start_event_listener(
                                                     let flow_id_clone = flow_id;
                                                     let flow_run_id_clone = flow_run_id;
                                                     let fut = Box::pin(async move {
+                                                        let step_outputs_snapshot = serde_json::to_value(&outputs_snapshot)
+                                                            .unwrap_or_else(|_| serde_json::json!({}));
+                                                        let step_input = executor_clone
+                                                            .build_step_input(
+                                                                &step_clone,
+                                                                serde_json::json!({}),
+                                                                &outputs_snapshot,
+                                                                &event_clone,
+                                                            )
+                                                            .await;
+
                                                         if step_clone.r#type == "wait_for_approval" {
                                                             let context_json = serde_json::json!({
                                                                 "workspace_id": event_clone.tenant_id,
@@ -1809,30 +1881,42 @@ async fn start_event_listener(
                                                                 .create_pending_approval(flow_run_id_clone, &step_clone, context_json, expires_at)
                                                                 .await
                                                             {
-                                                                Ok(token) => models::StepExecutionResult {
-                                                                    step_id: step_clone.id.clone(),
-                                                                    status: "waiting".to_string(),
-                                                                    output: serde_json::json!({"approval_token": token}),
-                                                                    error: None,
-                                                                    duration_ms: 0,
-                                                                },
-                                                                Err(error) => models::StepExecutionResult {
-                                                                    step_id: step_clone.id.clone(),
-                                                                    status: "failed".to_string(),
-                                                                    output: serde_json::Value::Null,
-                                                                    error: Some(error),
-                                                                    duration_ms: 0,
-                                                                },
+                                                                Ok(token) => (
+                                                                    models::StepExecutionResult {
+                                                                        step_id: step_clone.id.clone(),
+                                                                        status: "waiting".to_string(),
+                                                                        output: serde_json::json!({"approval_token": token}),
+                                                                        error: None,
+                                                                        duration_ms: 0,
+                                                                    },
+                                                                    step_input,
+                                                                    step_outputs_snapshot,
+                                                                ),
+                                                                Err(error) => (
+                                                                    models::StepExecutionResult {
+                                                                        step_id: step_clone.id.clone(),
+                                                                        status: "failed".to_string(),
+                                                                        output: serde_json::Value::Null,
+                                                                        error: Some(error),
+                                                                        duration_ms: 0,
+                                                                    },
+                                                                    step_input,
+                                                                    step_outputs_snapshot,
+                                                                ),
                                                             }
                                                         } else {
-                                                            execute_step_with_retry(
+                                                            (
+                                                                execute_step_with_retry(
                                                                 executor_clone,
                                                                 &step_clone,
-                                                                serde_json::json!({}),
+                                                                    step_input.clone(),
                                                                 &outputs_snapshot,
                                                                 &event_clone,
+                                                                )
+                                                                .await,
+                                                                step_input,
+                                                                step_outputs_snapshot,
                                                             )
-                                                            .await
                                                         }
                                                     });
 
@@ -1842,7 +1926,7 @@ async fn start_event_listener(
 
                                             let results = join_all(futures_vec).await;
 
-                                            for result in results {
+                                            for (result, step_input, step_outputs_snapshot) in results {
                                                 if result.status == "failed" {
                                                     all_steps_succeeded = false;
                                                     println!(
@@ -1894,14 +1978,50 @@ async fn start_event_listener(
                                                     result.step_id.clone(),
                                                     result.output.clone(),
                                                 );
-                                                steps_log.as_array_mut().unwrap().push(
-                                                    serde_json::json!({
-                                                        "step_id": result.step_id,
-                                                        "status": result.status,
-                                                        "duration_ms": result.duration_ms,
-                                                        "error": result.error
-                                                    }),
+
+                                                let log_entry = build_step_io_log_entry(
+                                                    &result.step_id,
+                                                    &result.status,
+                                                    result.duration_ms,
+                                                    result.error.clone(),
+                                                    step_input.clone(),
+                                                    result.output.clone(),
+                                                    step_outputs_snapshot.clone(),
+                                                    &event,
+                                                    flow_run_id,
+                                                    flow_id,
+                                                    group_index,
                                                 );
+                                                steps_log.as_array_mut().unwrap().push(log_entry.clone());
+
+                                                let _ = sqlx::query(
+                                                    r#"UPDATE flow_runs SET steps_log = $1 WHERE id = $2"#,
+                                                )
+                                                .bind(steps_log.clone())
+                                                .bind(flow_run_id)
+                                                .execute(&pg_pool)
+                                                .await;
+
+                                                let step_stream_payload = serde_json::json!({
+                                                    "event_type": "flow_run_step_io",
+                                                    "tenant_id": event.tenant_id,
+                                                    "flow_id": flow_id,
+                                                    "flow_run_id": flow_run_id,
+                                                    "step_id": result.step_id,
+                                                    "status": result.status,
+                                                    "duration_ms": result.duration_ms,
+                                                    "error": result.error,
+                                                    "input": step_input,
+                                                    "output": log_entry.get("output").cloned().unwrap_or(serde_json::Value::Null),
+                                                    "step_outputs_snapshot": step_outputs_snapshot,
+                                                    "trigger_event": event,
+                                                });
+                                                let _ = publish_step_io_event(
+                                                    event.tenant_id,
+                                                    flow_run_id,
+                                                    &steps_log,
+                                                    step_stream_payload,
+                                                ).await;
                                             }
 
                                             if paused_for_approval {
@@ -2341,7 +2461,7 @@ async fn resume_flow_after_approval(
         use std::future::Future;
         use std::pin::Pin;
 
-        let mut futures_vec: Vec<Pin<Box<dyn Future<Output = models::StepExecutionResult> + '_>>> = Vec::new();
+        let mut futures_vec: Vec<Pin<Box<dyn Future<Output = (models::StepExecutionResult, serde_json::Value, serde_json::Value)> + '_>>> = Vec::new();
 
         for step_id in group {
             if let Some(step) = flow_def.steps.iter().find(|candidate| &candidate.id == step_id) {
@@ -2356,6 +2476,17 @@ async fn resume_flow_after_approval(
                 let flow_run_id_clone = flow_run_id;
 
                 let fut = Box::pin(async move {
+                    let step_outputs_snapshot = serde_json::to_value(&outputs_snapshot)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    let step_input = executor_clone
+                        .build_step_input(
+                            &step_clone,
+                            serde_json::json!({}),
+                            &outputs_snapshot,
+                            &event_clone,
+                        )
+                        .await;
+
                     if step_clone.r#type == "wait_for_approval" {
                         let context_json = serde_json::json!({
                             "workspace_id": event_clone.tenant_id,
@@ -2384,30 +2515,42 @@ async fn resume_flow_after_approval(
                             .create_pending_approval(flow_run_id_clone, &step_clone, context_json, expires_at)
                             .await
                         {
-                            Ok(token) => models::StepExecutionResult {
-                                step_id: step_clone.id.clone(),
-                                status: "waiting".to_string(),
-                                output: serde_json::json!({"approval_token": token}),
-                                error: None,
-                                duration_ms: 0,
-                            },
-                            Err(error) => models::StepExecutionResult {
-                                step_id: step_clone.id.clone(),
-                                status: "failed".to_string(),
-                                output: serde_json::Value::Null,
-                                error: Some(error),
-                                duration_ms: 0,
-                            },
+                            Ok(token) => (
+                                models::StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "waiting".to_string(),
+                                    output: serde_json::json!({"approval_token": token}),
+                                    error: None,
+                                    duration_ms: 0,
+                                },
+                                step_input,
+                                step_outputs_snapshot,
+                            ),
+                            Err(error) => (
+                                models::StepExecutionResult {
+                                    step_id: step_clone.id.clone(),
+                                    status: "failed".to_string(),
+                                    output: serde_json::Value::Null,
+                                    error: Some(error),
+                                    duration_ms: 0,
+                                },
+                                step_input,
+                                step_outputs_snapshot,
+                            ),
                         }
                     } else {
-                        execute_step_with_retry(
-                            executor_clone,
-                            &step_clone,
-                            serde_json::json!({}),
-                            &outputs_snapshot,
-                            &event_clone,
+                        (
+                            execute_step_with_retry(
+                                executor_clone,
+                                &step_clone,
+                                step_input.clone(),
+                                &outputs_snapshot,
+                                &event_clone,
+                            )
+                            .await,
+                            step_input,
+                            step_outputs_snapshot,
                         )
-                        .await
                     }
                 });
 
@@ -2417,7 +2560,7 @@ async fn resume_flow_after_approval(
 
         let results = join_all(futures_vec).await;
 
-        for result in results {
+        for (result, step_input, step_outputs_snapshot) in results {
             if result.status == "failed" {
                 all_steps_succeeded = false;
 
@@ -2442,12 +2585,50 @@ async fn resume_flow_after_approval(
             }
 
             step_outputs.insert(result.step_id.clone(), result.output.clone());
-            steps_log.as_array_mut().unwrap().push(serde_json::json!({
+
+            let log_entry = build_step_io_log_entry(
+                &result.step_id,
+                &result.status,
+                result.duration_ms,
+                result.error.clone(),
+                step_input.clone(),
+                result.output.clone(),
+                step_outputs_snapshot.clone(),
+                &event,
+                flow_run_id,
+                flow_id,
+                group_index,
+            );
+            steps_log.as_array_mut().unwrap().push(log_entry.clone());
+
+            let _ = sqlx::query(
+                r#"UPDATE flow_runs SET steps_log = $1 WHERE id = $2"#,
+            )
+            .bind(steps_log.clone())
+            .bind(flow_run_id)
+            .execute(pg_pool)
+            .await;
+
+            let step_stream_payload = serde_json::json!({
+                "event_type": "flow_run_step_io",
+                "tenant_id": workspace_id,
+                "flow_id": flow_id,
+                "flow_run_id": flow_run_id,
                 "step_id": result.step_id,
                 "status": result.status,
                 "duration_ms": result.duration_ms,
-                "error": result.error
-            }));
+                "error": result.error,
+                "input": step_input,
+                "output": log_entry.get("output").cloned().unwrap_or(serde_json::Value::Null),
+                "step_outputs_snapshot": step_outputs_snapshot,
+                "trigger_event": event,
+            });
+            let _ = publish_step_io_event(
+                workspace_id,
+                flow_run_id,
+                &steps_log,
+                step_stream_payload,
+            ).await;
         }
 
         if paused_for_approval {
@@ -4273,6 +4454,117 @@ async fn get_flow_run_details(
         steps_log: row.try_get::<Option<serde_json::Value>, _>("steps_log").ok().flatten(),
         error_message: row.try_get::<Option<String>, _>("error_message").ok().flatten(),
     }))
+}
+
+async fn replay_flow_run_step(
+    State(state): State<AppState>,
+    Path((flow_id, run_id, step_id)): Path<(uuid::Uuid, uuid::Uuid, String)>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, flow_id, workspace_id, environment, status, trigger_event_id, started_at, completed_at, duration_ms, steps_log, error_message
+        FROM flow_runs
+        WHERE id = $1 AND flow_id = $2
+        "#,
+    )
+    .bind(run_id)
+    .bind(flow_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow run not found".to_string()))?;
+
+    let workspace_id: uuid::Uuid = row.get("workspace_id");
+    let steps_log: serde_json::Value = row
+        .try_get::<Option<serde_json::Value>, _>("steps_log")
+        .ok()
+        .flatten()
+        .ok_or((axum::http::StatusCode::NOT_FOUND, "No step log found for this run".to_string()))?;
+
+    let replay_entry = steps_log
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| entry.get("step_id").and_then(|value| value.as_str()) == Some(step_id.as_str())))
+        .cloned()
+        .ok_or((axum::http::StatusCode::NOT_FOUND, format!("Step {} not found in run log", step_id)))?;
+
+    let flow_row = sqlx::query(
+        r#"
+        SELECT definition, name
+        FROM flows
+        WHERE id = $1 AND workspace_id = $2
+        "#,
+    )
+    .bind(flow_id)
+    .bind(workspace_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
+
+    let definition: FlowDefinition = serde_json::from_value(
+        flow_row
+            .try_get::<serde_json::Value, _>("definition")
+            .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    )
+    .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("Invalid flow definition: {}", e)))?;
+
+    let step_def = definition
+        .steps
+        .iter()
+        .find(|step| step.id == step_id)
+        .cloned()
+        .ok_or((axum::http::StatusCode::NOT_FOUND, format!("Step {} not found in flow definition", step_id)))?;
+
+    let trigger_event_value = replay_entry
+        .get("trigger_event")
+        .cloned()
+        .ok_or((axum::http::StatusCode::BAD_REQUEST, "Replay log does not contain trigger event context".to_string()))?;
+    let trigger_event: models::PulseEvent = serde_json::from_value(trigger_event_value)
+        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("Failed to parse trigger event: {}", e)))?;
+
+    let frozen_input = replay_entry.get("input").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let frozen_step_outputs: std::collections::HashMap<String, serde_json::Value> = replay_entry
+        .get("step_outputs_snapshot")
+        .cloned()
+        .map(|value| serde_json::from_value(value).unwrap_or_default())
+        .unwrap_or_default();
+
+    let executor = Arc::new(FlowExecutor::new(state.pool.clone(), state.vault.clone()));
+    let result = executor
+        .execute_step(&step_def, frozen_input.clone(), &frozen_step_outputs, &trigger_event)
+        .await;
+
+    let replay_payload = serde_json::json!({
+        "event_type": "flow_run_step_io",
+        "tenant_id": workspace_id,
+        "flow_id": flow_id,
+        "flow_run_id": run_id,
+        "step_id": step_id,
+        "status": result.status.clone(),
+        "duration_ms": result.duration_ms,
+        "error": result.error.clone(),
+        "input": frozen_input,
+        "output": result.output.clone(),
+        "step_outputs_snapshot": frozen_step_outputs,
+        "trigger_event": trigger_event,
+        "replay": true,
+    });
+
+    let _ = publish_step_io_event(
+        workspace_id,
+        run_id,
+        &steps_log,
+        replay_payload,
+    ).await;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "replayed": true,
+        "flow_id": flow_id,
+        "flow_run_id": run_id,
+        "step_id": step_id,
+        "result": result,
+    })))
 }
 
 async fn get_detected_patterns(

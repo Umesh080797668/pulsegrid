@@ -335,12 +335,38 @@ export async function runFlowInEnvironment(params: {
   return (await response.json()) as Record<string, unknown>;
 }
 
+export type FlowRunStepLog = {
+  step_id: string;
+  status?: string;
+  duration_ms?: number | null;
+  error?: string | null;
+  input?: unknown;
+  output?: unknown;
+  step_outputs_snapshot?: Record<string, unknown> | null;
+  trigger_event?: Record<string, unknown> | null;
+  replay?: boolean;
+};
+
+export type FlowRunRecord = {
+  id: string;
+  flow_id?: string | null;
+  workspace_id?: string | null;
+  environment?: string | null;
+  status?: string;
+  trigger_event_id?: string | null;
+  started_at?: string;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  steps_log?: FlowRunStepLog[] | null;
+  error_message?: string | null;
+};
+
 export async function getFlowRunsForEnvironment(params: {
   flowId: string;
   environment: 'staging' | 'production' | string;
   token: string;
   setToken: (token: string) => void;
-}) {
+}): Promise<{ runs: FlowRunRecord[]; total: number; limit: number; offset: number; environment: string }> {
   const response = await authenticatedFetch(
     `${apiBase}/flows/${params.flowId}/runs?environment=${encodeURIComponent(params.environment)}`,
     params.token,
@@ -349,7 +375,30 @@ export async function getFlowRunsForEnvironment(params: {
   if (!response.ok) {
     throw new Error(`Failed to load ${params.environment} flow runs (${response.status})`);
   }
-  return (await response.json()) as { runs: Array<Record<string, unknown>>; total: number; limit: number; offset: number; environment: string };
+  return (await response.json()) as { runs: FlowRunRecord[]; total: number; limit: number; offset: number; environment: string };
+}
+
+export async function replayFlowRunStep(params: {
+  flowId: string;
+  runId: string;
+  stepId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<Record<string, unknown>> {
+  const response = await authenticatedFetch(
+    `${apiBase}/flows/${params.flowId}/runs/${params.runId}/steps/${encodeURIComponent(params.stepId)}/replay`,
+    params.token,
+    params.setToken,
+    { method: 'POST' },
+  );
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const message = (payload as { message?: string; error?: string }).message || (payload as { message?: string; error?: string }).error || `Failed to replay step (${response.status})`;
+    throw new Error(message);
+  }
+
+  return (await response.json()) as Record<string, unknown>;
 }
 
 export type DependentFlow = {
