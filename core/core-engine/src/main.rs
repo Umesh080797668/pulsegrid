@@ -4529,10 +4529,46 @@ async fn replay_flow_run_step(
         .map(|value| serde_json::from_value(value).unwrap_or_default())
         .unwrap_or_default();
 
-    let executor = Arc::new(FlowExecutor::new(state.pool.clone(), state.vault.clone()));
-    let result = executor
-        .execute_step(&step_def, frozen_input.clone(), &frozen_step_outputs, &trigger_event)
-        .await;
+    let pool = state.pool.clone();
+    let vault = state.vault.clone();
+    let step_def_for_exec = step_def.clone();
+    let frozen_input_for_exec = frozen_input.clone();
+    let frozen_step_outputs_for_exec = frozen_step_outputs.clone();
+    let trigger_event_for_exec = trigger_event.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let executor = FlowExecutor::new(pool, vault);
+        let replay_result = runtime.block_on(async move {
+            executor
+                .execute_step(
+                    &step_def_for_exec,
+                    frozen_input_for_exec,
+                    &frozen_step_outputs_for_exec,
+                    &trigger_event_for_exec,
+                )
+                .await
+        });
+
+        Ok::<models::StepExecutionResult, String>(replay_result)
+    })
+    .await
+    .map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Replay task join error: {}", e),
+        )
+    })?
+    .map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Replay task runtime error: {}", e),
+        )
+    })?;
 
     let replay_payload = serde_json::json!({
         "event_type": "flow_run_step_io",
