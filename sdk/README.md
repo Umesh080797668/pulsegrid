@@ -1,5 +1,70 @@
-# Vue 3 + TypeScript + Vite
+# @pulsegrid/sdk
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+The official Vue-based Web Components SDK for PulseGrid. This SDK provides native custom elements mapped from Vue components to allow seamless integration into any web application or SaaS without style bleed, thanks to Shadow DOM isolation.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+## Installation
+
+### Via NPM
+
+```bash
+npm install @pulsegrid/sdk
+```
+
+Then, import the SDK into your application to register the web components:
+
+```javascript
+import "@pulsegrid/sdk";
+// The web components will be automatically registered
+```
+
+### Via CDN (Browser Embed)
+
+You can instantly use the components without a build step by including the script from the PulseGrid CDN:
+
+```html
+<script src="https://cdn.pulsegrid.io/sdk/v1/pulsegrid-sdk.min.js"></script>
+```
+
+## Usage & Components
+
+All components support `workspace-id`, `api-key`, and optional `theme` attributes.
+
+### 1. Pulse Trigger (`<pulse-trigger>`)
+Renders a configurable button that fires a flow via the public API.
+
+```html
+<pulse-trigger 
+  workspace-id="ws_12345" 
+  api-key="pk_live_123" 
+  theme="light">
+  Run Pulse Flow
+</pulse-trigger>
+```
+
+### 2. Pulse Status (`<pulse-status>`)
+Shows the last run status and timestamp.
+
+```html
+<pulse-status 
+  workspace-id="ws_12345" 
+  api-key="pk_live_123" 
+  theme="dark">
+</pulse-status>
+```
+
+### 3. Pulse Panel (`<pulse-panel>`)
+Renders the full flow management panel embeddable in any SaaS app.
+
+```html
+<pulse-panel 
+  workspace-id="ws_12345" 
+  api-key="pk_live_123">
+</pulse-panel>
+```
+
+## Automated Versioning
+This repository uses `semantic-release` to automate version incrementation and NPM publishing. Commits pushed to the `main` branch will automatically trigger a release sequence.
+
+## CDN Distribution
+The SDK is packaged via Vite as an optimized (minified) UMD bundle which is automatically distributed to Cloudflare R2 + CDN. The CDN permanently serves the file with blazing speeds across the globe.
+
