@@ -42,8 +42,12 @@ use models::{
     WorkspaceSecretSummary, ApprovalDecisionRequest, ApprovalDecisionResponse,
 };
 mod executor;
+mod guard_emitter;
+mod codebase_indexer;
 use approval::ApprovalManager;
+use core_proto::guard::guard_stream_server::GuardStreamServer;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
+use guard_emitter::{install_guard_event_pipeline, GuardEventPublisher, GuardStreamService};
 use executor::FlowExecutor;
 use grpc::MyPulseCoreService;
 
@@ -743,6 +747,12 @@ async fn main() {
     println!("Starting PulseCore Engine...");
     dotenvy::dotenv().ok(); // Load environment variables from .env
 
+    let (guard_signal_tx, _) = broadcast::channel(512);
+    let guard_publisher = Arc::new(GuardEventPublisher::new(guard_signal_tx.clone()));
+    if let Err(error) = install_guard_event_pipeline(guard_publisher.clone()) {
+        eprintln!("Failed to initialize guard event pipeline: {}", error);
+    }
+
     // Setup PostgreSQL connection pool
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
@@ -752,6 +762,8 @@ async fn main() {
         .expect("Failed to connect to Postgres");
 
     println!("Connected to PostgreSQL databases!");
+
+    codebase_indexer::spawn_codebase_indexer(pool.clone());
 
     // Initialize local cache
     let cache = Arc::new(
@@ -881,10 +893,12 @@ async fn main() {
     let grpc_addr = "127.0.0.1:50051".parse().unwrap();
     let grpc_pool = pool.clone();
     let service = MyPulseCoreService::new(grpc_pool);
+    let guard_stream_service = GuardStreamService::new(guard_signal_tx.clone());
     println!("🚀 Starting gRPC server on {}", grpc_addr);
     tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(PulseCoreServiceServer::new(service))
+            .add_service(GuardStreamServer::new(guard_stream_service))
             .serve(grpc_addr)
             .await
             .unwrap();

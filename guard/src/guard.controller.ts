@@ -15,12 +15,15 @@ import {
 } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { Pool } from 'pg';
+import { GuardGithubActionService } from './actions/github-action.service';
 
 @Controller('guard')
 export class GuardController implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('GuardController');
   private redis: Redis | null = null;
   private pool: Pool | null = null;
+
+  constructor(private readonly githubActionService: GuardGithubActionService) {}
 
   async onModuleInit(): Promise<void> {
     const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -153,6 +156,29 @@ export class GuardController implements OnModuleInit, OnModuleDestroy {
   @Patch('alerts/:id/dismiss')
   async dismissAlert(@Param('id') id: string, @Body() body: { actor_user_id?: string }) {
     return this.updateAlertStatus(id, 'dismissed', body?.actor_user_id);
+  }
+
+  @Post('alerts/:id/github')
+  async createGithubIssueAndBranch(
+    @Param('id') id: string,
+    @Body()
+    body?: {
+      owner?: string;
+      repo?: string;
+      base_branch?: string;
+    },
+  ) {
+    const result = await this.githubActionService.createIssueAndBranchFromAlert(
+      id,
+      body?.owner,
+      body?.repo,
+      body?.base_branch,
+    );
+
+    return {
+      status: 'ok',
+      ...result,
+    };
   }
 
   @Get('maintenance')

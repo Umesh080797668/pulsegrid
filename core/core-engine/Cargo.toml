@@ -29,4 +29,11 @@ uuid = { version = "1.23.1", features = ["v4", "serde"] }
 cron = "0.16.0"
 rocksdb = "0.21"
 urlencoding = "2.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-java = "0.23"
+tree-sitter-typescript = "0.23"
+walkdir = "2.5"
 

@@ -56,9 +56,10 @@ export class MaintenanceOrchestratorService {
     triage: TriageResult,
   ): Promise<MaintenanceResult> {
     try {
+      const targetFlowIds = await this.resolveScopedFlowIds(event);
       const pausedFlows: string[] = [];
 
-      for (const flowId of event.affected_flow_ids) {
+      for (const flowId of targetFlowIds) {
         if (this.pgPool) {
           const result = await this.pgPool.query(
             `
@@ -105,6 +106,86 @@ export class MaintenanceOrchestratorService {
       this.logger.error('Failed to pause affected flows', err);
       return { scope: 'flows_only', pausedFlows: [] };
     }
+  }
+
+  private async resolveScopedFlowIds(event: GuardEvent): Promise<string[]> {
+    const flowSet = new Set<string>(event.affected_flow_ids || []);
+
+    if (!this.pgPool || !event.affected_connector) {
+      return Array.from(flowSet);
+    }
+
+    try {
+      const rows = await this.pgPool.query<{
+        id: string;
+        definition: any;
+      }>(
+        `
+        SELECT id::text, definition
+        FROM flows
+        WHERE workspace_id = $1::uuid
+          AND enabled = true
+        `,
+        [event.tenant_id],
+      );
+
+      for (const row of rows.rows) {
+        if (this.definitionUsesConnector(row.definition, event.affected_connector)) {
+          flowSet.add(row.id);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Failed to resolve connector-scoped flows for connector ${event.affected_connector}`,
+        err,
+      );
+    }
+
+    return Array.from(flowSet);
+  }
+
+  private definitionUsesConnector(definition: unknown, connector: string): boolean {
+    if (!definition || !connector) {
+      return false;
+    }
+
+    const normalized = connector.toLowerCase();
+    const stack: unknown[] = [definition];
+
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (current == null) {
+        continue;
+      }
+
+      if (typeof current === 'string') {
+        if (current.toLowerCase() === normalized) {
+          return true;
+        }
+        continue;
+      }
+
+      if (Array.isArray(current)) {
+        stack.push(...current);
+        continue;
+      }
+
+      if (typeof current === 'object') {
+        const obj = current as Record<string, unknown>;
+        for (const [key, value] of Object.entries(obj)) {
+          if (
+            key.toLowerCase() === 'connector' &&
+            typeof value === 'string' &&
+            value.toLowerCase() === normalized
+          ) {
+            return true;
+          }
+          stack.push(value);
+        }
+      }
+    }
+
+    return false;
   }
 
   private async triggerFullMaintenance(

@@ -67,8 +67,22 @@ export class ContextBuilderService {
       const query = `
         SELECT file_path, language, function_sigs, error_patterns
         FROM guard.codebase_index
-        WHERE error_patterns && $1
-        LIMIT 5
+        WHERE
+          error_patterns && $1::text[]
+          OR EXISTS (
+            SELECT 1
+            FROM unnest($1::text[]) AS kw
+            WHERE file_path ILIKE '%' || kw || '%'
+               OR function_sigs::text ILIKE '%' || kw || '%'
+          )
+        ORDER BY
+          (
+            SELECT COUNT(*)
+            FROM unnest(error_patterns) AS p
+            WHERE LOWER(p) = ANY($1::text[])
+          ) DESC,
+          last_indexed_at DESC
+        LIMIT 8
       `;
 
       const result = await this.pgPool.query(query, [errorKeywords]);
@@ -96,6 +110,17 @@ export class ContextBuilderService {
         const match = line.match(/at\s+(\w+)/);
         if (match) keywords.add(match[1]);
       });
+    }
+
+    if (event.category) {
+      const categoryTokens = event.category.split(/[^a-zA-Z0-9_]+/);
+      categoryTokens.forEach((t) => {
+        if (t.length > 2) keywords.add(t.toLowerCase());
+      });
+    }
+
+    if (event.affected_connector) {
+      keywords.add(event.affected_connector.toLowerCase());
     }
 
     return Array.from(keywords).slice(0, 10);

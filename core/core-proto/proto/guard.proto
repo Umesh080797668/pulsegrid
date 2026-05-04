@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package guard;
+
+service GuardStream {
+  rpc StreamGuardEvents (StreamGuardEventsRequest) returns (stream GuardSignal);
+}
+
+message StreamGuardEventsRequest {
+  string tenant_id = 1;
+  repeated string categories = 2;
+}
+
+message GuardSignal {
+  string id = 1;
+  string tenant_id = 2;
+  string source = 3;
+  string severity = 4;
+  string category = 5;
+  string message = 6;
+  string stack_trace = 7;
+  string affected_connector = 8;
+  repeated string affected_flow_ids = 9;
+  string deployment_sha = 10;
+  int64 observed_at_unix_ms = 11;
+  map<string, string> metadata = 12;
+}

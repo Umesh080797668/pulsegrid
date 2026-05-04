@@ -8,6 +8,7 @@ import { InternetResearchService } from './research/internet-research.service';
 import { MaintenanceOrchestratorService } from './maintenance/orchestrator.service';
 import { NotificationService } from './notifications/notification.service';
 import { PulseGuardAIModule } from './ai/pulseguard-ai.module';
+import { GuardGithubActionService } from './actions/github-action.service';
 
 @Global()
 @Module({
@@ -20,6 +21,7 @@ import { PulseGuardAIModule } from './ai/pulseguard-ai.module';
     InternetResearchService,
     MaintenanceOrchestratorService,
     NotificationService,
+    GuardGithubActionService,
   ],
   exports: [
     GuardStreamsConsumer,
@@ -28,6 +30,7 @@ import { PulseGuardAIModule } from './ai/pulseguard-ai.module';
     InternetResearchService,
     MaintenanceOrchestratorService,
     NotificationService,
+    GuardGithubActionService,
     PulseGuardAIModule,
   ],
 })
