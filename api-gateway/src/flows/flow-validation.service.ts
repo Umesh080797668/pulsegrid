@@ -201,10 +201,17 @@ export class FlowValidationService {
         break;
 
       case 'parallel':
+      case 'parallel_split':
         if (!step.depends_on || step.depends_on.length === 0) {
           errors.push(
             `Parallel step "${step.id}" must have at least one dependency to parallelize`,
           );
+        }
+        break;
+
+      case 'merge':
+        if (!step.depends_on || step.depends_on.length === 0) {
+          errors.push(`Merge step "${step.id}" must wait on at least one branch`);
         }
         break;
 

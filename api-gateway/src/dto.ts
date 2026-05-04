@@ -152,6 +152,8 @@ export class FlowStepDto {
     'condition',
     'loop',
     'parallel',
+    'parallel_split',
+    'merge',
     'sub_flow',
     'filter',
     'transform',

@@ -40,7 +40,7 @@ type FlowDefinition = {
   };
   steps: Array<{
     id: string;
-    type: 'action' | 'parallel' | 'loop' | 'sub_flow' | 'code';
+    type: 'action' | 'parallel' | 'parallel_split' | 'merge' | 'loop' | 'sub_flow' | 'code';
     connector?: string;
     action?: string;
     input_mapping: Record<string, string>;
@@ -111,7 +111,7 @@ export function FlowCanvas({
   // Add step state
   const [newConnector, setNewConnector] = useState(() => connectorOptions[0] || 'custom');
   const [newAction, setNewAction] = useState('call_api');
-  const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'loop' | 'sub_flow' | 'code'>('action');
+  const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'parallel_split' | 'merge' | 'loop' | 'sub_flow' | 'code'>('action');
 
   const actionOptions = useMemo(
     () => catalog.filter((item) => item.connector === newConnector).map((item) => item.action),
@@ -394,7 +394,7 @@ export function FlowCanvas({
           sourceLanguage: step.source_language || step.script_language || undefined,
           isCodeStep,
         },
-        type: step.type === 'code' ? 'codeNode' : step.type === 'loop' ? 'loopNode' : step.type === 'parallel' ? 'parallelNode' : 'customNode',
+        type: step.type === 'code' ? 'codeNode' : step.type === 'loop' ? 'loopNode' : step.type === 'merge' ? 'mergeNode' : step.type === 'parallel' || step.type === 'parallel_split' ? 'parallelNode' : 'customNode',
         draggable: true,
       });
 
@@ -426,7 +426,7 @@ export function FlowCanvas({
   }, [definitionJson, parsed]);
 
   const nodeTypes = useMemo(() => ({
-    customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode, codeNode: CodeNode
+    customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode, mergeNode: MergeNode, codeNode: CodeNode
   }), []);
 
   return (
@@ -468,6 +468,8 @@ export function FlowCanvas({
                 <option value="action">Action</option>
                 <option value="code">Code</option>
                 <option value="parallel">Parallel</option>
+                <option value="parallel_split">Parallel Split</option>
+                <option value="merge">Merge</option>
                 <option value="loop">Loop</option>
                 <option value="sub_flow">Sub-Flow</option>
               </select>
@@ -526,20 +528,26 @@ export function FlowCanvas({
                 />
               ) : (
                 <>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input
-                      style={{ padding: '8px', flex: 1 }}
-                      value={editConnector}
-                      onChange={(e) => setEditConnector(e.target.value)}
-                      placeholder="Connector"
-                    />
-                    <input
-                      style={{ padding: '8px', flex: 1 }}
-                      value={editAction}
-                      onChange={(e) => setEditAction(e.target.value)}
-                      placeholder="Action"
-                    />
-                  </div>
+                  {selectedStep.type === 'merge' || selectedStep.type === 'parallel_split' ? (
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      This step is driven by graph connections. Connect upstream and downstream steps to define the branch structure.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        style={{ padding: '8px', flex: 1 }}
+                        value={editConnector}
+                        onChange={(e) => setEditConnector(e.target.value)}
+                        placeholder="Connector"
+                      />
+                      <input
+                        style={{ padding: '8px', flex: 1 }}
+                        value={editAction}
+                        onChange={(e) => setEditAction(e.target.value)}
+                        placeholder="Action"
+                      />
+                    </div>
+                  )}
                   <textarea
                     rows={4}
                     value={editInputJson}
@@ -574,7 +582,7 @@ export function FlowCanvas({
 
 function CustomNode({ data, selected }: NodeProps) {
   const stepType = typeof data.stepType === 'string' ? data.stepType : 'action';
-  const borderColor = stepType === 'parallel' ? '#22d674' : stepType === 'loop' ? '#f59e0b' : stepType === 'sub_flow' ? '#8b5cf6' : '#7c9cff';
+  const borderColor = stepType === 'parallel' || stepType === 'parallel_split' ? '#22d674' : stepType === 'merge' ? '#8b5cf6' : stepType === 'loop' ? '#f59e0b' : stepType === 'sub_flow' ? '#8b5cf6' : '#7c9cff';
   
   return (
     <div
@@ -668,6 +676,20 @@ function ParallelNode({ data, selected }: NodeProps) {
     <div style={{ minWidth: 240, padding: 14, borderRadius: 14, border: selected ? `1px solid ${borderColor}` : '1px solid rgba(255,255,255,0.12)', background: selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)', backgroundColor: '#1a1a1a', color: '#fff' }}>
       <Handle type="target" position={Position.Left} style={{ background: borderColor }} />
       <div style={{ fontSize: 12, marginBottom: 6, color: borderColor, fontWeight: 600, letterSpacing: '0.05em' }}>PARALLEL</div>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>{String(data.title)}</div>
+      <div style={{ opacity: 0.7, fontSize: 12, wordBreak: 'break-all' }}>{String(data.subtitle)}</div>
+      <Handle type="source" position={Position.Right} style={{ background: borderColor }} />
+    </div>
+  );
+}
+
+function MergeNode({ data, selected }: NodeProps) {
+  const borderColor = '#8b5cf6';
+
+  return (
+    <div style={{ minWidth: 240, padding: 14, borderRadius: 14, border: selected ? `1px solid ${borderColor}` : '1px solid rgba(255,255,255,0.12)', background: selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)', backgroundColor: '#1a1a1a', color: '#fff' }}>
+      <Handle type="target" position={Position.Left} style={{ background: borderColor }} />
+      <div style={{ fontSize: 12, marginBottom: 6, color: borderColor, fontWeight: 600, letterSpacing: '0.05em' }}>MERGE</div>
       <div style={{ fontWeight: 700, marginBottom: 4 }}>{String(data.title)}</div>
       <div style={{ opacity: 0.7, fontSize: 12, wordBreak: 'break-all' }}>{String(data.subtitle)}</div>
       <Handle type="source" position={Position.Right} style={{ background: borderColor }} />

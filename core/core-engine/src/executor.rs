@@ -245,12 +245,14 @@ impl FlowExecutor {
         for group in execution_order {
             use std::pin::Pin;
             let mut futures_vec: Vec<Pin<Box<dyn std::future::Future<Output = StepExecutionResult> + '_>>> = Vec::new();
+            let executor = self.clone();
 
             for step_id in &group {
                 if let Some(step) = flow_def.steps.iter().find(|s| &s.id == step_id) {
                     let step_clone = step.clone();
                     let event_clone = event.clone();
                     let outputs_snapshot = step_outputs.clone();
+                    let executor = executor.clone();
 
                     let fut = Box::pin(async move {
                         // sub_flow special-case
@@ -282,7 +284,7 @@ impl FlowExecutor {
                             let def_val: Option<serde_json::Value> = match sqlx::query_scalar("SELECT definition FROM flows WHERE id = $1 AND workspace_id = $2")
                                 .bind(sub_uuid)
                                 .bind(event_clone.tenant_id)
-                                .fetch_optional(&self.pool)
+                                .fetch_optional(&executor.pool)
                                 .await
                             {
                                 Ok(v) => v,
@@ -337,7 +339,7 @@ impl FlowExecutor {
                             let mut nested_event = event_clone.clone();
                             nested_event.sub_flow_depth = Some(current_depth + 1);
 
-                            match self.execute_flow(&sub_def, &nested_event, current_depth + 1).await {
+                            match executor.execute_flow(&sub_def, &nested_event, current_depth + 1).await {
                                 Ok(outputs) => StepExecutionResult {
                                     step_id: step_clone.id.clone(),
                                     status: "success".to_string(),
@@ -355,7 +357,7 @@ impl FlowExecutor {
                             }
                         } else {
                             // normal step with retry
-                            let input = self.render_input_mapping(&step_clone, &outputs_snapshot, &event_clone);
+                            let input = executor.render_input_mapping(&step_clone, &outputs_snapshot, &event_clone);
                             let max_attempts = (step_clone.retry_policy.max_retries + 1).max(1) as usize;
                             let base_delay_ms = if step_clone.retry_policy.initial_backoff_ms > 0 {
                                 step_clone.retry_policy.initial_backoff_ms as u64
@@ -363,7 +365,7 @@ impl FlowExecutor {
 
                             let mut last_err: Option<String> = None;
                             for attempt in 0..max_attempts {
-                                let res = self.execute_step(&step_clone, input.clone(), &outputs_snapshot, &event_clone).await;
+                                let res = executor.execute_step(&step_clone, input.clone(), &outputs_snapshot, &event_clone).await;
                                 if res.status != "failed" {
                                     return res;
                                 }
@@ -740,13 +742,20 @@ impl FlowExecutor {
                     "loop_variable": loop_var,
                 })
             }
-            "parallel" => {
+            "parallel" | "parallel_split" => {
                 let default_steps = vec![];
                 let step_ids = step.parallel_steps.as_ref().unwrap_or(&default_steps);
                 json!({
                     "status": "parallel_scheduled",
                     "parallel_steps": step_ids,
-                    "note": "Parallel execution handled by main event loop; this is a marker step",
+                    "note": "Parallel split handled by the flow scheduler; branch steps run independently",
+                })
+            }
+            "merge" => {
+                json!({
+                    "status": "merge_completed",
+                    "depends_on": step.depends_on,
+                    "note": "Merge node waits for all upstream branches before continuing",
                 })
             }
             "sub_flow" => {
@@ -957,7 +966,7 @@ impl FlowExecutor {
                     step_id: step.id.clone(),
                     status: "failed".to_string(),
                     output: Value::Null,
-                    error: Some(format!("Unknown or unimplemented step type: {other}. Supported types: action, condition, script, code, loop, parallel, sub_flow, filter, transform, delay, fork, wait_for_approval")),
+                    error: Some(format!("Unknown or unimplemented step type: {other}. Supported types: action, condition, script, code, loop, parallel, parallel_split, merge, sub_flow, filter, transform, delay, fork, wait_for_approval")),
                     duration_ms: started.elapsed().as_millis() as i32,
                 };
             }
@@ -1489,12 +1498,12 @@ mod tests {
         );
         let steps = vec![
             FlowStep {
-                id: "step1".into(),
-                r#type: "action".into(),
+                id: "split".into(),
+                r#type: "parallel_split".into(),
                 connector: None,
                 action: None,
                 input_mapping: None,
-                depends_on: vec!["step1".into()],
+                depends_on: vec![],
                 retry_policy: Default::default(),
                 condition: None,
                 script_language: None,
@@ -1509,14 +1518,86 @@ mod tests {
                 filter_condition: None,
                 transform_expr: None,
                 delay_ms: None,
-                   approval_config: None,
+                approval_config: None,
+            },
+            FlowStep {
+                id: "branch_a".into(),
+                r#type: "action".into(),
+                connector: None,
+                action: None,
+                input_mapping: None,
+                depends_on: vec!["split".into()],
+                retry_policy: Default::default(),
+                condition: None,
+                script_language: None,
+                code: None,
+                loop_items: None,
+                loop_variable_name: None,
+                max_iterations: None,
+                loop_condition: None,
+                parallel_steps: None,
+                sub_flow_id: None,
+                sub_flow_input: None,
+                filter_condition: None,
+                transform_expr: None,
+                delay_ms: None,
+                approval_config: None,
+            },
+            FlowStep {
+                id: "branch_b".into(),
+                r#type: "action".into(),
+                connector: None,
+                action: None,
+                input_mapping: None,
+                depends_on: vec!["split".into()],
+                retry_policy: Default::default(),
+                condition: None,
+                script_language: None,
+                code: None,
+                loop_items: None,
+                loop_variable_name: None,
+                max_iterations: None,
+                loop_condition: None,
+                parallel_steps: None,
+                sub_flow_id: None,
+                sub_flow_input: None,
+                filter_condition: None,
+                transform_expr: None,
+                delay_ms: None,
+                approval_config: None,
+            },
+            FlowStep {
+                id: "merge".into(),
+                r#type: "merge".into(),
+                connector: None,
+                action: None,
+                input_mapping: None,
+                depends_on: vec!["branch_a".into(), "branch_b".into()],
+                retry_policy: Default::default(),
+                condition: None,
+                script_language: None,
+                code: None,
+                loop_items: None,
+                loop_variable_name: None,
+                max_iterations: None,
+                loop_condition: None,
+                parallel_steps: None,
+                sub_flow_id: None,
+                sub_flow_input: None,
+                filter_condition: None,
+                transform_expr: None,
+                delay_ms: None,
+                approval_config: None,
             },
         ];
 
         let groups = executor.resolve_execution_order(&steps).unwrap();
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0], vec!["step1"]);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0], vec!["split"]);
         assert_eq!(groups[1].len(), 2);
+        assert!(groups[1].contains(&"branch_a".to_string()));
+        assert!(groups[1].contains(&"branch_b".to_string()));
+        assert_eq!(groups[2], vec!["merge"]);
     }
 
     #[tokio::test]

@@ -91,7 +91,7 @@ pub struct FilterCondition {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FlowStep {
     pub id: String,
-    pub r#type: String, // "action", "condition", "loop", "parallel", "sub_flow", "delay", "filter", "transform", "fork", etc.
+    pub r#type: String, // "action", "condition", "loop", "parallel", "parallel_split", "merge", "sub_flow", "delay", "filter", "transform", "fork", etc.
     pub connector: Option<String>,
     pub action: Option<String>,
     pub input_mapping: Option<HashMap<String, String>>, // Template expressions like "{{trigger.data.email}}"

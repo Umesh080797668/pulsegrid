@@ -66,7 +66,7 @@ type Flow {
 
 type FlowStep {
   id: ID!
-  type: String! # action, condition, script, loop, parallel, sub_flow, etc
+  type: String! # action, condition, script, loop, parallel, parallel_split, merge, sub_flow, etc
   connector: String
   action: String
   dependsOn: [ID!]
