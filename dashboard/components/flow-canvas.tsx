@@ -20,6 +20,12 @@ import {
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
 import { CodeStepEditor } from './code-step-editor';
+import {
+  detectCircularSubFlowReferences,
+  getPublishedSubFlows,
+  type FlowRecord,
+  type PublishedSubFlow,
+} from '../lib/flow-subflows';
 
 type ConnectorCatalogItem = {
   connector: string;
@@ -33,6 +39,8 @@ type ConnectorCatalogItem = {
 type FlowDefinition = {
   id: string;
   name: string;
+  published?: boolean;
+  description?: string;
   trigger: {
     connector: string;
     event: string;
@@ -54,6 +62,8 @@ type FlowDefinition = {
     code?: string;
     source_code?: string;
     source_language?: 'javascript' | 'python';
+    sub_flow_id?: string;
+    sub_flow_input?: string;
   }>;
   error_policy?: {
     on_failure: string;
@@ -96,10 +106,14 @@ export function FlowCanvas({
   definitionJson,
   onDefinitionJsonChange,
   catalog,
+  flowLibrary = [],
+  currentFlowId = '',
 }: {
   definitionJson: string;
   onDefinitionJsonChange: (value: string) => void;
   catalog: ConnectorCatalogItem[];
+  flowLibrary?: FlowRecord[];
+  currentFlowId?: string;
 }) {
   const [selectedStepId, setSelectedStepId] = useState('');
 
@@ -112,6 +126,8 @@ export function FlowCanvas({
   const [newConnector, setNewConnector] = useState(() => connectorOptions[0] || 'custom');
   const [newAction, setNewAction] = useState('call_api');
   const [newStepType, setNewStepType] = useState<'action' | 'parallel' | 'parallel_split' | 'merge' | 'loop' | 'sub_flow' | 'code'>('action');
+  const [newSubFlowId, setNewSubFlowId] = useState('');
+  const [newSubFlowInput, setNewSubFlowInput] = useState('{\n  "event_type": "{{trigger.event_type}}"\n}');
 
   const actionOptions = useMemo(
     () => catalog.filter((item) => item.connector === newConnector).map((item) => item.action),
@@ -126,9 +142,19 @@ export function FlowCanvas({
   const [editSourceLanguage, setEditSourceLanguage] = useState<'javascript' | 'python'>('javascript');
   const [editSourceCode, setEditSourceCode] = useState('');
   const [editCompiledWasm, setEditCompiledWasm] = useState('');
+  const [editSubFlowId, setEditSubFlowId] = useState('');
+  const [editSubFlowInput, setEditSubFlowInput] = useState('');
   const [compileStatus, setCompileStatus] = useState('');
   const [compileError, setCompileError] = useState('');
   const [isCompiling, setIsCompiling] = useState(false);
+  const [subFlowValidationErrors, setSubFlowValidationErrors] = useState<string[]>([]);
+  const [libraryQuery, setLibraryQuery] = useState('');
+
+  const publishedSubFlows = useMemo(() => getPublishedSubFlows(flowLibrary), [flowLibrary]);
+  const publishedSubFlowLookup = useMemo(
+    () => new Map(publishedSubFlows.map((flow) => [flow.id, flow])),
+    [publishedSubFlows],
+  );
 
   const parsed = useMemo(() => {
     try {
@@ -152,8 +178,24 @@ export function FlowCanvas({
       setEditCompiledWasm(selectedStep.code || '');
       setCompileStatus(selectedStep.code ? 'WASM artifact attached' : 'Awaiting compile');
       setCompileError('');
+      setEditSubFlowId(selectedStep.sub_flow_id || '');
+      setEditSubFlowInput(selectedStep.sub_flow_input || '{\n  "event_type": "{{trigger.event_type}}"\n}');
     }
   }, [selectedStepId, selectedStep]);
+
+  useEffect(() => {
+    if (!parsed) {
+      setSubFlowValidationErrors([]);
+      return;
+    }
+
+    const errors = detectCircularSubFlowReferences(
+      parsed,
+      currentFlowId || parsed.id,
+      flowLibrary,
+    );
+    setSubFlowValidationErrors(errors);
+  }, [currentFlowId, flowLibrary, parsed]);
 
   useEffect(() => {
     if (connectorOptions.length === 0) {
@@ -178,6 +220,17 @@ export function FlowCanvas({
     }
   }, [actionOptions, newAction]);
 
+  useEffect(() => {
+    if (publishedSubFlows.length === 0) {
+      setNewSubFlowId('');
+      return;
+    }
+
+    if (!publishedSubFlows.some((flow) => flow.id === newSubFlowId)) {
+      setNewSubFlowId(publishedSubFlows[0].id);
+    }
+  }, [newSubFlowId, publishedSubFlows]);
+
   function updateDefinition(next: FlowDefinition) {
     onDefinitionJsonChange(JSON.stringify(next, null, 2));
   }
@@ -186,6 +239,7 @@ export function FlowCanvas({
     if (!parsed) return;
 
     const isCodeStep = newStepType === 'code';
+    const isSubFlowStep = newStepType === 'sub_flow';
 
     updateDefinition({
       ...parsed,
@@ -200,7 +254,12 @@ export function FlowCanvas({
                 source_code: 'function transform(input) {\n  return input;\n}',
                 code: '',
               }
-            : {
+            : isSubFlowStep
+              ? {
+                  sub_flow_id: newSubFlowId,
+                  sub_flow_input: newSubFlowInput,
+                }
+              : {
                 connector: newConnector,
                 action: newAction,
               }),
@@ -214,6 +273,34 @@ export function FlowCanvas({
       ],
     });
     setSelectedStepId('');
+  }
+
+  function addLibrarySubFlow(flow: PublishedSubFlow) {
+    if (!parsed) return;
+
+    const newStepId = makeStepId();
+    updateDefinition({
+      ...parsed,
+      steps: [
+        ...parsed.steps,
+        {
+          id: newStepId,
+          type: 'sub_flow',
+          sub_flow_id: flow.id,
+          sub_flow_input: '{\n  "event_type": "{{trigger.event_type}}"\n}',
+          input_mapping: {},
+          depends_on: parsed.steps.length > 0 ? [parsed.steps[parsed.steps.length - 1].id] : [],
+          retry_policy: {
+            max_retries: 1,
+            initial_backoff_ms: 500,
+          },
+        },
+      ],
+    });
+    setNewStepType('sub_flow');
+    setNewSubFlowId(flow.id);
+    setNewSubFlowInput('{\n  "event_type": "{{trigger.event_type}}"\n}');
+    setSelectedStepId(newStepId);
   }
 
   function removeStep(stepId: string) {
@@ -246,16 +333,21 @@ export function FlowCanvas({
       ...parsed,
       steps: parsed.steps.map(step => {
         if (step.id === selectedStepId) {
+          const isCodeStep = selectedStep?.type === 'code';
+          const isSubFlowStep = selectedStep?.type === 'sub_flow';
+
           return {
             ...step,
-            action: selectedStep?.type === 'code' ? 'transform' : editAction,
-            connector: selectedStep?.type === 'code' ? '' : editConnector,
+            action: isCodeStep || isSubFlowStep ? step.action : editAction,
+            connector: isCodeStep || isSubFlowStep ? step.connector : editConnector,
             input_mapping: inputMapping,
             condition: editCondition ? editCondition : undefined,
-            source_language: selectedStep?.type === 'code' ? editSourceLanguage : step.source_language,
-            source_code: selectedStep?.type === 'code' ? editSourceCode : step.source_code,
-            code: selectedStep?.type === 'code' ? editCompiledWasm : step.code,
-            script_language: selectedStep?.type === 'code' ? editSourceLanguage : step.script_language,
+            source_language: isCodeStep ? editSourceLanguage : step.source_language,
+            source_code: isCodeStep ? editSourceCode : step.source_code,
+            code: isCodeStep ? editCompiledWasm : step.code,
+            script_language: isCodeStep ? editSourceLanguage : step.script_language,
+            sub_flow_id: isSubFlowStep ? editSubFlowId : step.sub_flow_id,
+            sub_flow_input: isSubFlowStep ? editSubFlowInput : step.sub_flow_input,
           };
         }
         return step;
@@ -383,13 +475,27 @@ export function FlowCanvas({
 
     parsed.steps.forEach((step, index) => {
       const isCodeStep = step.type === 'code';
+      const isSubFlowStep = step.type === 'sub_flow';
+      const referencedSubFlow = isSubFlowStep && step.sub_flow_id ? publishedSubFlowLookup.get(step.sub_flow_id) : undefined;
       newNodes.push({
         id: step.id,
         position: { x: 0, y: 0 },
         data: { 
-          kind: isCodeStep ? `Code Step ${index + 1}` : step.type === 'action' ? `Step ${index + 1}` : `${step.type.toUpperCase()} ${index + 1}`,
-          title: isCodeStep ? `${step.source_language || step.script_language || 'javascript'} → WASM` : `${step.connector}.${step.action}`, 
-          subtitle: step.id,
+          kind: isCodeStep
+            ? `Code Step ${index + 1}`
+            : isSubFlowStep
+              ? `Sub-flow ${index + 1}`
+              : step.type === 'action'
+                ? `Step ${index + 1}`
+                : `${step.type.toUpperCase()} ${index + 1}`,
+          title: isCodeStep
+            ? `${step.source_language || step.script_language || 'javascript'} → WASM`
+            : isSubFlowStep
+              ? referencedSubFlow?.name || step.sub_flow_id || 'Reusable sub-flow'
+              : `${step.connector}.${step.action}`,
+          subtitle: isSubFlowStep
+            ? step.sub_flow_input || referencedSubFlow?.description || step.sub_flow_id || step.id
+            : step.id,
           stepType: step.type,
           sourceLanguage: step.source_language || step.script_language || undefined,
           isCodeStep,
@@ -423,7 +529,7 @@ export function FlowCanvas({
     const layouted = getLayoutedElements(newNodes, newEdges);
     setNodes(layouted.nodes);
     setEdges(layouted.edges);
-  }, [definitionJson, parsed]);
+  }, [definitionJson, parsed, publishedSubFlowLookup]);
 
   const nodeTypes = useMemo(() => ({
     customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode, mergeNode: MergeNode, codeNode: CodeNode
@@ -441,24 +547,95 @@ export function FlowCanvas({
         </div>
       ) : null}
 
-      <div style={{ height: 500, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, overflow: 'hidden' }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={onNodeClick}
-          nodeTypes={nodeTypes}
-          fitView
-          colorMode="dark"
-        >
-          <Background />
-          <Controls />
-        </ReactFlow>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'stretch' }}>
+        <div style={{ flex: 1.6, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ height: 500, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, overflow: 'hidden' }}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={onNodeClick}
+              nodeTypes={nodeTypes}
+              fitView
+              colorMode="dark"
+            >
+              <Background />
+              <Controls />
+            </ReactFlow>
+          </div>
+
+          {subFlowValidationErrors.length > 0 ? (
+            <div style={{ padding: 12, borderRadius: 8, border: '1px solid rgba(255, 99, 99, 0.45)', background: 'rgba(255, 99, 99, 0.08)' }}>
+              <div style={{ fontWeight: 700, marginBottom: 6, color: '#ffb4b4' }}>Sub-flow validation</div>
+              <ul style={{ margin: 0, paddingLeft: 18, color: '#ffd7d7', fontSize: 13 }}>
+                {subFlowValidationErrors.map((error) => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <div style={{ padding: 12, borderRadius: 8, border: '1px solid rgba(34, 214, 116, 0.25)', background: 'rgba(34, 214, 116, 0.06)', color: '#b9f6ca', fontSize: 13 }}>
+              No circular sub-flow references detected.
+            </div>
+          )}
+        </div>
+
+        <aside style={{ width: 320, padding: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.03)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 16 }}>Sub-flow library</h3>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              Publish reusable flows here. Insert them into the canvas as sub-routines.
+            </div>
+            <input
+              value={libraryQuery}
+              onChange={(e) => setLibraryQuery(e.target.value)}
+              placeholder="Search published sub-flows"
+              style={{ width: '100%', padding: '8px', borderRadius: 6 }}
+            />
+          </div>
+
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {publishedSubFlows.filter((flow) => {
+              const query = libraryQuery.trim().toLowerCase();
+              if (!query) return true;
+              return [flow.name, flow.description || '', flow.id].some((value) => value.toLowerCase().includes(query));
+            }).length === 0 ? (
+              <div className="muted" style={{ fontSize: 13, padding: 12, border: '1px dashed rgba(255,255,255,0.1)', borderRadius: 8 }}>
+                No published sub-flows available.
+              </div>
+            ) : (
+              publishedSubFlows
+                .filter((flow) => {
+                  const query = libraryQuery.trim().toLowerCase();
+                  if (!query) return true;
+                  return [flow.name, flow.description || '', flow.id].some((value) => value.toLowerCase().includes(query));
+                })
+                .map((flow) => (
+                  <button
+                    key={flow.id}
+                    onClick={() => addLibrarySubFlow(flow)}
+                    style={{ textAlign: 'left', padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', color: '#fff' }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                      <div style={{ fontWeight: 700 }}>{flow.name}</div>
+                      <span className="badge b-neutral" style={{ fontSize: 10 }}>published</span>
+                    </div>
+                    <div className="muted" style={{ fontSize: 12, marginBottom: 8, wordBreak: 'break-word' }}>
+                      {flow.description || flow.id}
+                    </div>
+                    <div className="muted" style={{ fontSize: 11, opacity: 0.75 }}>
+                      {flow.id}
+                    </div>
+                  </button>
+                ))
+            )}
+          </div>
+        </aside>
       </div>
 
-      <div style={{ display: 'flex', gap: '16px' }}>
+      <div style={{ display: 'flex', gap: '16px', alignItems: 'stretch' }}>
         {/* ADD STEP PANEL */}
         <div style={{ flex: 1, padding: 16, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.02)' }}>
           <h3 style={{ marginTop: 0, marginBottom: 12, fontSize: 16 }}>Add New Step</h3>
@@ -473,7 +650,7 @@ export function FlowCanvas({
                 <option value="loop">Loop</option>
                 <option value="sub_flow">Sub-Flow</option>
               </select>
-              <select value={newConnector} onChange={(e) => setNewConnector(e.target.value)} style={{ padding: '8px', flex: 1 }}>
+              <select value={newConnector} onChange={(e) => setNewConnector(e.target.value)} style={{ padding: '8px', flex: 1 }} disabled={newStepType === 'code' || newStepType === 'sub_flow'}>
                 {connectorOptions.length === 0 ? <option value="custom">custom</option> : null}
                 {connectorOptions.map((connector) => (
                   <option key={connector} value={connector}>
@@ -482,14 +659,34 @@ export function FlowCanvas({
                 ))}
               </select>
             </div>
-            <select value={newAction} onChange={(e) => setNewAction(e.target.value)} style={{ padding: '8px', flex: 1 }}>
-              {actionOptions.length === 0 ? <option value="call_api">call_api</option> : null}
-              {actionOptions.map((action) => (
-                <option key={action} value={action}>
-                  {action}
-                </option>
-              ))}
-            </select>
+            {newStepType === 'sub_flow' ? (
+              <>
+                <select value={newSubFlowId} onChange={(e) => setNewSubFlowId(e.target.value)} style={{ padding: '8px', flex: 1 }}>
+                  {publishedSubFlows.length === 0 ? <option value="">No published sub-flows</option> : null}
+                  {publishedSubFlows.map((flow) => (
+                    <option key={flow.id} value={flow.id}>
+                      {flow.name}
+                    </option>
+                  ))}
+                </select>
+                <textarea
+                  rows={4}
+                  value={newSubFlowInput}
+                  onChange={(e) => setNewSubFlowInput(e.target.value)}
+                  placeholder="Sub-flow input template"
+                  style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
+                />
+              </>
+            ) : newStepType === 'code' ? null : (
+              <select value={newAction} onChange={(e) => setNewAction(e.target.value)} style={{ padding: '8px', flex: 1 }}>
+                {actionOptions.length === 0 ? <option value="call_api">call_api</option> : null}
+                {actionOptions.map((action) => (
+                  <option key={action} value={action}>
+                    {action}
+                  </option>
+                ))}
+              </select>
+            )}
             <button onClick={addStep} disabled={!canEdit} style={{ padding: '8px', backgroundColor: '#7c9cff', color: '#000', fontWeight: 'bold' }}>
               Add Step
             </button>
@@ -505,6 +702,10 @@ export function FlowCanvas({
                 {selectedStep.type === 'code' ? (
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
                     Build custom JS or Python and compile it to a sandboxed WASM module.
+                  </div>
+                ) : selectedStep.type === 'sub_flow' ? (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    Reusable sub-flows run as isolated routines and receive the rendered input payload.
                   </div>
                 ) : null}
               </div>
@@ -526,6 +727,31 @@ export function FlowCanvas({
                   onCompile={compileSelectedCodeStep}
                   isCompiling={isCompiling}
                 />
+              ) : selectedStep.type === 'sub_flow' ? (
+                <>
+                  <select value={editSubFlowId} onChange={(e) => setEditSubFlowId(e.target.value)} style={{ padding: '8px', width: '100%' }}>
+                    {publishedSubFlows.length === 0 ? <option value="">No published sub-flows</option> : null}
+                    {publishedSubFlows.map((flow) => (
+                      <option key={flow.id} value={flow.id}>
+                        {flow.name}
+                      </option>
+                    ))}
+                  </select>
+                  <textarea
+                    rows={4}
+                    value={editSubFlowInput}
+                    onChange={(e) => setEditSubFlowInput(e.target.value)}
+                    placeholder="Sub-flow input template"
+                    style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
+                  />
+                  <textarea
+                    rows={4}
+                    value={editInputJson}
+                    onChange={(e) => setEditInputJson(e.target.value)}
+                    placeholder="Input mapping JSON"
+                    style={{ width: '100%', padding: '8px', fontFamily: 'monospace' }}
+                  />
+                </>
               ) : (
                 <>
                   {selectedStep.type === 'merge' || selectedStep.type === 'parallel_split' ? (

@@ -6,6 +6,11 @@ export interface FlowValidationResult {
   errors: string[];
 }
 
+export interface WorkspaceFlowDefinitionRef {
+  id: string;
+  definition: unknown;
+}
+
 @Injectable()
 export class FlowValidationService {
   private readonly logger = new Logger('FlowValidationService');
@@ -78,10 +83,10 @@ export class FlowValidationService {
 
     // Step 8: Validate at least one executable step exists
     const hasAction = definition.steps.some((s) =>
-      s.type === 'action' || s.type === 'code' || s.type === 'wait_for_approval',
+      s.type === 'action' || s.type === 'code' || s.type === 'wait_for_approval' || s.type === 'sub_flow',
     );
     if (!hasAction) {
-      errors.push('Flow must have at least one action or approval step');
+      errors.push('Flow must have at least one action, sub-flow, or approval step');
     }
 
     // Step 9: Validate timeout values
@@ -103,6 +108,80 @@ export class FlowValidationService {
         }
       }
     }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+    };
+  }
+
+  validateSubFlowReferences(
+    definition: FlowDefinitionDto,
+    workspaceFlows: WorkspaceFlowDefinitionRef[],
+    currentFlowId?: string,
+  ): FlowValidationResult {
+    const errors: string[] = [];
+    const rootFlowId = currentFlowId || definition.id;
+    const flowMap = new Map<string, FlowDefinitionDto & { published?: boolean }>();
+
+    for (const flow of workspaceFlows) {
+      const candidate = flow.definition as FlowDefinitionDto & { published?: boolean };
+      if (candidate && typeof candidate === 'object') {
+        flowMap.set(flow.id, candidate);
+      }
+    }
+
+    flowMap.set(rootFlowId, definition);
+
+    const walk = (
+      flowId: string,
+      stack: string[],
+      visiting: Set<string>,
+    ): void => {
+      const flowDefinition = flowMap.get(flowId);
+      if (!flowDefinition || !Array.isArray(flowDefinition.steps)) {
+        return;
+      }
+
+      for (const step of flowDefinition.steps) {
+        if (step.type !== 'sub_flow') {
+          continue;
+        }
+
+        const subFlowId = step.sub_flow_id?.trim();
+        if (!subFlowId) {
+          errors.push(`Sub-flow step "${step.id}" must reference a published flow id`);
+          continue;
+        }
+
+        const targetFlow = flowMap.get(subFlowId);
+        if (!targetFlow) {
+          errors.push(`Sub-flow step "${step.id}" references unknown flow "${subFlowId}"`);
+          continue;
+        }
+
+        if (!targetFlow.published) {
+          errors.push(`Sub-flow step "${step.id}" references unpublished flow "${subFlowId}"`);
+        }
+
+        if (subFlowId === rootFlowId) {
+          errors.push(`Sub-flow step "${step.id}" cannot reference the flow being saved (${rootFlowId})`);
+          continue;
+        }
+
+        if (visiting.has(subFlowId)) {
+          const cyclePath = [...stack, subFlowId].join(' -> ');
+          errors.push(`Circular sub-flow reference detected: ${cyclePath}`);
+          continue;
+        }
+
+        visiting.add(subFlowId);
+        walk(subFlowId, [...stack, subFlowId], visiting);
+        visiting.delete(subFlowId);
+      }
+    };
+
+    walk(rootFlowId, [rootFlowId], new Set([rootFlowId]));
 
     return {
       valid: errors.length === 0,
@@ -364,6 +443,23 @@ export class FlowValidationService {
       );
       throw new BadRequestException({
         message: 'Flow definition validation failed',
+        errors: result.errors,
+      });
+    }
+  }
+
+  validateSubFlowReferencesOrThrow(
+    definition: FlowDefinitionDto,
+    workspaceFlows: WorkspaceFlowDefinitionRef[],
+    currentFlowId?: string,
+  ): void {
+    const result = this.validateSubFlowReferences(definition, workspaceFlows, currentFlowId);
+    if (!result.valid) {
+      this.logger.error(
+        `Sub-flow validation failed: ${result.errors.join('; ')}`,
+      );
+      throw new BadRequestException({
+        message: 'Sub-flow validation failed',
         errors: result.errors,
       });
     }

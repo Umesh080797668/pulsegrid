@@ -151,8 +151,18 @@ export class FlowsService implements OnModuleDestroy {
    */
   async createFlow(dto: CreateFlowDto): Promise<Flow> {
     try {
-      // Validate flow definition at NestJS layer before sending to Rust
+      const workspaceFlows = await this.listFlows(dto.workspaceId);
+      const candidateFlow = {
+        id: dto.definition.id,
+        definition: dto.definition,
+      };
+
       this.validationService.validateFlowDefinitionOrThrow(dto.definition);
+      this.validationService.validateSubFlowReferencesOrThrow(
+        dto.definition,
+        [...workspaceFlows.filter((flow) => flow.id !== candidateFlow.id).map((flow) => ({ id: flow.id, definition: flow.definition })), candidateFlow],
+        candidateFlow.id,
+      );
 
       this.logger.log(
         `Creating flow "${dto.name}" in workspace ${dto.workspaceId}`,
@@ -184,7 +194,18 @@ export class FlowsService implements OnModuleDestroy {
     try {
       // Validate new definition if provided
       if (dto.definition) {
+        const workspaceFlows = await this.listFlows(workspaceId);
+        const candidateFlow = {
+          id,
+          definition: dto.definition,
+        };
+
         this.validationService.validateFlowDefinitionOrThrow(dto.definition);
+        this.validationService.validateSubFlowReferencesOrThrow(
+          dto.definition,
+          [...workspaceFlows.filter((flow) => flow.id !== id).map((flow) => ({ id: flow.id, definition: flow.definition })), candidateFlow],
+          id,
+        );
       }
 
       this.logger.log(`Updating flow ${id}`);

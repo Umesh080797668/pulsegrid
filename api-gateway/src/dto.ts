@@ -206,6 +206,15 @@ export class FlowStepDto {
   code?: string;
 
   @IsOptional()
+  @IsString()
+  @MinLength(1)
+  sub_flow_id?: string;
+
+  @IsOptional()
+  @IsString()
+  sub_flow_input?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   timeout_ms?: number;
@@ -263,6 +272,10 @@ export class FlowDefinitionDto {
   @IsOptional()
   @IsString()
   version?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  published?: boolean;
 }
 
 export class CustomConnectorContractDto {

@@ -365,7 +365,29 @@ impl FlowExecutor {
                                 };
                             }
 
+                            let nested_input = if let Some(template) = step_clone.sub_flow_input.as_deref() {
+                                if template.trim().is_empty() {
+                                    event_clone.data.clone()
+                                } else {
+                                    match executor.transform_data(template, &outputs_snapshot, &event_clone) {
+                                        Ok(value) => value,
+                                        Err(error) => {
+                                            return StepExecutionResult {
+                                                step_id: step_clone.id.clone(),
+                                                status: "failed".to_string(),
+                                                output: Value::Null,
+                                                error: Some(format!("failed to render sub_flow_input: {}", error)),
+                                                duration_ms: 0,
+                                            };
+                                        }
+                                    }
+                                }
+                            } else {
+                                event_clone.data.clone()
+                            };
+
                             let mut nested_event = event_clone.clone();
+                            nested_event.data = nested_input;
                             nested_event.sub_flow_depth = Some(current_depth + 1);
 
                             match executor
@@ -834,7 +856,29 @@ impl FlowExecutor {
                     };
                 }
 
+                let nested_input = if let Some(template) = step.sub_flow_input.as_deref() {
+                    if template.trim().is_empty() {
+                        event.data.clone()
+                    } else {
+                        match self.transform_data(template, step_outputs, event) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                return StepExecutionResult {
+                                    step_id: step.id.clone(),
+                                    status: "failed".to_string(),
+                                    output: Value::Null,
+                                    error: Some(format!("failed to render sub_flow_input: {}", error)),
+                                    duration_ms: started.elapsed().as_millis() as i32,
+                                };
+                            }
+                        }
+                    }
+                } else {
+                    event.data.clone()
+                };
+
                 let mut nested_event = event.clone();
+                nested_event.data = nested_input;
                 nested_event.sub_flow_depth = Some(current_depth + 1);
 
                 match self.execute_flow(&sub_def, &nested_event, current_depth + 1, HashMap::new()).await {

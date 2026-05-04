@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { apiBase, authenticatedFetch } from '../../lib/api';
 import { useDashboardStore } from '../../lib/store';
 
@@ -10,6 +11,9 @@ type Flow = {
   description?: string;
   enabled: boolean;
   run_count: number;
+  definition?: {
+    published?: boolean;
+  };
 };
 
 export default function FlowsPage() {
@@ -103,7 +107,12 @@ export default function FlowsPage() {
             <tbody>
               {flows.map((flow) => (
                 <tr key={flow.id}>
-                  <td style={{ fontWeight: 600 }}>{flow.name}</td>
+                  <td style={{ fontWeight: 600 }}>
+                    <Link href={`/flows/${flow.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>{flow.name}</Link>
+                    {flow.definition?.published ? (
+                      <span className="badge b-accent" style={{ marginLeft: 8, fontSize: 10 }}>published</span>
+                    ) : null}
+                  </td>
                   <td>
                     <span className={`badge ${flow.enabled ? 'b-success' : 'b-neutral'}`}>
                       <span className="badge-dot" />{flow.enabled ? 'Enabled' : 'Disabled'}
@@ -112,6 +121,7 @@ export default function FlowsPage() {
                   <td>{flow.run_count}</td>
                   <td>{flow.description || '—'}</td>
                   <td>
+                    <Link className="btn btn-secondary btn-sm" href={`/flows/${flow.id}`}>Edit</Link>
                     <button className="btn btn-danger btn-sm" onClick={() => removeFlow(flow.id)}>Delete</button>
                     <button className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={() => analyseLastFailure(flow.id)}>Analyse with AI</button>
                   </td>
