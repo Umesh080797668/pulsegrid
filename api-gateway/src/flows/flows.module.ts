@@ -4,6 +4,7 @@ import { join } from 'path';
 import { FlowsController } from './flows.controller';
 import { FlowsService } from './flows.service';
 import { FlowValidationService } from './flow-validation.service';
+import { FlowVersionsService } from './flow-versions.service';
 import { AuthModule } from '../auth/auth.module';
 import { ConnectorsModule } from '../connectors/connectors.module';
 
@@ -24,7 +25,7 @@ import { ConnectorsModule } from '../connectors/connectors.module';
     ConnectorsModule,
   ],
   controllers: [FlowsController],
-  providers: [FlowsService, FlowValidationService],
-  exports: [FlowsService, FlowValidationService],
+  providers: [FlowsService, FlowValidationService, FlowVersionsService],
+  exports: [FlowsService, FlowValidationService, FlowVersionsService],
 })
 export class FlowsModule {}

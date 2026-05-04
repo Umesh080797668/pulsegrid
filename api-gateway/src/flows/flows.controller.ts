@@ -14,6 +14,7 @@ import {
 import { CreateFlowDto, UpdateFlowDto } from '../dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { FlowsService } from './flows.service';
+import { FlowVersionsService } from './flow-versions.service';
 import { Request as ExpressRequest } from 'express';
 
 @Controller('flows')
@@ -21,7 +22,7 @@ import { Request as ExpressRequest } from 'express';
 export class FlowsController {
   private readonly logger = new Logger('FlowsController');
 
-  constructor(private flowsService: FlowsService) {}
+  constructor(private flowsService: FlowsService, private flowVersionsService: FlowVersionsService) {}
 
   /**
    * List all flows for the authenticated workspace
@@ -122,7 +123,20 @@ export class FlowsController {
       const workspaceId = this.extractWorkspaceId(req);
       this.logger.log(`Updating flow ${id}`);
 
+      // capture user id for versioning
+      const user = (req as ExpressRequest & { user?: any }).user;
+      const userId = user?.id || null;
+
       const flow = await this.flowsService.updateFlow(id, updateFlowDto, workspaceId);
+
+      // create a version snapshot when definition provided
+      if (updateFlowDto.definition) {
+        try {
+          await this.flowVersionsService.createVersion(id, updateFlowDto.definition, userId, updateFlowDto.note || null);
+        } catch (vErr) {
+          this.logger.error(`Failed to create flow version for ${id}:`, vErr);
+        }
+      }
 
       return {
         statusCode: 200,
@@ -268,6 +282,84 @@ export class FlowsController {
       this.logger.error(`Error replaying event for flow ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * List versions for a flow
+   * GET /flows/:id/versions
+   */
+  @Get(':id/versions')
+  async listVersions(@Param('id') id: string, @Request() req: ExpressRequest) {
+    const workspaceId = this.extractWorkspaceId(req);
+    const rows = await this.flowVersionsService.listVersions(id);
+    return rows;
+  }
+
+  /**
+   * Get diff between a saved version and current flow
+   * GET /flows/:id/versions/:versionId/diff?targetVersionId=
+   */
+  @Get(':id/versions/:versionId/diff')
+  async getVersionDiff(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @Request() req: ExpressRequest,
+  ) {
+    const workspaceId = this.extractWorkspaceId(req);
+    const qp = new URL(req.url, 'http://localhost');
+    const targetVersionId = qp.searchParams.get('targetVersionId');
+
+    const baseVersion = await this.flowVersionsService.getVersionById(versionId);
+    if (!baseVersion) {
+      throw new BadRequestException('Version not found');
+    }
+
+    let compareDef: any = null;
+    if (targetVersionId) {
+      const target = await this.flowVersionsService.getVersionById(targetVersionId);
+      if (!target) throw new BadRequestException('Target version not found');
+      compareDef = target.definition;
+    } else {
+      const flow = await this.flowsService.getFlow(id, workspaceId);
+      compareDef = flow.definition;
+    }
+
+    const { diffFlowDefinitions } = await import('./flow-diff');
+    const diff = diffFlowDefinitions(baseVersion.definition, compareDef);
+    return diff;
+  }
+
+  /**
+   * Restore a flow to a previous version
+   * POST /flows/:id/rollback/:versionId
+   */
+  @Post(':id/rollback/:versionId')
+  async restoreVersion(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @Body() body: { note?: string },
+    @Request() req: ExpressRequest,
+  ) {
+    const workspaceId = this.extractWorkspaceId(req);
+    const user = (req as ExpressRequest & { user?: any }).user;
+    const userId = user?.id || null;
+
+    const version = await this.flowVersionsService.getVersionById(versionId);
+    if (!version) throw new BadRequestException('Version not found');
+
+    const updatedFlow = await this.flowsService.updateFlow(id, { definition: version.definition }, workspaceId);
+
+    try {
+      await this.flowVersionsService.createVersion(id, version.definition, userId, body?.note || `Rolled back to ${versionId}`);
+    } catch (vErr) {
+      this.logger.error('Failed to create version record after rollback', vErr);
+    }
+
+    return {
+      statusCode: 200,
+      message: 'Flow rolled back successfully',
+      data: updatedFlow,
+    };
   }
 
   /**

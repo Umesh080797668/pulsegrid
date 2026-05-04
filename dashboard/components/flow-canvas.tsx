@@ -108,12 +108,14 @@ export function FlowCanvas({
   catalog,
   flowLibrary = [],
   currentFlowId = '',
+  versionDiff = null,
 }: {
   definitionJson: string;
   onDefinitionJsonChange: (value: string) => void;
   catalog: ConnectorCatalogItem[];
   flowLibrary?: FlowRecord[];
   currentFlowId?: string;
+  versionDiff?: { added_nodes: string[]; removed_nodes: string[]; changed_nodes: string[] } | null;
 }) {
   const [selectedStepId, setSelectedStepId] = useState('');
 
@@ -477,6 +479,19 @@ export function FlowCanvas({
       const isCodeStep = step.type === 'code';
       const isSubFlowStep = step.type === 'sub_flow';
       const referencedSubFlow = isSubFlowStep && step.sub_flow_id ? publishedSubFlowLookup.get(step.sub_flow_id) : undefined;
+      
+      // Determine diff status if versionDiff is provided
+      let diffStatus: string | undefined;
+      if (versionDiff) {
+        if (versionDiff.added_nodes.includes(step.id)) {
+          diffStatus = 'added';
+        } else if (versionDiff.removed_nodes.includes(step.id)) {
+          diffStatus = 'removed';
+        } else if (versionDiff.changed_nodes.includes(step.id)) {
+          diffStatus = 'changed';
+        }
+      }
+      
       newNodes.push({
         id: step.id,
         position: { x: 0, y: 0 },
@@ -499,6 +514,7 @@ export function FlowCanvas({
           stepType: step.type,
           sourceLanguage: step.source_language || step.script_language || undefined,
           isCodeStep,
+          diffStatus,
         },
         type: step.type === 'code' ? 'codeNode' : step.type === 'loop' ? 'loopNode' : step.type === 'merge' ? 'mergeNode' : step.type === 'parallel' || step.type === 'parallel_split' ? 'parallelNode' : 'customNode',
         draggable: true,
@@ -529,7 +545,7 @@ export function FlowCanvas({
     const layouted = getLayoutedElements(newNodes, newEdges);
     setNodes(layouted.nodes);
     setEdges(layouted.edges);
-  }, [definitionJson, parsed, publishedSubFlowLookup]);
+  }, [definitionJson, parsed, publishedSubFlowLookup, versionDiff]);
 
   const nodeTypes = useMemo(() => ({
     customNode: CustomNode, loopNode: LoopNode, parallelNode: ParallelNode, mergeNode: MergeNode, codeNode: CodeNode
@@ -810,20 +826,36 @@ function CustomNode({ data, selected }: NodeProps) {
   const stepType = typeof data.stepType === 'string' ? data.stepType : 'action';
   const borderColor = stepType === 'parallel' || stepType === 'parallel_split' ? '#22d674' : stepType === 'merge' ? '#8b5cf6' : stepType === 'loop' ? '#f59e0b' : stepType === 'sub_flow' ? '#8b5cf6' : '#7c9cff';
   
+  // Support diff highlighting passed as metadata
+  const diffStatus = typeof data.diffStatus === 'string' ? data.diffStatus : undefined;
+  let diffBorder = borderColor;
+  let diffBg = selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)';
+  
+  if (diffStatus === 'added') {
+    diffBorder = '#22d674';
+    diffBg = selected ? 'rgba(34,214,116,0.2)' : 'rgba(34,214,116,0.08)';
+  } else if (diffStatus === 'removed') {
+    diffBorder = '#ff6b6b';
+    diffBg = selected ? 'rgba(255,107,107,0.2)' : 'rgba(255,107,107,0.08)';
+  } else if (diffStatus === 'changed') {
+    diffBorder = '#ffd166';
+    diffBg = selected ? 'rgba(255,209,102,0.2)' : 'rgba(255,209,102,0.08)';
+  }
+  
   return (
     <div
       style={{
         minWidth: 220,
         padding: 14,
         borderRadius: 14,
-        border: selected ? `1px solid ${borderColor}` : '1px solid rgba(255,255,255,0.12)',
-        background: selected ? `${borderColor}20` : 'rgba(255,255,255,0.04)',
-        boxShadow: selected ? `0 0 0 1px ${borderColor}3d` : 'none',
+        border: selected ? `2px solid ${diffBorder}` : `1px solid ${diffBorder}`,
+        background: diffBg,
+        boxShadow: selected ? `0 0 0 1px ${diffBorder}3d` : 'none',
         backgroundColor: '#1a1a1a', 
         color: '#fff',
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: borderColor, width: 8, height: 8 }} />
+      <Handle type="target" position={Position.Left} style={{ background: diffBorder, width: 8, height: 8 }} />
       <div className="muted" style={{ fontSize: 12, marginBottom: 6, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
         {typeof data.kind === "string" ? data.kind : "Step"}
       </div>
@@ -834,12 +866,17 @@ function CustomNode({ data, selected }: NodeProps) {
         {typeof data.subtitle === "string" ? data.subtitle : "Subtitle"}
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-        <span className="badge b-neutral" style={{ fontSize: 10, borderColor, color: borderColor }}>
+        <span className="badge b-neutral" style={{ fontSize: 10, borderColor: diffBorder, color: diffBorder }}>
           {stepType}
         </span>
+        {diffStatus && (
+          <span className="badge" style={{ fontSize: 10, color: diffBorder, borderColor: diffBorder, background: diffBg }}>
+            {diffStatus}
+          </span>
+        )}
       </div>
       
-      <Handle type="source" position={Position.Right} style={{ top: '50%', background: borderColor, width: 8, height: 8 }} />
+      <Handle type="source" position={Position.Right} style={{ top: '50%', background: diffBorder, width: 8, height: 8 }} />
     </div>
   );
 }

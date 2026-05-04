@@ -377,6 +377,7 @@ export default function FlowEditorPage() {
         catalog={catalog}
         flowLibrary={reusableLibrary}
         currentFlowId={flowId}
+        versionDiff={versionDiff}
       />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(360px, 1fr)', gap: 16 }}>
