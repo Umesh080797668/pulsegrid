@@ -132,6 +132,7 @@ impl FlowExecutor {
     }
 
     /// Update connector health metrics in database
+    #[allow(dead_code)]
     async fn update_connector_health(
         &self,
         connector_id: &str,
@@ -167,6 +168,7 @@ impl FlowExecutor {
     }
 
     /// Record connector call latency for metrics
+    #[allow(dead_code)]
     async fn record_connector_latency(
         &self,
         connector_id: &str,
@@ -197,13 +199,15 @@ impl FlowExecutor {
     }
 
     /// Check if connector is healthy and close circuit if so
-    pub async fn check_connector_health(&self, connector_id: &str, workspace_id: uuid::Uuid) -> Result<bool, String> {
+    #[allow(dead_code)]
+    pub async fn check_connector_health(&self, _connector_id: &str, _workspace_id: uuid::Uuid) -> Result<bool, String> {
         // This would perform a test call to the connector
         // For now, just return true (implementation depends on specific connector)
         Ok(true)
     }
 
     /// Mark flows as paused due to circuit open
+    #[allow(dead_code)]
     async fn pause_flows_for_circuit(
         &self,
         connector_id: &str,
@@ -234,6 +238,7 @@ impl FlowExecutor {
     }
 
     /// Resume flows when circuit closes
+    #[allow(dead_code)]
     async fn resume_flows_for_circuit(
         &self,
         connector_id: &str,
@@ -264,11 +269,12 @@ impl FlowExecutor {
     }
 
     /// Handle approval step execution
+    #[allow(dead_code)]
     pub async fn execute_approval_step(
         &self,
         step: &FlowStep,
         flow_run_id: uuid::Uuid,
-        workspace_id: uuid::Uuid,
+        _workspace_id: uuid::Uuid,
         step_outputs: &HashMap<String, Value>,
         event: &PulseEvent,
     ) -> Result<Value, String> {
@@ -304,18 +310,11 @@ impl FlowExecutor {
         let expires_at: chrono::DateTime<chrono::Utc> = approval_record.get("expires_at");
 
         // Send notifications through configured channels
-        let approval_url = format!(
-            "{}/approvals/{}",
-            std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()),
-            token
-        );
-
         // Send to Slack if configured
         if approval_config.notification_channels.contains(&"slack".to_string()) {
             let _ = Self::send_slack_approval_message(
                 &approval_config.title,
                 &approval_config.description.as_deref().unwrap_or("Approval required"),
-                &approval_url,
                 &token,
             ).await;
         }
@@ -330,10 +329,10 @@ impl FlowExecutor {
     }
 
     /// Send Slack approval message
+    #[allow(dead_code)]
     async fn send_slack_approval_message(
         title: &str,
         description: &str,
-        approval_url: &str,
         token: &uuid::Uuid,
     ) -> Result<(), String> {
         let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
@@ -395,6 +394,7 @@ impl FlowExecutor {
     }
 
     /// Resume flow execution from approval
+    #[allow(dead_code)]
     pub async fn resume_from_approval(
         &self,
         flow_run_id: uuid::Uuid,
