@@ -502,6 +502,30 @@ export function FlowCanvas({
       draggable: true,
     });
 
+    // If the diff contains removed nodes that no longer exist in the current
+    // parsed definition, render them as faded "ghost" nodes so users can see
+    // what was removed in the selected version.
+    const existingStepIds = new Set(parsed.steps.map(s => s.id));
+    if (versionDiff && Array.isArray(versionDiff.removed_nodes)) {
+      versionDiff.removed_nodes.forEach((removedId) => {
+        if (!existingStepIds.has(removedId)) {
+          newNodes.push({
+            id: `removed-${removedId}`,
+            position: { x: 0, y: 0 },
+            data: {
+              kind: 'Removed',
+              title: `Removed: ${removedId}`,
+              subtitle: removedId,
+              stepType: 'removed',
+              diffStatus: 'removed',
+            },
+            type: 'customNode',
+            draggable: false,
+          });
+        }
+      });
+    }
+
     parsed.steps.forEach((step, index) => {
       const isCodeStep = step.type === 'code';
       const isSubFlowStep = step.type === 'sub_flow';
@@ -510,11 +534,11 @@ export function FlowCanvas({
       // Determine diff status if versionDiff is provided
       let diffStatus: string | undefined;
       if (versionDiff) {
-        if (versionDiff.added_nodes.includes(step.id)) {
+        if (Array.isArray(versionDiff.added_nodes) && versionDiff.added_nodes.includes(step.id)) {
           diffStatus = 'added';
-        } else if (versionDiff.removed_nodes.includes(step.id)) {
+        } else if (Array.isArray(versionDiff.removed_nodes) && versionDiff.removed_nodes.includes(step.id)) {
           diffStatus = 'removed';
-        } else if (versionDiff.changed_nodes.includes(step.id)) {
+        } else if (Array.isArray(versionDiff.changed_nodes) && versionDiff.changed_nodes.includes(step.id)) {
           diffStatus = 'changed';
         }
       }
