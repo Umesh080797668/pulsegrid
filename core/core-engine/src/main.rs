@@ -845,6 +845,43 @@ async fn refresh_workspace_patterns(
     Ok(patterns)
 }
 
+/// Background job that runs pattern detection every 15 minutes for all workspaces
+/// This replaces the previous event-count based trigger to support low-traffic workspaces
+async fn start_pattern_detection_worker(pool: sqlx::PgPool) {
+    loop {
+        // Sleep for 15 minutes (900 seconds)
+        tokio::time::sleep(Duration::from_secs(900)).await;
+        
+        // Fetch all workspace IDs
+        let workspace_ids = match sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM workspaces")
+            .fetch_all(&pool)
+            .await {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("Failed to fetch workspaces for pattern detection: {}", e);
+                continue;
+            }
+        };
+
+        println!("🔍 Starting pattern detection run for {} workspace(s)", workspace_ids.len());
+        
+        for workspace_id in workspace_ids {
+            match refresh_workspace_patterns(&pool, workspace_id).await {
+                Ok(patterns) => {
+                    if !patterns.is_empty() {
+                        println!("✅ Pattern detection: found {} patterns for workspace {}", patterns.len(), workspace_id);
+                    }
+                }
+                Err((_, e)) => {
+                    eprintln!("❌ Pattern detection failed for workspace {}: {}", workspace_id, e);
+                }
+            }
+        }
+        
+        println!("✓ Pattern detection run completed");
+    }
+}
+
 #[tokio::main]
 async fn main() {
     println!("Starting PulseCore Engine...");
@@ -1032,6 +1069,7 @@ async fn main() {
     let polling_pool = pool.clone();
     let approval_expiry_pool = pool.clone();
     let health_check_pool = pool.clone();
+    let pattern_detection_pool = pool.clone();
     let redis_url_clone = redis_url.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1044,7 +1082,8 @@ async fn main() {
                 start_schedule_worker(cron_pool, redis_url_clone.clone()),
                 start_polling_worker(polling_pool, redis_url_clone.clone()),
                 start_approval_expiry_worker(approval_expiry_pool),
-                executor::start_connector_health_check_worker(health_check_pool)
+                executor::start_connector_health_check_worker(health_check_pool),
+                start_pattern_detection_worker(pattern_detection_pool)
             );
         });
     });
@@ -1724,170 +1763,8 @@ async fn start_event_listener(
                                         continue;
                                     }
 
-                                    let (event_count, _) = get_monthly_usage(&pg_pool, event.tenant_id).await.unwrap_or((0, 0));
-                                    if event_count % 100 == 0 && event_count > 0 {
-                                        // Batch pattern detection: collect recent flow_runs + step logs and analyze
-                                        let recent_rows = sqlx::query!(
-                                            r#"
-                                            SELECT fr.id, fr.flow_id, fr.started_at, fr.status, fr.steps_log, f.name AS flow_name
-                                            FROM flow_runs fr
-                                            LEFT JOIN flows f ON f.id = fr.flow_id
-                                            WHERE fr.workspace_id = $1 AND fr.environment = $2
-                                            ORDER BY fr.started_at DESC
-                                            LIMIT 500
-                                            "#,
-                                            event.tenant_id as _,
-                                            execution_environment.as_str(),
-                                        )
-                                        .fetch_all(&pg_pool)
-                                        .await
-                                        .unwrap_or_default();
-
-                                        let mut entries: Vec<core_ai::pattern_detection::EventEntry> = Vec::new();
-
-                                        for r in recent_rows.into_iter() {
-                                            let started_at: chrono::DateTime<chrono::Utc> = r.started_at;
-                                            let flow_name = if r.flow_name.is_empty() {
-                                                r.flow_id
-                                                    .map(|id| id.to_string())
-                                                    .unwrap_or_else(|| "unknown".to_string())
-                                            } else {
-                                                r.flow_name
-                                            };
-                                            let status = r.status.clone();
-
-                                            // Add a run-level event
-                                            entries.push(
-                                                core_ai::pattern_detection::EventBuilder::new(
-                                                    format!("flow.{}.run.{}", flow_name, status),
-                                                    "flow"
-                                                )
-                                                .with_timestamp(started_at)
-                                                .with_action(status.clone())
-                                                .build()
-                                            );
-
-                                            // If steps_log exists, try to extract step-level events
-                                            if let Some(steps_val) = r.steps_log {
-                                                if let Some(arr) = steps_val.as_array() {
-                                                    for step in arr.iter() {
-                                                        let step_id = step.get("step_id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                                                        let step_status = step.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                                        let step_duration = step.get("duration_ms").and_then(|v| v.as_u64()).map(|u| u as u32);
-                                                        let step_error = step.get("error").and_then(|v| v.as_bool()).unwrap_or(false);
-                                                        
-                                                        entries.push(
-                                                            core_ai::pattern_detection::EventBuilder::new(
-                                                                format!("flow.{}.step.{}", flow_name, step_id),
-                                                                "step"
-                                                            )
-                                                            .with_timestamp(started_at)
-                                                            .with_action(step_status)
-                                                            .with_step_duration_ms(step_duration.unwrap_or(0))
-                                                            .with_error(step_error)
-                                                            .build()
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // Build tenant context from metadata (query tenant plan, connector/flow counts)
-                                        let tenant_ctx = core_ai::pattern_detection::TenantContextBuilder::new(event.tenant_id)
-                                            .plan(1) // 1=pro (default; should query workspace_configs if available)
-                                            .avg_daily_events(entries.len() as f32)
-                                            .avg_flow_success_rate(0.95)
-                                            .connector_count(10)
-                                            .flow_count(50)
-                                            .account_age_days(180)
-                                            .historical_anomaly_rate(0.05)
-                                            .enterprise_flag(false)
-                                            .build();
-
-                                        // Call into PulseAI analyzer (synchronous, returns Result)
-                                        match core_ai::pattern_detection::analyze_event_history(event.tenant_id, entries, tenant_ctx) {
-                                            Ok(patterns) => {
-                                                if patterns.is_empty() {
-                                                    println!("Pattern detection: no patterns for workspace {}", event.tenant_id);
-                                                } else {
-                                                    // Persist patterns
-                                                    let mut tx = match pg_pool.begin().await {
-                                                        Ok(t) => t,
-                                                        Err(e) => {
-                                                            eprintln!("Failed to begin tx for pattern insert: {}", e);
-                                                            continue;
-                                                        }
-                                                    };
-
-                                                    let mut anomaly_events: Vec<(String, f32)> = Vec::new();
-
-                                                    for p in patterns.into_iter() {
-                                                        let db_id = uuid::Uuid::new_v4();
-                                                        let pattern_type_str = match p.pattern_type {
-                                                            core_ai::pattern_detection::PatternType::RepeatedAction => "repeated_action",
-                                                            core_ai::pattern_detection::PatternType::EventCorrelation => "correlation",
-                                                            core_ai::pattern_detection::PatternType::Anomaly => "anomaly",
-                                                            core_ai::pattern_detection::PatternType::TimeBased => "time_based",
-                                                        };
-
-                                                        let _ = sqlx::query(
-                                                            r#"
-                                                            INSERT INTO ai_detected_patterns (
-                                                                id, workspace_id, pattern_type, description, confidence, frequency,
-                                                                events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at, updated_at
-                                                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
-                                                            "#,
-                                                        )
-                                                        .bind(db_id)
-                                                        .bind(event.tenant_id)
-                                                        .bind(pattern_type_str)
-                                                        .bind(&p.description)
-                                                        .bind(p.confidence)
-                                                        .bind(&p.frequency)
-                                                        .bind(serde_json::json!(p.events_involved))
-                                                        .bind(&p.suggested_trigger)
-                                                        .bind(serde_json::json!(p.suggested_actions))
-                                                        .bind(serde_json::json!(serde_json::Value::Null))
-                                                        .bind(chrono::Utc::now())
-                                                        .execute(&mut *tx)
-                                                        .await;
-
-                                                        // Queue anomaly alerts for realtime delivery after the DB transaction commits.
-                                                        if matches!(p.pattern_type, core_ai::pattern_detection::PatternType::Anomaly) && p.confidence > 0.8 {
-                                                            anomaly_events.push((p.description, p.confidence));
-                                                        }
-                                                    }
-
-                                                    if let Err(e) = tx.commit().await {
-                                                        eprintln!("Failed to commit pattern inserts: {}", e);
-                                                    } else {
-                                                        let workspace_stream = workspace_stream_key_for_environment(
-                                                            event.tenant_id,
-                                                            execution_environment,
-                                                        );
-                                                        for (description, confidence) in anomaly_events.into_iter() {
-                                                            let anomaly_payload = serde_json::json!({
-                                                                "event_type": "anomaly_detected",
-                                                                "description": description,
-                                                                "confidence": confidence,
-                                                            });
-
-                                                            let _ = con
-                                                                .xadd::<_, _, _, _, ()>(
-                                                                    &workspace_stream,
-                                                                    "*",
-                                                                    &[("payload", serde_json::to_string(&anomaly_payload).unwrap())],
-                                                                )
-                                                                .await;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Err(err) => {
-                                                eprintln!("Pattern detection failed for workspace {}: {}", event.tenant_id, err);
-                                            }
-                                        }
-                                    }
+                                    // Pattern detection is now handled by a separate background job (15-minute intervals)
+                                    // No longer triggered by event count to support low-traffic workspaces
 
                                     // Check cache for flow definitions first
                                     let cache_key = format!(

@@ -17,6 +17,7 @@ import 'screens/approvals_screen.dart';
 import 'screens/alert_centre_screen.dart';
 import 'services/api_service.dart';
 import 'services/home_widget_service.dart';
+import 'services/auth_service.dart';
 
 void main() {
   runApp(const ProviderScope(child: MyApp()));
@@ -29,15 +30,44 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final ApiService _apiService = ApiService();
+  final AuthService _authService = AuthService();
   StreamSubscription<List<SharedMediaFile>>? _shareStreamSubscription;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrapSharing();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When app comes to foreground, check session validity
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('App resumed, checking biometric session...');
+      _authService.onAppResumed();
+      
+      // Schedule a check for session expiry after short delay to allow UI to render
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _checkSessionValidity();
+      });
+    }
+  }
+
+  Future<void> _checkSessionValidity() async {
+    final context = _navigatorKey.currentContext;
+    if (!mounted || context == null) return;
+
+    // Check if session has expired and prompt for re-auth
+    if (_authService.biometricEnabled && !await _authService.checkAndPromptIfExpired()) {
+      // If re-auth failed, redirect to home
+      if (mounted) {
+        context.go('/');
+      }
+    }
   }
 
   Future<void> _bootstrapSharing() async {
@@ -159,6 +189,7 @@ class _MyAppState extends State<MyApp> {
   @override
   void dispose() {
     _shareStreamSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
@@ -220,13 +251,118 @@ class _MyAppState extends State<MyApp> {
       ],
     );
 
-    return MaterialApp.router(
+    return MaterialApp(
       title: 'PulseGrid Mobile',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      routerConfig: router,
+      home: AuthGate(authService: _authService, router: router),
+    );
+  }
+}
+
+/// Widget that gates app access behind biometric authentication
+class AuthGate extends StatefulWidget {
+  final AuthService authService;
+  final GoRouter router;
+
+  const AuthGate({
+    required this.authService,
+    required this.router,
+    super.key,
+  });
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  @override
+  void initState() {
+    super.initState();
+    _promptAuthIfNeeded();
+  }
+
+  Future<void> _promptAuthIfNeeded() async {
+    // Only prompt if biometric auth is enabled
+    if (!widget.authService.biometricEnabled || widget.authService.isAuthenticated) {
+      return;
+    }
+
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    if (!mounted) return;
+    
+    // Prompt for authentication
+    final authenticated = await widget.authService.authenticate();
+    
+    if (mounted && !authenticated && widget.authService.biometricEnabled) {
+      // Show a dialog explaining auth is required
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Authentication Required'),
+          content: const Text('Biometric authentication is required to access PulseGrid.'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _promptAuthIfNeeded();
+              },
+              child: const Text('Try Again'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.authService,
+      builder: (context, child) {
+        // If biometric is enabled but not authenticated, show lock screen
+        if (widget.authService.biometricEnabled && !widget.authService.isAuthenticated) {
+          return Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.lock_outline,
+                    size: 64,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    'PulseGrid',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Biometric authentication required',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 32),
+                  FilledButton(
+                    onPressed: _promptAuthIfNeeded,
+                    child: const Text('Unlock'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        // User is authenticated or biometric is not enabled, render router
+        return Router(
+          routerDelegate: widget.router.routerDelegate,
+          backButtonDispatcher: widget.router.backButtonDispatcher,
+        );
+      },
     );
   }
 }

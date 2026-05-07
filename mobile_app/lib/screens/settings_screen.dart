@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:local_auth/local_auth.dart';
 import '../services/home_widget_service.dart';
+import '../services/auth_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -11,51 +11,14 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final LocalAuthentication _localAuth = LocalAuthentication();
-  bool _biometricReady = false;
   bool _widgetUpdated = false;
-
-  Future<void> _enableBiometrics() async {
-    try {
-      final supported = await _localAuth.isDeviceSupported();
-      final hasBiometrics = await _localAuth.canCheckBiometrics;
-
-      if (!supported || !hasBiometrics) {
-        _showSnackBar('This device does not support biometrics.');
-        return;
-      }
-
-      final success = await _localAuth.authenticate(
-        localizedReason: 'Confirm biometric access for PulseGrid settings',
-        options: const AuthenticationOptions(biometricOnly: false),
-      );
-
-      setState(() {
-        _biometricReady = success;
-      });
-
-      await HomeWidgetService.syncSnapshot(
-        title: 'PulseGrid',
-        message: success
-            ? 'Settings protected by biometrics'
-            : 'Biometric protection is not active',
-        status: success ? 'Biometrics enabled' : 'Biometrics inactive',
-      );
-
-      _showSnackBar(
-        success ? 'Biometric protection enabled.' : 'Authentication cancelled.',
-      );
-    } catch (e) {
-      _showSnackBar('Biometric auth error: $e');
-    }
-  }
 
   Future<void> _refreshWidgetPayload() async {
     try {
       await HomeWidgetService.syncSnapshot(
         title: 'PulseGrid',
-        message: 'Biometrics ${_biometricReady ? 'enabled' : 'inactive'}',
-        status: 'Settings updated at ${DateTime.now().toLocal().toIso8601String()}',
+        message: 'Settings updated with latest data.',
+        status: 'Updated at ${DateTime.now().toLocal().toIso8601String()}',
       );
 
       setState(() {
@@ -70,6 +33,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _logout(AuthService authService) async {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Logout'),
+        content: const Text('Are you sure you want to logout? You will need to authenticate again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              await authService.logout();
+              if (mounted) {
+                Navigator.pop(context);
+                context.go('/');
+              }
+            },
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -88,16 +77,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           Card(
             child: ListTile(
-              leading: const Icon(Icons.fingerprint),
+              leading: const Icon(Icons.lock_outline),
               title: const Text('Biometric authentication'),
-              subtitle: Text(
-                _biometricReady
-                    ? 'Biometrics are enabled on this device.'
-                    : 'Use local_auth to protect sensitive actions.',
-              ),
-              trailing: FilledButton(
-                onPressed: _enableBiometrics,
-                child: Text(_biometricReady ? 'Re-check' : 'Enable'),
+              subtitle: const Text('Your app access is protected by biometric authentication.'),
+              trailing: TextButton(
+                onPressed: () {
+                  final authService = AuthService();
+                  _logout(authService);
+                },
+                child: const Text('Logout'),
               ),
             ),
           ),

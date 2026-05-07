@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:dio/dio.dart';
 import '../services/fcm_service.dart';
 import '../services/home_widget_service.dart';
@@ -13,10 +12,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final LocalAuthentication _localAuth = LocalAuthentication();
   final Dio _dio = Dio();
   final FcmService _fcmService = FcmService();
-  bool _authenticated = false;
   bool _widgetSynced = false;
   List<QuickFlow> _quickFlows = [];
 
@@ -37,41 +34,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _authenticate() async {
-    try {
-      final canCheckBiometrics = await _localAuth.canCheckBiometrics;
-      final isSupported = await _localAuth.isDeviceSupported();
-      if (!canCheckBiometrics || !isSupported) {
-        _showSnackBar('Biometrics are not available on this device.');
-        return;
-      }
-
-      final success = await _localAuth.authenticate(
-        localizedReason: 'Unlock PulseGrid with biometrics',
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: false,
-        ),
-      );
-
-      setState(() {
-        _authenticated = success;
-      });
-
-      await HomeWidgetService.syncSnapshot(
-        title: 'PulseGrid',
-        message: 'Biometric access ${success ? 'enabled' : 'not confirmed'}',
-        status: success ? 'Unlocked with biometrics' : 'Biometric prompt cancelled',
-      );
-
-      _showSnackBar(
-        success ? 'Biometric authentication succeeded.' : 'Authentication cancelled.',
-      );
-    } catch (e) {
-      _showSnackBar('Biometric auth failed: $e');
-    }
-  }
-
   Future<void> _syncWidget() async {
     try {
       // Try to fetch real digest data from backend
@@ -82,7 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await HomeWidgetService.syncSnapshot(
           title: 'PulseGrid',
           message: 'PulseGrid is ready for quick actions',
-          status: _authenticated ? 'Biometrics unlocked' : 'Biometrics locked',
+          status: 'Authenticated',
         );
       }
 
@@ -248,17 +210,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(height: 20),
-          _FeatureCard(
-            icon: Icons.fingerprint,
-            title: 'Biometric auth',
-            subtitle: _authenticated
-                ? 'Unlocked successfully on this device.'
-                : 'Tap to enable local_auth verification for sensitive actions.',
-            trailing: FilledButton(
-              onPressed: _authenticate,
-              child: Text(_authenticated ? 'Re-authenticate' : 'Unlock'),
-            ),
-          ),
+          _BiometricCard(),
           const SizedBox(height: 12),
           _FeatureCard(
             icon: Icons.home_work_outlined,
@@ -405,6 +357,22 @@ class _TimelineCard extends StatelessWidget {
     );
   }
 }
+
+/// Displays the biometric authentication status
+class _BiometricCard extends StatelessWidget {
+  const _BiometricCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _FeatureCard(
+      icon: Icons.fingerprint,
+      title: 'Biometric authentication',
+      subtitle: 'Your app access is protected by biometric authentication. Re-authentication is required after 30 minutes of background activity.',
+      trailing: SizedBox.shrink(),
+    );
+  }
+}
+
 class QuickFlow {
   final String id;
   final String name;
