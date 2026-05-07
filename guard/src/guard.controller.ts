@@ -12,10 +12,12 @@ import {
   Patch,
   Post,
   Query,
+  Headers,
 } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { Pool } from 'pg';
 import { GuardGithubActionService } from './actions/github-action.service';
+import { DashboardErrorBeaconCollector } from './collectors/dashboard.collector';
 
 @Controller('guard')
 export class GuardController implements OnModuleInit, OnModuleDestroy {
@@ -23,7 +25,10 @@ export class GuardController implements OnModuleInit, OnModuleDestroy {
   private redis: Redis | null = null;
   private pool: Pool | null = null;
 
-  constructor(private readonly githubActionService: GuardGithubActionService) {}
+  constructor(
+    private readonly githubActionService: GuardGithubActionService,
+    private readonly beaconCollector: DashboardErrorBeaconCollector,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
@@ -321,5 +326,49 @@ export class GuardController implements OnModuleInit, OnModuleDestroy {
     }
 
     return updated;
+  }
+
+  /**
+   * Error beacon endpoint for the Next.js dashboard.
+   * Frontend errors are reported here and processed as GuardAlerts.
+   */
+  @Post('beacon')
+  async reportDashboardError(
+    @Body() body: {
+      message: string;
+      stack: string;
+      url: string;
+      workspaceId?: string;
+    },
+    @Headers('user-agent') userAgent: string,
+  ) {
+    try {
+      const workspaceId = body.workspaceId || 'unknown';
+      const alertId = await this.beaconCollector.reportDashboardError(
+        workspaceId,
+        body.message,
+        body.stack,
+        body.url,
+        userAgent,
+      );
+      return { alertId, success: true };
+    } catch (err) {
+      this.logger.error('Failed to process dashboard error beacon', err);
+      return { success: false, error: String(err) };
+    }
+  }
+
+  /**
+   * Get recent dashboard errors for a workspace.
+   */
+  @Get('beacon/:workspaceId')
+  async getDashboardErrors(@Param('workspaceId') workspaceId: string) {
+    try {
+      const errors = await this.beaconCollector.getRecentErrors(workspaceId, 50);
+      return { errors };
+    } catch (err) {
+      this.logger.error('Failed to retrieve dashboard errors', err);
+      return { errors: [], error: String(err) };
+    }
   }
 }
