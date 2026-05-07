@@ -1,4 +1,5 @@
 import { AppController } from './app.controller';
+import { validateCatalogItem } from './connectorCatalog';
 
 describe('AppController catalog endpoints', () => {
   const mockService = {
@@ -33,6 +34,21 @@ describe('AppController catalog endpoints', () => {
     expect(catalog.count).toBeGreaterThan(10);
     expect(catalog.items.some((item) => item.connector === 'stripe')).toBe(true);
     expect(catalog.items.some((item) => item.connector === 'openai')).toBe(true);
+  });
+
+  it('catalog snapshot stays consistent', () => {
+    const controller = createController();
+    const catalog = controller.getConnectorCatalog();
+    // snapshot the items array only to avoid generatedAt instability
+    expect(catalog.items).toMatchSnapshot();
+  });
+
+  it('catalog items validate against catalog schema', () => {
+    const controller = createController();
+    const catalog = controller.getConnectorCatalog();
+    const items = catalog.items || [];
+    const problems = items.flatMap((it: any) => validateCatalogItem(it));
+    expect(problems).toHaveLength(0);
   });
 
   it('returns custom schema aliases consistent with catalog', () => {

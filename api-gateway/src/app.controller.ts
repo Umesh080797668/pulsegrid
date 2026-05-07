@@ -17,6 +17,7 @@ import {
 import { ManagementApiKeyGuard } from './management-api-key.guard';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RateLimitService } from './rate-limit.service';
+import { DEFAULT_CONNECTOR_CATALOG, getCatalogFromUrl, validateCatalogItem } from './connectorCatalog';
 
 interface PulseCoreService {
   triggerFlow(data: { workspaceId: string; flowId: string; payloadJson: string }): Observable<any>;
@@ -63,249 +64,8 @@ interface ConnectorOAuthInstallationRow {
   updated_at: Date;
 }
 
-const CONNECTOR_CATALOG: ConnectorCatalogItem[] = [
-  {
-    connector: 'http',
-    action: 'request',
-    category: 'custom',
-    auth: 'mixed',
-    required_input_fields: ['url'],
-    optional_input_fields: ['method', 'json_body', 'headers'],
-  },
-  {
-    connector: 'slack',
-    action: 'send_message',
-    category: 'communication',
-    auth: 'none',
-    required_input_fields: ['webhook_url', 'text'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'gmail',
-    action: 'send_email',
-    category: 'communication',
-    auth: 'oauth2',
-    required_input_fields: ['access_token', 'from', 'to', 'subject', 'body'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'github',
-    action: 'create_issue',
-    category: 'developer',
-    auth: 'oauth2',
-    required_input_fields: ['access_token', 'owner', 'repo', 'title'],
-    optional_input_fields: ['body'],
-  },
-  {
-    connector: 'telegram',
-    action: 'send_message',
-    category: 'communication',
-    auth: 'api_key',
-    required_input_fields: ['bot_token', 'chat_id', 'text'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'google_sheets',
-    action: 'append_rows',
-    category: 'productivity',
-    auth: 'oauth2',
-    required_input_fields: ['access_token', 'spreadsheet_id', 'range', 'values'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'notion',
-    action: 'create_page',
-    category: 'productivity',
-    auth: 'oauth2',
-    required_input_fields: ['access_token', 'database_id', 'properties'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'discord',
-    action: 'send_message',
-    category: 'communication',
-    auth: 'none',
-    required_input_fields: ['webhook_url', 'content'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'schedule',
-    action: 'next_run',
-    category: 'core',
-    auth: 'none',
-    required_input_fields: ['cron'],
-    optional_input_fields: ['from'],
-  },
-  {
-    connector: 'webhook',
-    action: 'verify_signature',
-    category: 'core',
-    auth: 'api_key',
-    required_input_fields: ['secret', 'raw_payload', 'provided_signature'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'custom',
-    action: 'call_api',
-    category: 'custom',
-    auth: 'mixed',
-    required_input_fields: ['endpoint_url'],
-    optional_input_fields: ['method', 'body', 'headers', 'bearer_token', 'api_key_header', 'api_key_value'],
-    notes: ['Use connector=custom or connector=custom_app for generic API actions.'],
-  },
-  {
-    connector: 'resend',
-    action: 'send_email',
-    category: 'communication',
-    auth: 'bearer',
-    required_input_fields: ['api_key', 'from', 'to', 'subject', 'html'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'openai',
-    action: 'chat_completion',
-    category: 'ai',
-    auth: 'bearer',
-    required_input_fields: ['api_key', 'messages'],
-    optional_input_fields: ['model', 'temperature', 'endpoint_url'],
-  },
-  {
-    connector: 'anthropic',
-    action: 'messages',
-    category: 'ai',
-    auth: 'api_key',
-    required_input_fields: ['api_key', 'messages'],
-    optional_input_fields: ['model', 'max_tokens', 'endpoint_url'],
-  },
-  {
-    connector: 'airtable',
-    action: 'create_record',
-    category: 'business',
-    auth: 'bearer',
-    required_input_fields: ['api_key', 'base_id', 'table', 'fields'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'hubspot',
-    action: 'create_contact',
-    category: 'business',
-    auth: 'bearer',
-    required_input_fields: ['access_token', 'properties'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'jira',
-    action: 'create_issue',
-    category: 'developer',
-    auth: 'bearer',
-    required_input_fields: ['domain', 'access_token', 'fields'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'linear',
-    action: 'graphql',
-    category: 'developer',
-    auth: 'bearer',
-    required_input_fields: ['api_key', 'query'],
-    optional_input_fields: ['variables'],
-  },
-  {
-    connector: 'asana',
-    action: 'create_task',
-    category: 'business',
-    auth: 'bearer',
-    required_input_fields: ['access_token', 'data'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'clickup',
-    action: 'create_task',
-    category: 'business',
-    auth: 'api_key',
-    required_input_fields: ['api_key', 'list_id', 'name'],
-    optional_input_fields: ['description', 'assignees', 'tags'],
-  },
-  {
-    connector: 'trello',
-    action: 'create_card',
-    category: 'productivity',
-    auth: 'api_key',
-    required_input_fields: ['key', 'token', 'list_id', 'name'],
-    optional_input_fields: ['desc'],
-  },
-  {
-    connector: 'zendesk',
-    action: 'create_ticket',
-    category: 'business',
-    auth: 'bearer',
-    required_input_fields: ['subdomain', 'access_token', 'ticket'],
-    optional_input_fields: [],
-  },
-  {
-    connector: 'pagerduty',
-    action: 'enqueue_event',
-    category: 'developer',
-    auth: 'api_key',
-    required_input_fields: ['routing_key', 'payload'],
-    optional_input_fields: ['event_action'],
-  },
-  {
-    connector: 'stripe',
-    action: 'request',
-    category: 'finance',
-    auth: 'api_key',
-    required_input_fields: ['api_key'],
-    optional_input_fields: ['endpoint_url', 'method', 'body', 'headers'],
-  },
-  {
-    connector: 'sendgrid',
-    action: 'send_email',
-    category: 'communication',
-    auth: 'api_key',
-    required_input_fields: ['api_key', 'from', 'to', 'subject', 'content'],
-    optional_input_fields: ['content_type'],
-  },
-  {
-    connector: 'salesforce',
-    action: 'create_record',
-    category: 'business',
-    auth: 'bearer',
-    required_input_fields: ['access_token', 'instance_url', 'object_api_name', 'fields'],
-    optional_input_fields: ['api_version'],
-  },
-  {
-    connector: 'shopify',
-    action: 'request',
-    category: 'commerce',
-    auth: 'api_key',
-    required_input_fields: ['store_domain', 'access_token'],
-    optional_input_fields: ['endpoint_path', 'method', 'body', 'headers'],
-  },
-  {
-    connector: 'gitlab',
-    action: 'create_issue',
-    category: 'developer',
-    auth: 'bearer',
-    required_input_fields: ['access_token', 'project_id', 'title'],
-    optional_input_fields: ['description', 'labels', 'assignee_ids'],
-  },
-  {
-    connector: 'monday',
-    action: 'graphql',
-    category: 'productivity',
-    auth: 'api_key',
-    required_input_fields: ['api_key', 'query'],
-    optional_input_fields: ['variables'],
-  },
-  {
-    connector: 'brevo',
-    action: 'send_email',
-    category: 'communication',
-    auth: 'api_key',
-    required_input_fields: ['api_key', 'from', 'to', 'subject', 'html_content'],
-    optional_input_fields: ['reply_to'],
-  },
-];
+// Connector catalog sourced from `connectorCatalog.ts` (source of truth)
+
 
 const OAUTH_CONNECTOR_CONFIGS: Record<string, OAuthProviderConfig> = {
   gmail: {
@@ -353,6 +113,7 @@ type OAuthStatePayload = {
 @Controller()
 export class AppController implements OnModuleInit {
   private pulseCoreService!: PulseCoreService;
+  private connectorCatalog: ConnectorCatalogItem[] = DEFAULT_CONNECTOR_CATALOG;
   private readonly coreHttpBaseUrl = process.env.CORE_ENGINE_HTTP_URL || 'http://127.0.0.1:8000';
   private readonly oauthPool: Pool | null;
 
@@ -366,10 +127,33 @@ export class AppController implements OnModuleInit {
     if (this.oauthPool) {
       void this.ensureConnectorOAuthSchema();
     }
+    const catalogUrl = process.env.CONNECTOR_CATALOG_URL;
+    if (catalogUrl) {
+      void this.refreshCatalogFromUrl(catalogUrl);
+    }
   }
 
   onModuleInit() {
     this.pulseCoreService = this.client.getService<PulseCoreService>('PulseCoreService');
+  }
+
+  private async refreshCatalogFromUrl(url: string) {
+    try {
+      const items = await getCatalogFromUrl(url);
+      if (!items) {
+        console.warn('Connector catalog: no items fetched from', url);
+        return;
+      }
+      const problems = items.flatMap((it) => validateCatalogItem(it).map((e) => `${it.connector || '<unknown>'}: ${e}`));
+      if (problems.length > 0) {
+        console.warn('Connector catalog validation failed:', problems.slice(0, 10));
+        return;
+      }
+      this.connectorCatalog = items;
+      console.log('Connector catalog updated from', url);
+    } catch (err) {
+      console.warn('Failed to refresh connector catalog:', err);
+    }
   }
 
   @UseGuards(JwtAuthGuard)
@@ -670,8 +454,8 @@ export class AppController implements OnModuleInit {
   @UseGuards(JwtAuthGuard)
   @Get('connectors/custom/schema')
   getCustomConnectorSchema() {
-    const custom = CONNECTOR_CATALOG.find((item) => item.connector === 'custom');
-    const supportedAliases = CONNECTOR_CATALOG
+    const custom = this.connectorCatalog.find((item) => item.connector === 'custom');
+    const supportedAliases = this.connectorCatalog
       .filter((item) => item.connector !== 'custom')
       .map((item) => item.connector);
 
@@ -707,9 +491,9 @@ export class AppController implements OnModuleInit {
   @Get('connectors/catalog')
   getConnectorCatalog() {
     return {
-      count: CONNECTOR_CATALOG.length,
+      count: this.connectorCatalog.length,
       generatedAt: new Date().toISOString(),
-      items: CONNECTOR_CATALOG,
+      items: this.connectorCatalog,
     };
   }
 
