@@ -5,6 +5,9 @@ mod executor;
 #[path = "../src/models.rs"]
 mod models;
 #[allow(dead_code)]
+#[path = "../src/approval.rs"]
+mod approval;
+#[allow(dead_code)]
 #[path = "../src/workspace_vault.rs"]
 mod workspace_vault;
 
