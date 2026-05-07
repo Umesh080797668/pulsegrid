@@ -10,7 +10,7 @@ type RedisStreamEntry = [string, string[]];
 export class StripePayoutsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger('StripePayoutsService');
   private pollInterval: NodeJS.Timeout | null = null;
-  private stripe: Stripe;
+  private stripe: InstanceType<typeof Stripe>;
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
@@ -18,7 +18,7 @@ export class StripePayoutsService implements OnModuleInit, OnModuleDestroy {
   ) {
     // Create local stripe client using same secret key
     const apiKey = process.env.STRIPE_SECRET_KEY || '';
-    this.stripe = new Stripe(apiKey, { apiVersion: '2022-11-15' });
+    this.stripe = new Stripe(apiKey);
   }
 
   async onModuleInit(): Promise<void> {
@@ -101,7 +101,7 @@ export class StripePayoutsService implements OnModuleInit, OnModuleDestroy {
             'SELECT id FROM stripe_payouts WHERE connected_account_id = $1 AND amount_cents = $2 LIMIT 1',
             [connectedAccountId, amount],
           );
-          if (already.rowCount > 0) {
+          if ((already.rowCount ?? 0) > 0) {
             this.logger.debug(`Payout already recorded for account ${connectedAccountId} amount ${amount}`);
             // Remove processed entry
             await this.redis.xdel(streamKey, entryId);

@@ -1,5 +1,29 @@
 export const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:3000';
 
+export type ConnectorCatalogItem = {
+  connector: string;
+  action: string;
+  category: string;
+  auth: 'none' | 'bearer' | 'api_key' | 'oauth2' | 'mixed';
+  required_input_fields: string[];
+  optional_input_fields?: string[];
+  notes?: string[];
+};
+
+export type ConnectorOAuthInstallation = {
+  workspaceId: string;
+  connector: string;
+  provider: string;
+  scope: string | null;
+  expiresAt: string | null;
+  connectedAt: string;
+};
+
+export type WorkspaceCredential = {
+  name: string;
+  updated_at?: string | null;
+};
+
 export async function authenticatedFetch(
   input: string,
   token: string,
@@ -33,6 +57,81 @@ export async function authenticatedFetch(
     credentials: 'include',
     headers: { ...(init.headers || {}), Authorization: `Bearer ${data.accessToken}` },
   });
+}
+
+export async function listConnectorOAuthInstallations(params: {
+  workspaceId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<ConnectorOAuthInstallation[]> {
+  const response = await authenticatedFetch(
+    `${apiBase}/connectors/oauth/installations?workspaceId=${encodeURIComponent(params.workspaceId)}`,
+    params.token,
+    params.setToken,
+  );
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = (await response.json()) as { items?: ConnectorOAuthInstallation[] };
+  return payload.items || [];
+}
+
+export async function listWorkspaceCredentials(params: {
+  workspaceId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<WorkspaceCredential[]> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/credentials`,
+    params.token,
+    params.setToken,
+  );
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = (await response.json()) as WorkspaceCredential[] | { items?: WorkspaceCredential[] };
+  return Array.isArray(payload) ? payload : payload.items || [];
+}
+
+export async function upsertWorkspaceCredential(params: {
+  workspaceId: string;
+  name: string;
+  value: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<boolean> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/credentials`,
+    params.token,
+    params.setToken,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: params.name, value: params.value }),
+    },
+  );
+
+  return response.ok;
+}
+
+export async function deleteWorkspaceCredential(params: {
+  workspaceId: string;
+  name: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<boolean> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/credentials/${encodeURIComponent(params.name)}`,
+    params.token,
+    params.setToken,
+    { method: 'DELETE' },
+  );
+
+  return response.ok;
 }
 
 export type WorkspaceSubscriptionStatus = {

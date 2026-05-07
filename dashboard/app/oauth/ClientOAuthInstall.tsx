@@ -2,15 +2,17 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { authenticatedFetch, apiBase } from '../../lib/api';
 import { isOAuthConnector, type OAuthConnectorKey } from '../../lib/oauth-connectors';
-import { apiBase } from '../../lib/api';
+import { useDashboardStore } from '../../lib/store';
 
 export default function OAuthInstallClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const connector = (searchParams.get('connector') || '') as OAuthConnectorKey;
   const workspaceId = searchParams.get('workspaceId') || '';
-  const [status, setStatus] = useState('Preparing connector authorization…');
+  const { accessToken, setAccessToken } = useDashboardStore();
+  const [status, setStatus] = useState('Preparing connector installation…');
   const [provider, setProvider] = useState('');
 
   const canInstall = useMemo(() => Boolean(connector && workspaceId && isOAuthConnector(connector)), [connector, workspaceId]);
@@ -21,7 +23,6 @@ export default function OAuthInstallClient() {
       return;
     }
 
-    const accessToken = window.localStorage.getItem('pulsegrid.accessToken') || '';
     if (!accessToken) {
       setStatus('Missing dashboard session. Please sign in and retry.');
       return;
@@ -30,9 +31,12 @@ export default function OAuthInstallClient() {
     let cancelled = false;
     const run = async () => {
       try {
-        const response = await fetch(`${apiBase}/connectors/oauth/${encodeURIComponent(connector)}/start?workspaceId=${encodeURIComponent(workspaceId)}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
+        setStatus('Requesting authorization URL from the API…');
+        const response = await authenticatedFetch(
+          `${apiBase}/connectors/oauth/${encodeURIComponent(connector)}/start?workspaceId=${encodeURIComponent(workspaceId)}`,
+          accessToken,
+          setAccessToken,
+        );
 
         if (!response.ok) {
           if (!cancelled) {
@@ -59,15 +63,10 @@ export default function OAuthInstallClient() {
     return () => {
       cancelled = true;
     };
-  }, [canInstall, connector, workspaceId]);
+  }, [accessToken, canInstall, connector, setAccessToken, workspaceId]);
 
-  const skipToCallback = () => {
-    const callbackUrl = new URL(`${window.location.origin}/oauth/callback`);
-    callbackUrl.searchParams.set('connector', connector || '');
-    callbackUrl.searchParams.set('workspaceId', workspaceId || '');
-    callbackUrl.searchParams.set('status', 'error');
-    callbackUrl.searchParams.set('message', 'OAuth was canceled before completion');
-    window.location.assign(callbackUrl.toString());
+  const goBack = () => {
+    router.replace(`/settings/vault?workspace=${encodeURIComponent(workspaceId)}`);
   };
 
   return (
@@ -87,15 +86,12 @@ export default function OAuthInstallClient() {
           )}
         </div>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <button onClick={skipToCallback} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
-            Continue to callback
+          <button onClick={goBack} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid var(--accent)', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
+            Back to VaultGuard
           </button>
           <button onClick={() => router.back()} style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface-2)', color: 'var(--text-2)', cursor: 'pointer' }}>
             Cancel
           </button>
-          <a href={`${apiBase}/auth/github`} style={{ alignSelf: 'center', color: 'var(--accent)', fontSize: 13 }}>
-            Backend OAuth demo login
-          </a>
         </div>
       </div>
     </main>

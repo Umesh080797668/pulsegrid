@@ -1,7 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { Redis } from 'ioredis';
-import { EmailService, FlowFailureAlert } from '../email/email.service';
 
 export interface Event {
   id: string;
@@ -19,7 +17,6 @@ export class EventsService {
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
-    private readonly emailService: EmailService,
   ) {}
 
   async streamEvents(source?: string, type?: string, workspaceId?: string): Promise<Event[]> {
@@ -78,25 +75,5 @@ export class EventsService {
     return merged
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .slice(0, 100);
-  }
-
-  @Cron('*/10 * * * * *')
-  async processEmailFailureQueue(): Promise<void> {
-    while (true) {
-      const raw = await this.redis.lpop('queue:email:failure');
-      if (!raw) {
-        break;
-      }
-
-      try {
-        const payload = JSON.parse(raw) as FlowFailureAlert;
-        const sent = await this.emailService.sendFlowFailureAlert(payload);
-        if (!sent) {
-          this.logger.warn(`Failed to send flow failure alert for ${payload.workspace_id}/${payload.flow_name}`);
-        }
-      } catch (error) {
-        this.logger.error('Failed to process queue:email:failure item', error instanceof Error ? error.stack : String(error));
-      }
-    }
   }
 }

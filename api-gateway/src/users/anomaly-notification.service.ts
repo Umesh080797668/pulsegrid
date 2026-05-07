@@ -236,7 +236,7 @@ export class AnomalyNotificationService implements OnModuleInit, OnModuleDestroy
 
       // Log failures for debugging
       if (result.failureCount > 0) {
-        result.responses.forEach((resp, idx) => {
+        result.responses.forEach((resp: { success: boolean; error?: { message?: string } }, idx: number) => {
           if (!resp.success) {
             this.logger.warn(`Failed to send to token ${tokens[idx]}: ${resp.error?.message}`);
           }

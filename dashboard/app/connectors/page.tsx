@@ -1,19 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { apiBase, authenticatedFetch } from '../../lib/api';
-import { buildOAuthAuthorizeUrl, getOAuthInstallConfig, isOAuthConnector } from '../../lib/oauth-connectors';
+import { useRouter } from 'next/navigation';
+import { apiBase, authenticatedFetch, type ConnectorCatalogItem } from '../../lib/api';
+import { isOAuthConnector } from '../../lib/oauth-connectors';
 import { useDashboardStore } from '../../lib/store';
 
-type ConnectorCatalogItem = {
-  connector: string;
-  action: string;
-  category: string;
-  auth: 'none' | 'bearer' | 'api_key' | 'oauth2' | 'mixed';
-  required_input_fields: string[];
-};
-
 export default function ConnectorsPage() {
+  const router = useRouter();
   const { accessToken, workspaceId, setAccessToken } = useDashboardStore();
   const [connectors, setConnectors] = useState<ConnectorCatalogItem[]>([]);
 
@@ -48,12 +42,15 @@ export default function ConnectorsPage() {
     if (!workspaceId || !isOAuthConnector(connector)) {
       return;
     }
-    const config = getOAuthInstallConfig(connector, workspaceId);
-    if (!config) {
+    router.push(`/oauth/install?connector=${encodeURIComponent(connector)}&workspaceId=${encodeURIComponent(workspaceId)}`);
+  };
+
+  const startApiKeyInstall = (connector: string) => {
+    if (!workspaceId) {
       return;
     }
-    const url = buildOAuthAuthorizeUrl(config);
-    window.location.assign(url);
+
+    router.push(`/settings/vault?workspace=${encodeURIComponent(workspaceId)}&connector=${encodeURIComponent(connector)}`);
   };
 
   return (
@@ -89,6 +86,8 @@ export default function ConnectorsPage() {
               <div style={{ marginTop: 16 }}>
                 {item.auth === 'oauth2' ? (
                   <button className="btn btn-primary w-full" style={{ justifyContent: 'center' }} onClick={() => startOAuth(item.connector)}>Connect</button>
+                ) : item.auth === 'api_key' || item.auth === 'mixed' ? (
+                  <button className="btn btn-primary w-full" style={{ justifyContent: 'center' }} onClick={() => startApiKeyInstall(item.connector)}>Install</button>
                 ) : (
                   <button className="btn btn-secondary w-full" style={{ justifyContent: 'center' }} disabled>No OAuth required</button>
                 )}
