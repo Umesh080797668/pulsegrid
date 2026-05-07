@@ -8,6 +8,8 @@ import { EmailModule } from '../email/email.module';
 import { MfaController } from './mfa.controller';
 import { MfaService } from './mfa.service';
 import { MicrosoftOAuthStrategy } from './microsoft-oauth.strategy';
+import { GoogleOAuthStrategy } from './google-oauth.strategy';
+import { GithubOAuthStrategy } from './github-oauth.strategy';
 
 @Module({
   imports: [
@@ -20,7 +22,7 @@ import { MicrosoftOAuthStrategy } from './microsoft-oauth.strategy';
     EmailModule,
   ],
   controllers: [AuthController, MfaController],
-  providers: [AuthStore, AuthService, MfaService, JwtAuthGuard, MicrosoftOAuthStrategy],
+  providers: [AuthStore, AuthService, MfaService, JwtAuthGuard, MicrosoftOAuthStrategy, GoogleOAuthStrategy, GithubOAuthStrategy],
   exports: [AuthService, MfaService, JwtAuthGuard, AuthStore, JwtModule],
 })
 export class AuthModule {}

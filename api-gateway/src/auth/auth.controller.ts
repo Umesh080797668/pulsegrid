@@ -7,6 +7,8 @@ import { Request, Response } from 'express';
 import { RateLimitService } from '../rate-limit.service';
 import { AuthTokens } from './auth.types';
 import { MicrosoftOAuthStrategy } from './microsoft-oauth.strategy';
+import { GoogleOAuthStrategy } from './google-oauth.strategy';
+import { GithubOAuthStrategy } from './github-oauth.strategy';
 
 class RegisterDto {
   @IsEmail()
@@ -30,8 +32,6 @@ class LoginDto {
   password!: string;
 }
 
-
-
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -39,6 +39,8 @@ export class AuthController {
     private readonly emailService: EmailService,
     private readonly rateLimitService: RateLimitService,
     private readonly microsoftStrategy: MicrosoftOAuthStrategy,
+    private readonly googleStrategy: GoogleOAuthStrategy,
+    private readonly githubStrategy: GithubOAuthStrategy,
   ) {}
 
   @Post('register')
