@@ -22,6 +22,22 @@ export interface ConnectorMetrics {
   lastUsed?: string;
 }
 
+export interface ConnectorHealth {
+  connector: string;
+  uptime: number;
+  p95_latency_ms: number;
+  error_rate: number;
+  status: 'healthy' | 'degraded' | 'down';
+}
+
+export interface EventExplorerData {
+  timestamp: string;
+  connector: string;
+  event_type: string;
+  event_count: number;
+  payload_size_bytes: number;
+}
+
 export interface WorkspaceAnalytics {
   workspaceId: string;
   period: string;
@@ -43,11 +59,34 @@ export interface WorkspaceAnalytics {
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger('AnalyticsService');
+  private clickhouseClient: any;
 
   constructor(
     @Inject('PULSECORE_PACKAGE') private client: ClientGrpc,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
-  ) {}
+  ) {
+    this.initializeClickHouseClient();
+  }
+
+  /**
+   * Initialize ClickHouse client if configured
+   */
+  private initializeClickHouseClient(): void {
+    const clickhouseUrl = process.env.CLICKHOUSE_URL;
+    if (clickhouseUrl) {
+      try {
+        // Lazy load http module for ClickHouse queries
+        this.clickhouseClient = {
+          url: clickhouseUrl,
+          initialized: true,
+        };
+        this.logger.log(`ClickHouse analytics enabled at ${clickhouseUrl}`);
+      } catch (err) {
+        this.logger.warn(`Failed to initialize ClickHouse client: ${err}`);
+        this.clickhouseClient = null;
+      }
+    }
+  }
 
   /**
    * Get workspace analytics overview for a specific period
@@ -335,5 +374,215 @@ export class AnalyticsService {
       topConnectors: [],
       recentErrors: [],
     };
+  }
+
+  /**
+   * Query ClickHouse for connector health metrics (p95 latency, uptime, error rate)
+   */
+  async getConnectorHealthFromClickHouse(
+    workspaceId: string,
+    timePeriodHours: number = 24,
+  ): Promise<ConnectorHealth[]> {
+    if (!this.clickhouseClient?.initialized) {
+      this.logger.warn('ClickHouse not configured, returning empty connector health');
+      return [];
+    }
+
+    try {
+      // Query ClickHouse for connector health metrics
+      const query = `
+        SELECT
+          connector,
+          quantile(0.95)(duration_ms) as p95_latency,
+          sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) / count() * 100 as error_rate,
+          count() as call_count
+        FROM connector_health
+        WHERE tenant_id = '${workspaceId}'
+          AND received_at >= now() - INTERVAL ${timePeriodHours} HOUR
+        GROUP BY connector
+        ORDER BY call_count DESC
+      `;
+
+      const result = await this.queryClickHouse(query);
+
+      return result.map((row: any) => ({
+        connector: row.connector,
+        uptime: 1 - row.error_rate / 100,
+        p95_latency_ms: row.p95_latency || 0,
+        error_rate: row.error_rate / 100,
+        status: this.determineConnectorStatus(row.error_rate, row.p95_latency),
+      }));
+    } catch (err) {
+      this.logger.error(
+        `Failed to query connector health from ClickHouse: ${err}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Query ClickHouse for event explorer data
+   */
+  async getEventExplorer(
+    workspaceId: string,
+    timePeriodHours: number = 24,
+    limit: number = 100,
+  ): Promise<EventExplorerData[]> {
+    if (!this.clickhouseClient?.initialized) {
+      this.logger.warn('ClickHouse not configured, returning empty event explorer');
+      return [];
+    }
+
+    try {
+      const query = `
+        SELECT
+          toStartOfMinute(received_at) as timestamp,
+          connector,
+          event_type,
+          count() as event_count,
+          sum(payload_size_bytes) as total_payload_bytes
+        FROM events
+        WHERE tenant_id = '${workspaceId}'
+          AND received_at >= now() - INTERVAL ${timePeriodHours} HOUR
+        GROUP BY timestamp, connector, event_type
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      `;
+
+      const result = await this.queryClickHouse(query);
+
+      return result.map((row: any) => ({
+        timestamp: row.timestamp,
+        connector: row.connector,
+        event_type: row.event_type,
+        event_count: row.event_count,
+        payload_size_bytes: row.total_payload_bytes || 0,
+      }));
+    } catch (err) {
+      this.logger.error(`Failed to query event explorer from ClickHouse: ${err}`);
+      return [];
+    }
+  }
+
+  /**
+   * Query ClickHouse for flow run metrics aggregates
+   */
+  async getFlowMetricsFromClickHouse(
+    workspaceId: string,
+    timePeriodHours: number = 24,
+  ): Promise<any> {
+    if (!this.clickhouseClient?.initialized) {
+      this.logger.warn('ClickHouse not configured, returning empty flow metrics');
+      return {
+        totalRuns: 0,
+        successfulRuns: 0,
+        failedRuns: 0,
+        averageDurationMs: 0,
+        p95DurationMs: 0,
+      };
+    }
+
+    try {
+      const query = `
+        SELECT
+          count() as total_runs,
+          sum(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful_runs,
+          sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failed_runs,
+          round(avg(duration_ms), 2) as avg_duration,
+          quantile(0.95)(duration_ms) as p95_duration
+        FROM flow_run_metrics
+        WHERE tenant_id = '${workspaceId}'
+          AND started_at >= now() - INTERVAL ${timePeriodHours} HOUR
+      `;
+
+      const result = await this.queryClickHouse(query);
+      const row = result[0] || {};
+
+      return {
+        totalRuns: row.total_runs || 0,
+        successfulRuns: row.successful_runs || 0,
+        failedRuns: row.failed_runs || 0,
+        averageDurationMs: row.avg_duration || 0,
+        p95DurationMs: row.p95_duration || 0,
+      };
+    } catch (err) {
+      this.logger.error(`Failed to query flow metrics from ClickHouse: ${err}`);
+      return {
+        totalRuns: 0,
+        successfulRuns: 0,
+        failedRuns: 0,
+        averageDurationMs: 0,
+        p95DurationMs: 0,
+      };
+    }
+  }
+
+  /**
+   * Helper to execute raw ClickHouse queries
+   */
+  private async queryClickHouse(query: string): Promise<any[]> {
+    if (!this.clickhouseClient?.initialized) {
+      throw new Error('ClickHouse not configured');
+    }
+
+    try {
+      // Use import to dynamically load http client
+      const http = await import('http');
+
+      return new Promise((resolve, reject) => {
+        const url = new URL(this.clickhouseClient.url);
+        const queryParams = new URLSearchParams({
+          query: query,
+          format: 'JSONEachRow',
+        });
+
+        const options = {
+          hostname: url.hostname,
+          port: url.port || 8123,
+          path: `${url.pathname || '/'}?${queryParams.toString()}`,
+          method: 'GET',
+          timeout: 30000,
+        };
+
+        const req = http.request(options, (res) => {
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          res.on('end', () => {
+            try {
+              const lines = data.trim().split('\n');
+              const result = lines.map((line) => JSON.parse(line));
+              resolve(result);
+            } catch (err) {
+              reject(err);
+            }
+          });
+        });
+
+        req.on('error', reject);
+        req.setTimeout(30000, () => req.destroy());
+        req.end();
+      });
+    } catch (err) {
+      this.logger.error(`ClickHouse query execution failed: ${err}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Determine connector status based on error rate and latency
+   */
+  private determineConnectorStatus(
+    errorRate: number,
+    latencyMs: number,
+  ): 'healthy' | 'degraded' | 'down' {
+    if (errorRate >= 50) {
+      return 'down';
+    }
+    if (errorRate >= 10 || latencyMs > 5000) {
+      return 'degraded';
+    }
+    return 'healthy';
   }
 }
