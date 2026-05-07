@@ -76,11 +76,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     [pathname],
   );
 
+  // Allow unauthenticated access to OAuth and auth pages only.
   if (pathname.startsWith('/oauth')) {
     return <>{children}</>;
   }
 
-  if (pathname === '/auth' || pathname === '/login' || pathname === '/register' || pathname === '/dashboard') {
+  if (pathname === '/auth' || pathname === '/login' || pathname === '/register') {
     return <>{children}</>;
   }
 
