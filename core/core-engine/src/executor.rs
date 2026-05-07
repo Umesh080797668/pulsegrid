@@ -51,7 +51,6 @@ impl FlowExecutor {
 
     /// Check if an event with the same idempotency key has been processed
     /// Returns true if this is a duplicate, false if it's a new event
-    #[allow(dead_code)]
     pub async fn check_idempotency(&self, workspace_id: uuid::Uuid, idempotency_key: &str) -> Result<bool, String> {
         // Check Redis cache first (24h TTL)
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());

@@ -1669,6 +1669,25 @@ async fn start_event_listener(
                                     println!("🔥 Received PulseEvent (ID: {})", node.id);
                                     let _ = event_tx.send(payload_str.to_string());
 
+                                    // IDEMPOTENCY CHECK: Extract idempotency key from event and check Redis cache
+                                    if let Some(idempotency_key) = event.data.get("idempotency_key")
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        // Check if this is a duplicate
+                                        match executor.check_idempotency(event.tenant_id, idempotency_key).await {
+                                            Ok(true) => {
+                                                println!("   ⏭️  Skipping duplicate event (idempotency_key: {})", idempotency_key);
+                                                continue;
+                                            }
+                                            Ok(false) => {
+                                                println!("   ✓ New event, idempotency key registered (idempotency_key: {})", idempotency_key);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("   ⚠️  Idempotency check failed: {}, proceeding with event", e);
+                                            }
+                                        }
+                                    }
+
                                     // EVENT REPLAY: Store event in ring buffer (sorted set capped at 500)
                                     // Get current Unix timestamp in milliseconds
                                     let unix_ms = chrono::Utc::now().timestamp_millis();
@@ -4404,7 +4423,32 @@ async fn webhook_receiver(
     let payload_value = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_else(|_| {
         serde_json::json!({ "raw": String::from_utf8_lossy(&body).to_string() })
     });
-    
+
+    // IDEMPOTENCY CHECK: Extract idempotency key from webhook payload if configured
+    // Support common patterns: $.id, $.event.id, $.idempotency_key, $.x-idempotency-key
+    let idempotency_key = payload_value.get("idempotency_key")
+        .or_else(|| payload_value.get("x-idempotency-key"))
+        .or_else(|| payload_value.pointer("/event/id"))
+        .or_else(|| payload_value.pointer("/id"))
+        .and_then(|v| v.as_str());
+
+    if let Some(key) = idempotency_key {
+        // Create a temporary executor for checking idempotency
+        let temp_executor = crate::executor::FlowExecutor::new(state.pool.clone(), state.vault.clone());
+        match temp_executor.check_idempotency(workspace_id, key).await {
+            Ok(true) => {
+                println!("   ⏭️  Skipping duplicate webhook (idempotency_key: {})", key);
+                return Ok(Json(serde_json::json!({"success": true, "skipped": true, "reason": "duplicate_idempotency_key"})));
+            }
+            Ok(false) => {
+                println!("   ✓ New webhook, idempotency key registered (idempotency_key: {})", key);
+            }
+            Err(e) => {
+                eprintln!("   ⚠️  Webhook idempotency check failed: {}, proceeding with event", e);
+            }
+        }
+    }
+
     let event = PulseEvent {
         id: uuid::Uuid::new_v4(),
         tenant_id: workspace_id,

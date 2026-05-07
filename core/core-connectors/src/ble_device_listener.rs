@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::{interval, Duration};
 use uuid::Uuid;
 use serde_json::{json, Value};
 use chrono::Utc;
@@ -54,11 +55,25 @@ pub struct BlePulseEvent {
     pub metadata: HashMap<String, String>, // Device address, characteristic UUID, etc.
 }
 
+/// Callback function for handling characteristic changes
+pub type CharacteristicChangeCallback =
+    Arc<dyn Fn(BlePulseEvent) + Send + Sync>;
+
+/// Active device connection state
+#[derive(Clone, Debug)]
+struct ActiveDeviceConnection {
+    config: BleDeviceConfig,
+    connected: bool,
+    last_values: HashMap<String, Vec<u8>>, // characteristic_uuid -> last_value
+    connection_attempts: u32,
+}
+
 /// BLE Device Listener Service
 /// Manages device scanning, pairing, and characteristic monitoring
 pub struct BleDeviceListener {
     devices: Arc<RwLock<HashMap<BleDeviceAddress, BleDeviceConfig>>>,
-    active_connections: Arc<RwLock<HashMap<BleDeviceAddress, bool>>>, // device -> is_connected
+    active_connections: Arc<RwLock<HashMap<BleDeviceAddress, ActiveDeviceConnection>>>,
+    event_callback: Option<CharacteristicChangeCallback>,
 }
 
 impl BleDeviceListener {
@@ -67,6 +82,16 @@ impl BleDeviceListener {
         Self {
             devices: Arc::new(RwLock::new(HashMap::new())),
             active_connections: Arc::new(RwLock::new(HashMap::new())),
+            event_callback: None,
+        }
+    }
+
+    /// Create BLE Device Listener with event callback for characteristic changes
+    pub fn with_callback(callback: CharacteristicChangeCallback) -> Self {
+        Self {
+            devices: Arc::new(RwLock::new(HashMap::new())),
+            active_connections: Arc::new(RwLock::new(HashMap::new())),
+            event_callback: Some(callback),
         }
     }
 
@@ -94,10 +119,18 @@ impl BleDeviceListener {
         let device_address = config.device_address.clone();
 
         let mut devices = self.devices.write().await;
-        devices.insert(device_address.clone(), config);
+        devices.insert(device_address.clone(), config.clone());
 
         let mut conns = self.active_connections.write().await;
-        conns.insert(device_address, false); // Initially disconnected
+        conns.insert(
+            device_address,
+            ActiveDeviceConnection {
+                config,
+                connected: false,
+                last_values: HashMap::new(),
+                connection_attempts: 0,
+            },
+        );
 
         Ok(())
     }
@@ -129,7 +162,10 @@ impl BleDeviceListener {
         }
 
         let mut conns = self.active_connections.write().await;
-        conns.insert(device_address, true);
+        if let Some(conn) = conns.get_mut(&device_address) {
+            conn.connected = true;
+            conn.connection_attempts += 1;
+        }
 
         Ok(())
     }
@@ -137,9 +173,134 @@ impl BleDeviceListener {
     /// Disconnect from a BLE device
     pub async fn disconnect_device(&self, device_address: BleDeviceAddress) -> Result<(), String> {
         let mut conns = self.active_connections.write().await;
-        conns.insert(device_address, false);
+        if let Some(conn) = conns.get_mut(&device_address) {
+            conn.connected = false;
+            conn.last_values.clear();
+        }
 
         Ok(())
+    }
+
+    /// Handle characteristic value change and emit event via callback
+    pub async fn emit_characteristic_change(
+        &self,
+        device_address: BleDeviceAddress,
+        characteristic_uuid: String,
+        new_value: Vec<u8>,
+        rssi: i16,
+    ) -> Result<(), String> {
+        let devices = self.devices.read().await;
+        let Some(config) = devices.get(&device_address) else {
+            return Err(format!("Device {} not registered", device_address.0));
+        };
+
+        // Create normalized event
+        let event = BleDeviceEvent {
+            device_address: device_address.clone(),
+            characteristic_uuid,
+            value: new_value,
+            rssi,
+        };
+
+        let pulse_event = self.normalize_event(config.workspace_id, event);
+
+        // Emit via callback if registered
+        if let Some(callback) = &self.event_callback {
+            callback(pulse_event);
+        }
+
+        Ok(())
+    }
+
+    /// Start monitoring device for characteristic changes
+    /// Returns a handle that can be awaited to stop monitoring
+    pub async fn start_monitoring_device(
+        &self,
+        device_address: BleDeviceAddress,
+    ) -> Result<tokio::task::JoinHandle<()>, String> {
+        // Verify device exists
+        let devices = self.devices.read().await;
+        if !devices.contains_key(&device_address) {
+            return Err(format!("Device {} not registered", device_address.0));
+        }
+        drop(devices);
+
+        // Clone for the spawned task
+        let listener_connections = Arc::clone(&self.active_connections);
+        let listener_callback = self.event_callback.clone();
+        let addr_clone = device_address.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut interval_timer = interval(Duration::from_millis(500));
+
+            loop {
+                interval_timer.tick().await;
+
+                let conns = listener_connections.read().await;
+                let Some(conn) = conns.get(&addr_clone) else {
+                    break; // Device no longer registered
+                };
+
+                if !conn.connected {
+                    continue; // Not connected, skip polling
+                }
+
+                let config = conn.config.clone();
+                drop(conns);
+
+                // Poll characteristics based on scan interval
+                let scan_interval = Duration::from_millis(config.scan_interval_ms as u64);
+
+                for char_config in &config.characteristics {
+                    // Simulate reading from device
+                    // In production, this would use a BLE library like `bluer` (Linux) or platform-specific bindings
+                    
+                    // Generate simulated value based on characteristic UUID
+                    let simulated_value = if char_config.characteristic_uuid.contains("2A6E") 
+                        || char_config.characteristic_uuid.contains("temperature") {
+                        // Temperature characteristic (example: 22.3°C)
+                        let temp_str = format!("{:.1}", 20.0 + 2.3);
+                        temp_str.into_bytes()
+                    } else if char_config.characteristic_uuid.contains("2A6D")
+                        || char_config.characteristic_uuid.contains("humidity") {
+                        // Humidity characteristic (example: 45%)
+                        "45".as_bytes().to_vec()
+                    } else {
+                        b"OK".to_vec()
+                    };
+
+                    // Notify characteristic change
+                    let mut metadata = HashMap::new();
+                    metadata.insert("device_address".to_string(), addr_clone.0.clone());
+                    metadata.insert("characteristic_uuid".to_string(), char_config.characteristic_uuid.clone());
+                    metadata.insert("rssi".to_string(), "-50".to_string()); // Simulated RSSI
+
+                    let pulse_event = BlePulseEvent {
+                        id: Uuid::new_v4(),
+                        tenant_id: config.workspace_id,
+                        source: "ble".to_string(),
+                        event_type: "ble.characteristic_changed".to_string(),
+                        payload: json!({
+                            "device_address": addr_clone.0,
+                            "characteristic": char_config.characteristic_uuid,
+                            "value": String::from_utf8_lossy(&simulated_value).to_string(),
+                            "rssi": -50,
+                        }),
+                        received_at: Utc::now().to_rfc3339(),
+                        metadata,
+                    };
+
+                    // Call the event callback if registered
+                    if let Some(callback) = &listener_callback {
+                        callback(pulse_event);
+                    }
+
+                    tokio::time::sleep(scan_interval).await;
+                }
+            }
+        });
+
+        Ok(handle)
     }
 
     /// Normalize a BLE device event into a PulseEvent
@@ -190,13 +351,16 @@ impl BleDeviceListener {
     /// Check if a device is connected
     pub async fn is_device_connected(&self, device_address: &BleDeviceAddress) -> bool {
         let conns = self.active_connections.read().await;
-        conns.get(device_address).copied().unwrap_or(false)
+        conns
+            .get(device_address)
+            .map(|c| c.connected)
+            .unwrap_or(false)
     }
 
     /// Health check: return number of connected devices
     pub async fn health_check(&self) -> usize {
         let conns = self.active_connections.read().await;
-        conns.values().filter(|&&connected| connected).count()
+        conns.values().filter(|c| c.connected).count()
     }
 
     fn is_valid_ble_address(address: &str) -> bool {
@@ -208,6 +372,16 @@ impl BleDeviceListener {
         parts
             .iter()
             .all(|part| part.len() == 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+    }
+}
+
+impl Clone for BleDeviceListener {
+    fn clone(&self) -> Self {
+        Self {
+            devices: Arc::clone(&self.devices),
+            active_connections: Arc::clone(&self.active_connections),
+            event_callback: self.event_callback.clone(),
+        }
     }
 }
 
