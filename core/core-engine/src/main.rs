@@ -44,17 +44,20 @@ use models::{
 mod executor;
 mod guard_emitter;
 mod codebase_indexer;
+mod workspace_vault;
 use approval::ApprovalManager;
 use core_proto::guard::guard_stream_server::GuardStreamServer;
 use core_proto::pulsecore::pulse_core_service_server::PulseCoreServiceServer;
 use guard_emitter::{install_guard_event_pipeline, GuardEventPublisher, GuardStreamService};
 use executor::FlowExecutor;
 use grpc::MyPulseCoreService;
+use workspace_vault::WorkspaceVaultService;
 
 #[derive(Clone)]
 struct AppState {
     pool: sqlx::PgPool,
     vault: Arc<Vault>,
+    workspace_vaults: Arc<WorkspaceVaultService>,
     event_tx: broadcast::Sender<String>,
     cache: Arc<LocalCache>,
 }
@@ -866,8 +869,12 @@ async fn main() {
     );
     println!("Initialized local RocksDB cache!");
 
-    let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
-        .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
+    let webhook_signing_secret = std::env::var("PULSE_WEBHOOK_SIGNING_SECRET")
+        .unwrap_or_else(|_| "pulsegrid-dev-webhook-signing-secret".to_string());
+    let workspace_vaults = Arc::new(
+        WorkspaceVaultService::from_env(pool.clone())
+            .expect("PULSE_HSM_ESCROW_URL must be configured for workspace credential escrow"),
+    );
     let (event_tx, _) = broadcast::channel::<String>(256);
     
     // Initialize Redis URL for connection pooling (used by event publishers)
@@ -875,7 +882,8 @@ async fn main() {
     
     let state = AppState {
         pool: pool.clone(),
-        vault: Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes())),
+        vault: Arc::new(Vault::new(&webhook_signing_secret, std::env::var("PULSE_WEBHOOK_SIGNING_SALT").unwrap_or_else(|_| "pulsegrid_webhook_salt".to_string()).as_bytes())),
+        workspace_vaults: workspace_vaults.clone(),
         event_tx: event_tx.clone(),
         cache: cache.clone(),
     };
@@ -977,6 +985,7 @@ async fn main() {
     // Spawn our background worker for Redis Streams Event Bus
     let pool_clone = pool.clone();
     let vault_clone = state.vault.clone();
+    let workspace_vaults_clone = workspace_vaults.clone();
     let event_tx_clone = event_tx.clone();
     let cache_clone = state.cache.clone();
     std::thread::spawn(move || {
@@ -984,13 +993,13 @@ async fn main() {
             .enable_all()
             .build()
             .expect("failed to build event listener runtime");
-        rt.block_on(start_event_listener(pool_clone, vault_clone, event_tx_clone, cache_clone));
+        rt.block_on(start_event_listener(pool_clone, vault_clone, workspace_vaults_clone, event_tx_clone, cache_clone));
     });
 
     // Start gRPC server
     let grpc_addr = "127.0.0.1:50051".parse().unwrap();
     let grpc_pool = pool.clone();
-    let service = MyPulseCoreService::new(grpc_pool);
+    let service = MyPulseCoreService::new(grpc_pool, workspace_vaults.clone());
     let guard_stream_service = GuardStreamService::new(guard_signal_tx.clone());
     println!("🚀 Starting gRPC server on {}", grpc_addr);
     tokio::spawn(async move {
@@ -1511,6 +1520,7 @@ async fn enqueue_failure_email_notification(
 async fn start_event_listener(
     pg_pool: sqlx::PgPool,
     vault: std::sync::Arc<core_vault::Vault>,
+    workspace_vaults: Arc<WorkspaceVaultService>,
     event_tx: broadcast::Sender<String>,
     cache: Arc<LocalCache>,
 ) {
@@ -1547,7 +1557,9 @@ async fn start_event_listener(
         .block(5000) // Block for 5 seconds waiting for events
         .count(10); // Read up to 10 events per batch
 
-    let executor = Arc::new(FlowExecutor::new(pg_pool.clone(), vault.clone()));
+    let executor = Arc::new(
+        FlowExecutor::new(pg_pool.clone(), vault.clone()).with_workspace_vaults(workspace_vaults),
+    );
     let mut known_streams: HashSet<String> = HashSet::new();
     let mut event_counter = 0u64;
     
@@ -3019,6 +3031,24 @@ async fn create_workspace(
     .await
     .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
 
+    state
+        .workspace_vaults
+        .bootstrap_workspace(row.id, Some(payload.owner_user_id))
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to bootstrap workspace key: {e:?}")))?;
+
+    let _ = sqlx::query!(
+        r#"
+        INSERT INTO workspace_members (workspace_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+        ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = EXCLUDED.role
+        "#,
+        row.id,
+        payload.owner_user_id
+    )
+    .execute(&state.pool)
+    .await;
+
     Ok(Json(WorkspaceResponse {
         id: row.id,
         name: row.name,
@@ -4024,24 +4054,40 @@ async fn upsert_credential(
     // BILLING: Enforce connector tier and count limits per plan
     enforce_connector_limit(&state.pool, workspace_id, &connector_id).await?;
 
-    let (encrypted_blob, nonce) = state.vault.encrypt(&payload.value).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("{e:?}"),
-        )
-    })?;
+    state
+        .workspace_vaults
+        .bootstrap_workspace(workspace_id, None)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to bootstrap workspace key: {e:?}"),
+            )
+        })?;
+
+    let (encrypted_blob, nonce, workspace_key_version) = state
+        .workspace_vaults
+        .encrypt_workspace_secret(workspace_id, &payload.value)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{e:?}"),
+            )
+        })?;
 
     sqlx::query!(
         r#"
-        INSERT INTO credentials (workspace_id, connector_id, encrypted_blob, nonce)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO credentials (workspace_id, connector_id, encrypted_blob, nonce, workspace_key_version)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (workspace_id, connector_id)
-        DO UPDATE SET encrypted_blob = EXCLUDED.encrypted_blob, nonce = EXCLUDED.nonce, updated_at = NOW()
+        DO UPDATE SET encrypted_blob = EXCLUDED.encrypted_blob, nonce = EXCLUDED.nonce, workspace_key_version = EXCLUDED.workspace_key_version, updated_at = NOW()
         "#,
         workspace_id,
         connector_id,
         encrypted_blob,
-        nonce
+        nonce,
+        workspace_key_version
     )
     .execute(&state.pool)
     .await
@@ -4443,7 +4489,7 @@ async fn verify_workspace_webhook_signature(
 
     let row = sqlx::query(
         r#"
-        SELECT encrypted_blob, nonce
+        SELECT encrypted_blob, nonce, workspace_key_version
         FROM credentials
         WHERE workspace_id = $1 AND LOWER(connector_id) = 'webhook'
         LIMIT 1
@@ -4464,10 +4510,14 @@ async fn verify_workspace_webhook_signature(
     let nonce: Vec<u8> = row
         .try_get("nonce")
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let workspace_key_version: i32 = row
+        .try_get("workspace_key_version")
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let secret = state
-        .vault
-        .decrypt(&encrypted_blob, &nonce)
+        .workspace_vaults
+        .decrypt_workspace_secret(workspace_id, workspace_key_version, &encrypted_blob, &nonce)
+        .await
         .map_err(|_| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -4662,6 +4712,7 @@ async fn replay_flow_run_step(
 
     let pool = state.pool.clone();
     let vault = state.vault.clone();
+    let workspace_vaults = state.workspace_vaults.clone();
     let step_def_for_exec = step_def.clone();
     let frozen_input_for_exec = frozen_input.clone();
     let frozen_step_outputs_for_exec = frozen_step_outputs.clone();
@@ -4673,7 +4724,7 @@ async fn replay_flow_run_step(
             .build()
             .map_err(|e| e.to_string())?;
 
-        let executor = FlowExecutor::new(pool, vault);
+        let executor = FlowExecutor::new(pool, vault).with_workspace_vaults(workspace_vaults);
         let replay_result = runtime.block_on(async move {
             executor
                 .execute_step(

@@ -12,32 +12,43 @@ pub enum VaultError {
     InvalidSignature,
 }
 
+#[derive(Clone)]
 pub struct Vault {
     key: aead::LessSafeKey,
 }
 
 impl Vault {
-    pub fn new(master_password: &str, salt: &[u8]) -> Self {
+    pub fn derive_key_material(seed: &[u8], salt: &[u8]) -> Result<[u8; 32], VaultError> {
         let mut key_bytes = [0u8; 32];
         // Use Argon2id per blueprint: time=2, mem=65536 KiB, parallelism=2
-        let params = Params::new(65536, 2, 2, None).expect("invalid argon2 params");
+        let params = Params::new(65536, 2, 2, None).map_err(|_| VaultError::EncryptionFailed)?;
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         argon2
-            .hash_password_into(master_password.as_bytes(), salt, &mut key_bytes)
-            .expect("argon2 key derivation failed");
-
-        let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes).unwrap();
-        Self {
-            key: aead::LessSafeKey::new(unbound_key),
-        }
+            .hash_password_into(seed, salt, &mut key_bytes)
+            .map_err(|_| VaultError::EncryptionFailed)?;
+        Ok(key_bytes)
     }
 
-    pub fn encrypt(&self, plain_text: &str) -> Result<(Vec<u8>, Vec<u8>), VaultError> {
+    pub fn from_key_material(key_bytes: [u8; 32]) -> Result<Self, VaultError> {
+        let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes)
+            .map_err(|_| VaultError::EncryptionFailed)?;
+        Ok(Self {
+            key: aead::LessSafeKey::new(unbound_key),
+        })
+    }
+
+    pub fn new(master_password: &str, salt: &[u8]) -> Self {
+        let key_bytes = Self::derive_key_material(master_password.as_bytes(), salt)
+            .expect("argon2 key derivation failed");
+        Self::from_key_material(key_bytes).expect("invalid AES-256-GCM key material")
+    }
+
+    pub fn encrypt_bytes(&self, plain_text: &[u8]) -> Result<(Vec<u8>, Vec<u8>), VaultError> {
         let rng = rand::SystemRandom::new();
         let mut nonce_bytes = [0u8; 12];
         rand::SecureRandom::fill(&rng, &mut nonce_bytes)
             .map_err(|_| VaultError::EncryptionFailed)?;
-        let mut in_out = plain_text.as_bytes().to_vec();
+        let mut in_out = plain_text.to_vec();
         
         let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
         self.key
@@ -47,7 +58,7 @@ impl Vault {
         Ok((in_out, nonce_bytes.to_vec()))
     }
 
-    pub fn decrypt(&self, encrypted_blob: &[u8], nonce_bytes: &[u8]) -> Result<String, VaultError> {
+    pub fn decrypt_bytes(&self, encrypted_blob: &[u8], nonce_bytes: &[u8]) -> Result<Vec<u8>, VaultError> {
         if nonce_bytes.len() != 12 {
             return Err(VaultError::DecryptionFailed);
         }
@@ -60,8 +71,18 @@ impl Vault {
             .key
             .open_in_place(nonce, aead::Aad::empty(), &mut in_out)
             .map_err(|_| VaultError::DecryptionFailed)?;
-            
-        String::from_utf8(decrypted_data.to_vec()).map_err(|_| VaultError::DecryptionFailed)
+
+        Ok(decrypted_data.to_vec())
+    }
+
+    pub fn encrypt(&self, plain_text: &str) -> Result<(Vec<u8>, Vec<u8>), VaultError> {
+        self.encrypt_bytes(plain_text.as_bytes())
+    }
+
+    pub fn decrypt(&self, encrypted_blob: &[u8], nonce_bytes: &[u8]) -> Result<String, VaultError> {
+        let decrypted_data = self.decrypt_bytes(encrypted_blob, nonce_bytes)?;
+
+        String::from_utf8(decrypted_data).map_err(|_| VaultError::DecryptionFailed)
     }
 
     pub fn verify_webhook_signature(

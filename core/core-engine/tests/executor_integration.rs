@@ -4,6 +4,9 @@ mod executor;
 #[allow(dead_code)]
 #[path = "../src/models.rs"]
 mod models;
+#[allow(dead_code)]
+#[path = "../src/workspace_vault.rs"]
+mod workspace_vault;
 
 use executor::FlowExecutor;
 use models::{FilterCondition, FlowStep, PulseEvent, TriggerDefinition};

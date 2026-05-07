@@ -13,6 +13,7 @@ pub struct WorkspaceSecret {
     pub connector_id: String,
     pub encrypted_blob: Vec<u8>,
     pub nonce: Vec<u8>,
+    pub workspace_key_version: i32,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
 }

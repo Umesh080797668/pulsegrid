@@ -15,6 +15,7 @@ use core_proto::pulsecore::{
     EventMetricsRequest, EventMetricsResponse, EventMetricPoint
 };
 use core_vault::Vault;
+use crate::workspace_vault::WorkspaceVaultService;
 use chrono::{DateTime, Duration, Utc};
 use redis::AsyncCommands;
 use sqlx::{PgPool, Row};
@@ -25,14 +26,24 @@ use uuid::Uuid;
 pub struct MyPulseCoreService {
     pg_pool: PgPool,
     vault: std::sync::Arc<Vault>,
+    workspace_vaults: std::sync::Arc<WorkspaceVaultService>,
 }
 
 impl MyPulseCoreService {
-    pub fn new(pg_pool: sqlx::PgPool) -> Self {
-        let master_key = std::env::var("PULSE_VAULT_MASTER_KEY")
-            .unwrap_or_else(|_| "dev-only-master-key-change-me".to_string());
-        let vault = std::sync::Arc::new(Vault::new(&master_key, std::env::var("PULSE_VAULT_SALT").unwrap_or_else(|_| "pulsegrid_salt".to_string()).as_bytes()));
-        Self { pg_pool, vault }
+    pub fn new(pg_pool: sqlx::PgPool, workspace_vaults: std::sync::Arc<WorkspaceVaultService>) -> Self {
+        let signing_secret = std::env::var("PULSE_WEBHOOK_SIGNING_SECRET")
+            .unwrap_or_else(|_| "pulsegrid-dev-webhook-signing-secret".to_string());
+        let vault = std::sync::Arc::new(Vault::new(
+            &signing_secret,
+            std::env::var("PULSE_WEBHOOK_SIGNING_SALT")
+                .unwrap_or_else(|_| "pulsegrid_webhook_salt".to_string())
+                .as_bytes(),
+        ));
+        Self {
+            pg_pool,
+            vault,
+            workspace_vaults,
+        }
     }
 
     async fn queue_market_review(&self, payload: serde_json::Value) -> Result<(), Status> {
@@ -799,20 +810,28 @@ impl PulseCoreService for MyPulseCoreService {
             return Err(Status::not_found("Workspace not found"));
         }
 
-        let (encrypted_blob, nonce) = self.vault.encrypt(&req.secret_value).map_err(|e| {
-            Status::internal(format!("Encryption error: {:?}", e))
-        })?;
+        self.workspace_vaults
+            .bootstrap_workspace(ws_id, None)
+            .await
+            .map_err(|e| Status::internal(format!("Workspace key bootstrap failed: {e:?}")))?;
+
+        let (encrypted_blob, nonce, workspace_key_version) = self
+            .workspace_vaults
+            .encrypt_workspace_secret(ws_id, &req.secret_value)
+            .await
+            .map_err(|e| Status::internal(format!("Encryption error: {:?}", e)))?;
 
         let res = sqlx::query!(
             r#"
-            INSERT INTO credentials (workspace_id, connector_id, encrypted_blob, nonce)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (workspace_id, connector_id) DO UPDATE SET encrypted_blob = EXCLUDED.encrypted_blob, nonce = EXCLUDED.nonce, updated_at = NOW()
+            INSERT INTO credentials (workspace_id, connector_id, encrypted_blob, nonce, workspace_key_version)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (workspace_id, connector_id) DO UPDATE SET encrypted_blob = EXCLUDED.encrypted_blob, nonce = EXCLUDED.nonce, workspace_key_version = EXCLUDED.workspace_key_version, updated_at = NOW()
             "#,
             ws_id,
             connector_id,
             encrypted_blob,
-            nonce
+            nonce,
+            workspace_key_version
         )
         .execute(&self.pg_pool)
         .await;
@@ -839,7 +858,7 @@ impl PulseCoreService for MyPulseCoreService {
             .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
 
         let row = sqlx::query_as::<_, WorkspaceSecret>(
-            "SELECT id, workspace_id, connector_id, encrypted_blob, nonce, created_at, updated_at FROM credentials WHERE workspace_id = $1 AND connector_id = 'WEBHOOK_SECRET'"
+            "SELECT id, workspace_id, connector_id, encrypted_blob, nonce, workspace_key_version, created_at, updated_at FROM credentials WHERE workspace_id = $1 AND connector_id = 'WEBHOOK_SECRET'"
         )
         .bind(ws_id)
         .fetch_optional(&self.pg_pool)
@@ -851,7 +870,16 @@ impl PulseCoreService for MyPulseCoreService {
             Err(_) => return Err(Status::internal("DB error")),
         };
 
-        let plain_secret = match self.vault.decrypt(&row.encrypted_blob, &row.nonce) {
+        let plain_secret = match self
+            .workspace_vaults
+            .decrypt_workspace_secret(
+                row.workspace_id,
+                row.workspace_key_version,
+                &row.encrypted_blob,
+                &row.nonce,
+            )
+            .await
+        {
             Ok(s) => s,
             Err(_) => return Err(Status::internal("Decryption error")),
         };

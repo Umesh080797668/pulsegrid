@@ -23,18 +23,30 @@ pub struct FlowExecutor {
     sandbox: Arc<CoreVm>,
     pub connectors: Arc<core_connectors::Connectors>,
     pub pool: sqlx::PgPool,
+    #[allow(dead_code)]
     pub vault: Arc<core_vault::Vault>,
+    pub workspace_vaults: Arc<crate::workspace_vault::WorkspaceVaultService>,
 }
 
 impl FlowExecutor {
     pub fn new(pool: sqlx::PgPool, vault: Arc<core_vault::Vault>) -> Self {
+        let legacy_vault = vault.clone();
         Self {
             engine: Arc::new(Engine::new()),
             sandbox: Arc::new(CoreVm::new()),
             connectors: Arc::new(core_connectors::Connectors::new()),
             pool,
             vault,
+            workspace_vaults: Arc::new(crate::workspace_vault::WorkspaceVaultService::legacy(legacy_vault)),
         }
+    }
+
+    pub fn with_workspace_vaults(
+        mut self,
+        workspace_vaults: Arc<crate::workspace_vault::WorkspaceVaultService>,
+    ) -> Self {
+        self.workspace_vaults = workspace_vaults;
+        self
     }
 
     /// Check if an event with the same idempotency key has been processed
@@ -1313,14 +1325,23 @@ impl FlowExecutor {
         let mut input_obj = self.render_input_mapping(step, step_outputs, event).as_object().cloned().unwrap_or_default();
 
         if let Ok(row) = sqlx::query!(
-            "SELECT encrypted_blob, nonce FROM credentials WHERE workspace_id = $1 AND connector_id = $2",
+            "SELECT encrypted_blob, nonce, workspace_key_version FROM credentials WHERE workspace_id = $1 AND connector_id = $2",
             event.tenant_id,
             upper_connector
         )
         .fetch_one(&self.pool)
         .await
         {
-            if let Ok(decrypted) = self.vault.decrypt(&row.encrypted_blob, &row.nonce) {
+            if let Ok(decrypted) = self
+                .workspace_vaults
+                .decrypt_workspace_secret(
+                    event.tenant_id,
+                    row.workspace_key_version,
+                    &row.encrypted_blob,
+                    &row.nonce,
+                )
+                .await
+            {
                 if let Ok(secret_json) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&decrypted) {
                     for (k, v) in secret_json {
                         input_obj.entry(k).or_insert(v);
