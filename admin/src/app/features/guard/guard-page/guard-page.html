@@ -1,0 +1,211 @@
+<section class="guard-page">
+  <header class="hero">
+    <div>
+      <p class="kicker">Phase 3</p>
+      <h1>PulseGuard</h1>
+      <p class="lede">
+        Review AI-diagnosed production incidents, inspect web-sourced evidence, and route fixes into GitHub.
+      </p>
+    </div>
+
+    <div class="hero-actions">
+      <button mat-flat-button color="primary" type="button" (click)="onReload()">Refresh alerts</button>
+      <button mat-stroked-button type="button" (click)="onRebuildIndex()">Rebuild index</button>
+    </div>
+  </header>
+
+  <div class="summary-grid" *ngIf="summary$ | async as summary">
+    <mat-card>
+      <span class="summary-label">Total alerts</span>
+      <strong>{{ summary.total }}</strong>
+    </mat-card>
+    <mat-card>
+      <span class="summary-label">Open alerts</span>
+      <strong>{{ summary.open }}</strong>
+    </mat-card>
+    <mat-card>
+      <span class="summary-label">Acknowledged</span>
+      <strong>{{ summary.acknowledged }}</strong>
+    </mat-card>
+    <mat-card>
+      <span class="summary-label">Critical</span>
+      <strong>{{ summary.critical }}</strong>
+    </mat-card>
+  </div>
+
+  <div class="support-grid">
+    <mat-card class="support-card" *ngIf="maintenance$ | async as maintenance">
+      <div class="support-header">
+        <h2>Maintenance state</h2>
+        <span class="pill" [class.active]="maintenance.maintenance_active">{{ maintenance.maintenance_active ? 'Active' : 'Idle' }}</span>
+      </div>
+      <p>{{ maintenance.maintenance_active ? 'PulseGuard has paused a scoped area of the platform.' : 'No maintenance scope is currently active.' }}</p>
+      <div class="support-list" *ngIf="maintenance.states.length; else noMaintenanceState">
+        <article *ngFor="let state of maintenance.states">
+          <strong>{{ state.key }}</strong>
+          <pre>{{ state.state | json }}</pre>
+        </article>
+      </div>
+      <ng-template #noMaintenanceState>
+        <p class="empty-text">No persisted maintenance entries were found.</p>
+      </ng-template>
+      <button mat-stroked-button color="warn" type="button" (click)="onClearMaintenance()">Clear maintenance</button>
+    </mat-card>
+
+    <mat-card class="support-card" *ngIf="indexStatus$ | async as indexStatus">
+      <div class="support-header">
+        <h2>Codebase index</h2>
+        <span class="pill" [class.active]="indexStatus.status === 'ok'">{{ indexStatus.status }}</span>
+      </div>
+      <p>Indexed files: {{ indexStatus.file_count }}</p>
+      <p>Last rebuilt: {{ indexStatus.last_rebuilt ? (indexStatus.last_rebuilt | date: 'medium') : 'Never' }}</p>
+      <button mat-stroked-button type="button" (click)="onRebuildIndex()">Queue rebuild</button>
+    </mat-card>
+  </div>
+
+  <app-guard-filters
+    [filters]="filters$ | async"
+    (apply)="onApplyFilters($event)"
+    (clear)="onClearFilters()"
+  ></app-guard-filters>
+
+  <div class="workspace">
+    <div class="alerts-panel">
+      <div class="panel-header">
+        <h2>Alert queue</h2>
+        <div class="panel-meta" *ngIf="pagination$ | async as pagination">
+          <span>{{ pagination.total }} total</span>
+          <span>{{ pagination.limit }} per page</span>
+        </div>
+      </div>
+
+      <ng-container *ngIf="alerts$ | async as alerts">
+        <div class="empty-state" *ngIf="!alerts.length && !(loading$ | async)">
+          <mat-icon>verified_user</mat-icon>
+          <p>No alerts match the current filters.</p>
+        </div>
+
+        <div class="loading-state" *ngIf="loading$ | async">
+          <mat-spinner diameter="32"></mat-spinner>
+          <span>Loading PulseGuard alerts…</span>
+        </div>
+
+        <app-guard-alert-card
+          *ngFor="let alert of alerts; trackBy: trackByAlertId"
+          [alert]="alert"
+          [selected]="(selectedAlert$ | async)?.id === alert.id"
+          (select)="onSelectAlert($event)"
+          (acknowledge)="onAcknowledgeAlert($event)"
+          (resolve)="onResolveAlert($event)"
+          (dismiss)="onDismissAlert($event)"
+          (createGithubIssue)="onCreateGithubIssue($event)"
+        ></app-guard-alert-card>
+      </ng-container>
+
+      <mat-paginator
+        *ngIf="pagination$ | async as pagination"
+        [length]="pagination.total"
+        [pageSize]="pagination.limit"
+        [pageIndex]="pagination.offset / pagination.limit"
+        [pageSizeOptions]="[10, 20, 50]"
+        (page)="onPageChange($event)"
+      ></mat-paginator>
+    </div>
+
+    <aside class="detail-panel">
+      <mat-card *ngIf="selectedAlert$ | async as alert; else emptySelection">
+        <div class="detail-header">
+          <div>
+            <p class="kicker">Selected alert</p>
+            <h2>{{ alert.ai_diagnosis?.root_cause || 'PulseGuard alert' }}</h2>
+          </div>
+          <button mat-stroked-button type="button" (click)="onBackToList()">Clear</button>
+        </div>
+
+        <div class="detail-meta">
+          <span class="pill" [class.active]="true">{{ alert.status }}</span>
+          <span class="pill">{{ alert.severity }}</span>
+          <span class="pill">{{ alert.source }}</span>
+        </div>
+
+        <p class="detail-copy">{{ alert.ai_diagnosis?.explanation }}</p>
+
+        <mat-divider></mat-divider>
+
+        <section>
+          <h3>AI diagnosis</h3>
+          <p><strong>Confidence:</strong> {{ (alert.ai_confidence * 100) | number: '1.0-0' }}%</p>
+          <p><strong>Maintenance scope:</strong> {{ formatMaintenanceScope(alert.maintenance_scope) }}</p>
+          <p><strong>Recommendation:</strong> {{ alert.ai_diagnosis?.severity_recommendation || alert.severity }}</p>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <section *ngIf="alert.web_sources as webSources">
+          <h3>Internet research</h3>
+          <p>{{ formatResearchSummary(webSources) }}</p>
+          <div class="source-list" *ngIf="webSources.sources.length; else noSources">
+            <article *ngFor="let source of webSources.sources">
+              <a [href]="source.url" target="_blank" rel="noopener noreferrer">{{ source.url }}</a>
+              <p>{{ source.summary }}</p>
+            </article>
+          </div>
+          <ng-template #noSources>
+            <p class="empty-text">No research sources were attached to this alert.</p>
+          </ng-template>
+          <p *ngIf="webSources.cve_ids.length"><strong>CVEs:</strong> {{ webSources.cve_ids.join(', ') }}</p>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <section *ngIf="alert.code_suggestion as suggestion">
+          <h3>Suggested fix</h3>
+          <p class="detail-copy">{{ suggestion.explanation }}</p>
+          <div class="diff-viewer">
+            <pre class="diff-remove">{{ suggestion.original_snippet }}</pre>
+            <pre class="diff-add">{{ suggestion.suggested_snippet }}</pre>
+          </div>
+          <p class="empty-text">File: {{ suggestion.file_path }}</p>
+        </section>
+
+        <mat-divider></mat-divider>
+
+        <section>
+          <h3>Maintenance and GitHub</h3>
+          <p *ngIf="alert.maintenance_scope">{{ formatMaintenanceScope(alert.maintenance_scope) }}</p>
+          <p *ngIf="alert.github_issue_url; else noGithubIssue">
+            <a [href]="alert.github_issue_url" target="_blank" rel="noopener noreferrer">Open GitHub issue</a>
+          </p>
+          <ng-template #noGithubIssue>
+            <p class="empty-text">No GitHub issue has been created yet.</p>
+          </ng-template>
+        </section>
+
+        <div class="detail-actions">
+          <button mat-flat-button color="primary" type="button" (click)="onAcknowledgeAlert(alert.id)">Acknowledge</button>
+          <button mat-flat-button color="accent" type="button" (click)="onResolveAlert(alert.id)">Resolve</button>
+          <button mat-stroked-button type="button" (click)="onCreateGithubIssue(alert.id)">Create GitHub issue</button>
+          <button mat-stroked-button color="warn" type="button" (click)="onDismissAlert(alert.id)">Dismiss</button>
+        </div>
+
+        <div class="detail-footer">
+          <span>Created {{ alert.created_at | date: 'medium' }}</span>
+          <span *ngIf="alert.resolved_at">Resolved {{ alert.resolved_at | date: 'medium' }}</span>
+        </div>
+      </mat-card>
+
+      <ng-template #emptySelection>
+        <mat-card class="empty-detail">
+          <mat-icon>visibility</mat-icon>
+          <h2>No alert selected</h2>
+          <p>Select an alert to inspect the AI diagnosis, web evidence, and remediation actions.</p>
+        </mat-card>
+      </ng-template>
+    </aside>
+  </div>
+
+  <div class="error-banner" *ngIf="error$ | async as error">
+    <mat-icon>error</mat-icon>
+    <span>{{ error }}</span>
+  </div>
+</section>

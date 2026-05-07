@@ -1,0 +1,40 @@
+<mat-card class="guard-alert-card" [class.selected]="selected" (click)="emitSelect()">
+  <div class="card-shell" [ngClass]="severityClass(alert.severity)">
+    <div class="header-row">
+      <div class="badges">
+        <span class="severity-badge">{{ alert.severity }}</span>
+        <span class="status-badge">{{ alert.status }}</span>
+        <span class="source-badge">{{ alert.source }}</span>
+      </div>
+      <div class="meta">
+        <span>{{ alert.created_at | date: 'medium' }}</span>
+        <span>AI {{ (alert.ai_confidence * 100) | number: '1.0-0' }}%</span>
+      </div>
+    </div>
+
+    <h3>{{ alert.ai_diagnosis?.root_cause || 'PulseGuard analysis pending' }}</h3>
+
+    <p class="summary">{{ alert.ai_diagnosis?.explanation || 'No diagnostic explanation was returned yet.' }}</p>
+
+    <div class="tags">
+      <span class="tag" *ngIf="alert.guard_event_id">Event {{ alert.guard_event_id.slice(0, 8) }}</span>
+      <span class="tag" *ngIf="alert.resolved_by">Resolved by {{ alert.resolved_by }}</span>
+      <span class="tag" *ngIf="alert.github_issue_url">GitHub issue linked</span>
+    </div>
+
+    <div class="actions">
+      <button mat-stroked-button color="primary" type="button" (click)="onAcknowledge($event)">
+        Acknowledge
+      </button>
+      <button mat-stroked-button color="accent" type="button" (click)="onResolve($event)">
+        Resolve
+      </button>
+      <button mat-stroked-button type="button" (click)="onCreateGithubIssue($event)">
+        GitHub issue
+      </button>
+      <button mat-stroked-button color="warn" type="button" (click)="onDismiss($event)">
+        Dismiss
+      </button>
+    </div>
+  </div>
+</mat-card>

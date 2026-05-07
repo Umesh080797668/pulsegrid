@@ -129,3 +129,104 @@ export interface ReportsState {
   message: string;
 }
 
+export type GuardSeverity = 'warning' | 'error' | 'critical';
+
+export type GuardAlertStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed';
+
+export interface GuardFilters {
+  tenant_id?: string;
+  status?: GuardAlertStatus;
+  severity?: GuardSeverity;
+  limit?: number;
+  offset?: number;
+}
+
+export interface GuardLogLine {
+  timestamp: string;
+  level: string;
+  message: string;
+}
+
+export interface GuardCodeSuggestion {
+  file_path: string;
+  original_snippet: string;
+  suggested_snippet: string;
+  explanation: string;
+}
+
+export interface GuardTriageResult {
+  root_cause: string;
+  explanation: string;
+  confidence: number;
+  severity_recommendation: GuardSeverity;
+  maintenance_scope: 'none' | 'flows_only' | 'full';
+  affected_file_path: string | null;
+  code_suggestion?: GuardCodeSuggestion | null;
+  search_queries: string[];
+}
+
+export interface GuardResearchResult {
+  sources: Array<{
+    url: string;
+    relevance: string;
+    summary: string;
+  }>;
+  cve_ids: string[];
+  recommended_dep_versions: Record<string, string>;
+}
+
+export interface GuardMaintenanceResult {
+  scope: 'none' | 'flows_only' | 'full';
+  pausedFlows: string[];
+}
+
+export interface GuardAlert {
+  id: string;
+  tenant_id: string;
+  guard_event_id: string;
+  severity: GuardSeverity | string;
+  source: string;
+  status: GuardAlertStatus;
+  ai_diagnosis: GuardTriageResult | null;
+  ai_confidence: number;
+  web_sources: GuardResearchResult | null;
+  code_suggestion: GuardCodeSuggestion | null;
+  maintenance_scope: GuardMaintenanceResult | null;
+  github_issue_url: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface GuardMaintenanceState {
+  maintenance_active: boolean;
+  states: Array<{
+    key: string;
+    value?: string | null;
+    state: any;
+  }>;
+}
+
+export interface GuardIndexStatus {
+  status: 'ok' | 'degraded';
+  last_rebuilt: string | null;
+  file_count: number;
+}
+
+export interface GuardState {
+  alerts: GuardAlert[];
+  total: number;
+  limit: number;
+  offset: number;
+  loading: boolean;
+  detailLoading: boolean;
+  maintenanceLoading: boolean;
+  indexLoading: boolean;
+  error: string | null;
+  filters: GuardFilters;
+  selectedAlertId: string | null;
+  selectedAlert: GuardAlert | null;
+  maintenance: GuardMaintenanceState | null;
+  indexStatus: GuardIndexStatus | null;
+}
+

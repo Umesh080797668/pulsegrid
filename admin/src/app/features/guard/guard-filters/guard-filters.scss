@@ -1,0 +1,48 @@
+.guard-filters {
+  padding: 20px;
+  border-radius: 18px;
+}
+
+.guard-filters .header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.guard-filters .header h3 {
+  margin: 0 0 4px;
+}
+
+.guard-filters .header p {
+  margin: 0;
+  color: #6b7280;
+}
+
+.guard-filters .filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 14px;
+  align-items: end;
+}
+
+.guard-filters .actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 960px) {
+  .guard-filters .filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .guard-filters .actions {
+    justify-content: stretch;
+  }
+
+  .guard-filters .actions button {
+    width: 100%;
+  }
+}

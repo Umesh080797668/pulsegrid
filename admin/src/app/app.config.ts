@@ -16,6 +16,7 @@ import { ComplianceEffects } from './core/store/effects/compliance.effects';
 import { ConnectorEffects } from './core/store/effects/connector.effects';
 import { SSOEffects } from './core/store/effects/sso.effects';
 import { ReportsEffects } from './core/store/effects/reports.effects';
+import { GuardEffects } from './core/store/effects/guard.effects';
 import { userReducer } from './core/store/reducers/user.reducer';
 import { authReducer } from './core/store/reducers/auth.reducer';
 import { workspaceReducer } from './core/store/reducers/workspace.reducer';
@@ -24,6 +25,7 @@ import { complianceReducer } from './core/store/reducers/compliance.reducer';
 import { connectorReducer } from './core/store/reducers/connector.reducer';
 import { ssoReducer } from './core/store/reducers/sso.reducer';
 import { reportsReducer } from './core/store/reducers/reports.reducer';
+import { guardReducer } from './core/store/reducers/guard.reducer';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -39,8 +41,9 @@ export const appConfig: ApplicationConfig = {
       connectors: connectorReducer,
       sso: ssoReducer,
       reports: reportsReducer,
+      guard: guardReducer,
     }),
-    provideEffects(UserEffects, AuditEffects, WorkspaceEffects, BillingEffects, ComplianceEffects, ConnectorEffects, SSOEffects, ReportsEffects),
+    provideEffects(UserEffects, AuditEffects, WorkspaceEffects, BillingEffects, ComplianceEffects, ConnectorEffects, SSOEffects, ReportsEffects, GuardEffects),
     // Effects provided in main bootstrap via importProvidersFrom when necessary
     provideStoreDevtools({ maxAge: 25 }),
   ],

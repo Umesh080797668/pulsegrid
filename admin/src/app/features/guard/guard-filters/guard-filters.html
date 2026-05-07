@@ -1,0 +1,40 @@
+<mat-card class="guard-filters">
+  <div class="header">
+    <div>
+      <h3>Alert filters</h3>
+      <p>Filter PulseGuard alerts by tenant, severity, and status.</p>
+    </div>
+    <button mat-stroked-button type="button" (click)="clearFilters()">Reset</button>
+  </div>
+
+  <form [formGroup]="form" class="filter-grid" (ngSubmit)="applyFilters()">
+    <mat-form-field appearance="outline">
+      <mat-label>Tenant ID</mat-label>
+      <input matInput formControlName="tenant_id" placeholder="Optional workspace / tenant UUID" />
+    </mat-form-field>
+
+    <mat-form-field appearance="outline">
+      <mat-label>Severity</mat-label>
+      <mat-select formControlName="severity">
+        <mat-option value="">All severities</mat-option>
+        <mat-option *ngFor="let option of severityOptions" [value]="option.value">
+          {{ option.label }}
+        </mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline">
+      <mat-label>Status</mat-label>
+      <mat-select formControlName="status">
+        <mat-option value="">All statuses</mat-option>
+        <mat-option *ngFor="let option of statusOptions" [value]="option.value">
+          {{ option.label }}
+        </mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <div class="actions">
+      <button mat-flat-button color="primary" type="submit">Apply filters</button>
+    </div>
+  </form>
+</mat-card>
