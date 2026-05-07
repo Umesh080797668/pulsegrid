@@ -53,6 +53,7 @@ public class Billing {
     private BigDecimal totalAmount;
 
     @Column(name = "currency")
+    @Builder.Default
     private String currency = "USD";
 
     @Column(nullable = false)
@@ -65,9 +66,11 @@ public class Billing {
     private Instant dueDate;
 
     @Column(name = "created_at", nullable = false, updatable = false)
+    @Builder.Default
     private Instant createdAt = Instant.now();
 
     @Column(name = "updated_at")
+    @Builder.Default
     private Instant updatedAt = Instant.now();
 
     @PreUpdate

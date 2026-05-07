@@ -34,24 +34,30 @@ public class UsageTracking {
     private String billingMonth; // YYYY-MM format
 
     @Column(nullable = false, name = "event_count")
+    @Builder.Default
     private Long eventCount = 0L;
 
     @Column(nullable = false, name = "api_call_count")
+    @Builder.Default
     private Long apiCallCount = 0L;
 
     @Column(nullable = false, name = "flow_run_count")
+    @Builder.Default
     private Long flowRunCount = 0L;
 
     @Column(nullable = false, name = "execution_time_ms")
+    @Builder.Default
     private Long executionTimeMs = 0L;
 
     @Column(name = "connector_calls_by_type")
     private String connectorCallsJson; // JSON: {"slack": 100, "github": 50}
 
     @Column(nullable = false, name = "created_at", updatable = false)
+    @Builder.Default
     private Instant createdAt = Instant.now();
 
     @Column(nullable = false, name = "updated_at")
+    @Builder.Default
     private Instant updatedAt = Instant.now();
 
     @PreUpdate
