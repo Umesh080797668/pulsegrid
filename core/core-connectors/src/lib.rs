@@ -4,6 +4,7 @@ use hmac::{Hmac, Mac};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 use std::time::Duration;
@@ -14,6 +15,114 @@ pub mod mqtt_bridge;
 pub mod ble_device_listener;
 
 type HmacSha256 = Hmac<Sha256>;
+
+fn required_string(params: &serde_json::Value, key: &str) -> Result<String, ConnectorError> {
+    params
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ConnectorError::InvalidConfig(format!("missing required input field: {key}")))
+}
+
+fn optional_string(params: &serde_json::Value, key: &str) -> Option<String> {
+    params
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn optional_value(params: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    params.get(key).cloned()
+}
+
+fn required_value(params: &serde_json::Value, key: &str) -> Result<serde_json::Value, ConnectorError> {
+    params
+        .get(key)
+        .cloned()
+        .ok_or_else(|| ConnectorError::InvalidConfig(format!("missing required input field: {key}")))
+}
+
+fn required_object(params: &serde_json::Value, key: &str) -> Result<serde_json::Value, ConnectorError> {
+    let value = required_value(params, key)?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(ConnectorError::InvalidConfig(format!("{key} must be an object")))
+    }
+}
+
+fn normalize_string_array(params: &serde_json::Value, key: &str) -> Result<Vec<String>, ConnectorError> {
+    let value = params
+        .get(key)
+        .ok_or_else(|| ConnectorError::InvalidConfig(format!("missing required input field: {key}")))?;
+
+    let array = value
+        .as_array()
+        .ok_or_else(|| ConnectorError::InvalidConfig(format!("{key} must be an array")))?;
+
+    Ok(array
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ConnectorError::InvalidConfig(format!("{key} entries must be strings")))
+        })
+        .collect::<Result<Vec<String>, ConnectorError>>()?)
+}
+
+fn normalize_recipients(params: &serde_json::Value, key: &str) -> Result<Vec<String>, ConnectorError> {
+    match params.get(key) {
+        Some(value) if value.is_array() => normalize_string_array(params, key),
+        Some(value) => value
+            .as_str()
+            .map(|entry| vec![entry.trim().to_string()])
+            .filter(|items| items.first().map(|item| !item.is_empty()).unwrap_or(false))
+            .ok_or_else(|| ConnectorError::InvalidConfig(format!("{key} must be a string or array of strings"))),
+        None => Err(ConnectorError::InvalidConfig(format!("missing required input field: {key}"))),
+    }
+}
+
+async fn send_json_request(
+    client: &Client,
+    method: reqwest::Method,
+    url: String,
+    headers: HashMap<String, String>,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, ConnectorError> {
+    let mut request = client.request(method, &url);
+
+    for (key, value) in headers {
+        request = request.header(&key, value);
+    }
+
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ConnectorError::HttpError(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ConnectorError::HttpError(format!(
+            "request failed with status {}",
+            response.status()
+        )));
+    }
+
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(serde_json::json!({"success": true}));
+    }
+
+    match response.json::<serde_json::Value>().await {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(serde_json::json!({"success": true})),
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HttpConfig {
@@ -430,10 +539,43 @@ impl Connector for ResendConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "send_email" => Ok(serde_json::json!({"status": "sent"})),
+            "send_email" => {
+                let api_key = required_string(&params, "api_key")?;
+                let from = required_string(&params, "from")?;
+                let to = normalize_recipients(&params, "to")?;
+                let subject = required_string(&params, "subject")?;
+                let html = optional_string(&params, "html");
+                let text = optional_string(&params, "text");
+
+                let mut body = serde_json::json!({
+                    "from": from,
+                    "to": to,
+                    "subject": subject,
+                });
+
+                if let Some(html) = html {
+                    body["html"] = serde_json::Value::String(html);
+                }
+
+                if let Some(text) = text {
+                    body["text"] = serde_json::Value::String(text);
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://api.resend.com/emails".to_string(),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {api_key}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -467,10 +609,39 @@ impl Connector for OpenAiConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "chat_completion" => Ok(serde_json::json!({"choices": [{"message": {"content": ""}}]})),
+            "chat_completion" => {
+                let api_key = required_string(&params, "api_key")?;
+                let messages = required_value(&params, "messages")?;
+                let model = optional_string(&params, "model").unwrap_or_else(|| "gpt-4o-mini".to_string());
+                let temperature = params.get("temperature").cloned().unwrap_or_else(|| serde_json::json!(0.7));
+                let endpoint_url = optional_string(&params, "endpoint_url")
+                    .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
+
+                let mut body = serde_json::json!({
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                });
+
+                if let Some(max_tokens) = params.get("max_tokens").and_then(serde_json::Value::as_i64) {
+                    body["max_tokens"] = serde_json::json!(max_tokens);
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    endpoint_url,
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {api_key}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -504,10 +675,43 @@ impl Connector for AnthropicConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "message" => Ok(serde_json::json!({"content": [{"type": "text", "text": ""}]})),
+            "message" => {
+                let api_key = required_string(&params, "api_key")?;
+                let messages = required_value(&params, "messages")?;
+                let model = optional_string(&params, "model").unwrap_or_else(|| "claude-3-5-sonnet-20240620".to_string());
+                let max_tokens = params
+                    .get("max_tokens")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(1024);
+                let endpoint_url = optional_string(&params, "endpoint_url")
+                    .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
+
+                let mut body = serde_json::json!({
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "messages": messages,
+                });
+
+                if let Some(system) = optional_string(&params, "system") {
+                    body["system"] = serde_json::Value::String(system);
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    endpoint_url,
+                    HashMap::from([
+                        ("x-api-key".to_string(), api_key),
+                        ("anthropic-version".to_string(), "2023-06-01".to_string()),
+                        ("content-type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -541,10 +745,36 @@ impl Connector for AirtableConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_record" => Ok(serde_json::json!({"id": "", "createdTime": ""})),
+            "create_record" => {
+                let api_key = required_string(&params, "api_key")?;
+                let base_id = required_string(&params, "base_id")?;
+                let table = params
+                    .get("table")
+                    .or_else(|| params.get("table_name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| ConnectorError::InvalidConfig("missing required input field: table".to_string()))?;
+                let fields = required_object(&params, "fields")?;
+
+                let body = serde_json::json!({"fields": fields});
+                let url = format!("https://api.airtable.com/v0/{base_id}/{table}");
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    url,
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {api_key}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -578,10 +808,25 @@ impl Connector for HubSpotConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_contact" => Ok(serde_json::json!({"id": "", "properties": {}})),
+            "create_contact" => {
+                let access_token = required_string(&params, "access_token")?;
+                let properties = required_object(&params, "properties")?;
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://api.hubapi.com/crm/v3/objects/contacts".to_string(),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {access_token}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(serde_json::json!({"properties": properties})),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -615,10 +860,28 @@ impl Connector for JiraConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_issue" => Ok(serde_json::json!({"id": "", "key": ""})),
+            "create_issue" => {
+                let domain = required_string(&params, "domain")?;
+                let access_token = required_string(&params, "access_token")?;
+                let fields = required_object(&params, "fields")?;
+
+                let url = format!("{domain}/rest/api/3/issue");
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    url,
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {access_token}")),
+                        ("Accept".to_string(), "application/json".to_string()),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(serde_json::json!({"fields": fields})),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -652,10 +915,31 @@ impl Connector for LinearConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_issue" => Ok(serde_json::json!({"id": "", "identifier": ""})),
+            "create_issue" => {
+                let api_key = required_string(&params, "api_key")?;
+                let query = required_string(&params, "query")?;
+                let variables = optional_value(&params, "variables");
+
+                let mut body = serde_json::json!({"query": query});
+                if let Some(variables) = variables {
+                    body["variables"] = variables;
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://api.linear.app/graphql".to_string(),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {api_key}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -689,10 +973,25 @@ impl Connector for AsanaConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_task" => Ok(serde_json::json!({"id": "", "gid": ""})),
+            "create_task" => {
+                let access_token = required_string(&params, "access_token")?;
+                let data = required_object(&params, "data")?;
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://app.asana.com/api/1.0/tasks".to_string(),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {access_token}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(serde_json::json!({"data": data})),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -726,10 +1025,37 @@ impl Connector for ClickUpConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_task" => Ok(serde_json::json!({"id": ""})),
+            "create_task" => {
+                let api_key = required_string(&params, "api_key")?;
+                let list_id = required_string(&params, "list_id")?;
+                let name = required_string(&params, "name")?;
+                let mut body = serde_json::json!({"name": name});
+
+                if let Some(description) = optional_string(&params, "description") {
+                    body["description"] = serde_json::Value::String(description);
+                }
+                if let Some(tags) = optional_value(&params, "tags") {
+                    body["tags"] = tags;
+                }
+                if let Some(assignees) = optional_value(&params, "assignees") {
+                    body["assignees"] = assignees;
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    format!("https://api.clickup.com/api/v2/list/{list_id}/task"),
+                    HashMap::from([
+                        ("Authorization".to_string(), api_key),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -763,10 +1089,33 @@ impl Connector for TrelloConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_card" => Ok(serde_json::json!({"id": ""})),
+            "create_card" => {
+                let key = required_string(&params, "key")?;
+                let token = required_string(&params, "token")?;
+                let list_id = required_string(&params, "list_id")?;
+                let name = required_string(&params, "name")?;
+                let mut query = vec![
+                    format!("key={}", urlencoding::encode(&key)),
+                    format!("token={}", urlencoding::encode(&token)),
+                    format!("idList={}", urlencoding::encode(&list_id)),
+                    format!("name={}", urlencoding::encode(&name)),
+                ];
+                if let Some(desc) = optional_string(&params, "desc") {
+                    query.push(format!("desc={}", urlencoding::encode(&desc)));
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    format!("https://api.trello.com/1/cards?{}", query.join("&")),
+                    HashMap::new(),
+                    None,
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -800,10 +1149,26 @@ impl Connector for ZendeskConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_ticket" => Ok(serde_json::json!({"id": ""})),
+            "create_ticket" => {
+                let subdomain = required_string(&params, "subdomain")?;
+                let access_token = required_string(&params, "access_token")?;
+                let ticket = required_object(&params, "ticket")?;
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    format!("https://{subdomain}.zendesk.com/api/v2/tickets.json"),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {access_token}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(serde_json::json!({"ticket": ticket})),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -837,10 +1202,27 @@ impl Connector for PagerDutyConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_incident" => Ok(serde_json::json!({"id": ""})),
+            "create_incident" => {
+                let routing_key = required_string(&params, "routing_key")?;
+                let payload = required_object(&params, "payload")?;
+                let event_action = optional_string(&params, "event_action").unwrap_or_else(|| "trigger".to_string());
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://events.pagerduty.com/v2/enqueue".to_string(),
+                    HashMap::from([("Content-Type".to_string(), "application/json".to_string())]),
+                    Some(serde_json::json!({
+                        "routing_key": routing_key,
+                        "event_action": event_action,
+                        "payload": payload,
+                    })),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -874,10 +1256,52 @@ impl Connector for StripeConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_payment_intent" => Ok(serde_json::json!({"id": ""})),
+            "create_payment_intent" => {
+                let api_key = required_string(&params, "api_key")?;
+                let endpoint_url = optional_string(&params, "endpoint_url")
+                    .unwrap_or_else(|| "https://api.stripe.com/v1/payment_intents".to_string());
+                let method = optional_string(&params, "method").unwrap_or_else(|| "POST".to_string());
+                let mut body = optional_value(&params, "body").unwrap_or_else(|| serde_json::json!({}));
+
+                if body.as_object().map(|map| map.is_empty()).unwrap_or(false) {
+                    if let Some(amount) = params.get("amount") {
+                        body["amount"] = amount.clone();
+                    }
+                    if let Some(currency) = optional_string(&params, "currency") {
+                        body["currency"] = serde_json::Value::String(currency);
+                    }
+                    if let Some(description) = optional_string(&params, "description") {
+                        body["description"] = serde_json::Value::String(description);
+                    }
+                    if let Some(customer_email) = optional_string(&params, "customer_email") {
+                        body["receipt_email"] = serde_json::Value::String(customer_email);
+                    }
+                }
+
+                let request_method = match method.to_uppercase().as_str() {
+                    "GET" => reqwest::Method::GET,
+                    "POST" => reqwest::Method::POST,
+                    "PUT" => reqwest::Method::PUT,
+                    "PATCH" => reqwest::Method::PATCH,
+                    "DELETE" => reqwest::Method::DELETE,
+                    _ => reqwest::Method::POST,
+                };
+
+                send_json_request(
+                    &Client::new(),
+                    request_method,
+                    endpoint_url,
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {api_key}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -911,10 +1335,41 @@ impl Connector for SendGridConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "send_email" => Ok(serde_json::json!({"id": ""})),
+            "send_email" => {
+                let api_key = required_string(&params, "api_key")?;
+                let from = required_string(&params, "from")?;
+                let to = normalize_recipients(&params, "to")?;
+                let subject = required_string(&params, "subject")?;
+                let content = params
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.to_string())
+                    .or_else(|| optional_string(&params, "html_content"))
+                    .ok_or_else(|| ConnectorError::InvalidConfig("missing required input field: content".to_string()))?;
+                let content_type = optional_string(&params, "content_type").unwrap_or_else(|| "text/html".to_string());
+
+                let body = serde_json::json!({
+                    "personalizations": [{"to": to.into_iter().map(|email| serde_json::json!({"email": email})).collect::<Vec<_>>()}],
+                    "from": {"email": from},
+                    "subject": subject,
+                    "content": [{"type": content_type, "value": content}],
+                });
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://api.sendgrid.com/v3/mail/send".to_string(),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {api_key}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -948,10 +1403,34 @@ impl Connector for SalesforceConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_record" => Ok(serde_json::json!({"id": ""})),
+            "create_record" => {
+                let access_token = required_string(&params, "access_token")?;
+                let instance_url = required_string(&params, "instance_url")?;
+                let object_api_name = params
+                    .get("object_api_name")
+                    .or_else(|| params.get("object_type"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| ConnectorError::InvalidConfig("missing required input field: object_api_name".to_string()))?;
+                let fields = required_object(&params, "fields")?;
+                let api_version = optional_string(&params, "api_version").unwrap_or_else(|| "v60.0".to_string());
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    format!("{instance_url}/services/data/{api_version}/sobjects/{object_api_name}/"),
+                    HashMap::from([
+                        ("Authorization".to_string(), format!("Bearer {access_token}")),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(fields),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -985,10 +1464,47 @@ impl Connector for ShopifyConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_product" => Ok(serde_json::json!({"id": ""})),
+            "create_product" => {
+                let shop_name = required_string(&params, "store_domain")?;
+                let access_token = required_string(&params, "access_token")?;
+                let endpoint_path = optional_string(&params, "endpoint_path").unwrap_or_else(|| "/products.json".to_string());
+                let method = optional_string(&params, "method").unwrap_or_else(|| "POST".to_string());
+                let body = optional_value(&params, "body");
+                let headers = optional_value(&params, "headers")
+                    .and_then(|value| value.as_object().cloned())
+                    .unwrap_or_default();
+
+                let mut request_headers = HashMap::from([
+                    ("X-Shopify-Access-Token".to_string(), access_token),
+                    ("Content-Type".to_string(), "application/json".to_string()),
+                ]);
+                for (key, value) in headers {
+                    if let Some(value) = value.as_str() {
+                        request_headers.insert(key, value.to_string());
+                    }
+                }
+
+                let request_method = match method.to_uppercase().as_str() {
+                    "GET" => reqwest::Method::GET,
+                    "POST" => reqwest::Method::POST,
+                    "PUT" => reqwest::Method::PUT,
+                    "PATCH" => reqwest::Method::PATCH,
+                    "DELETE" => reqwest::Method::DELETE,
+                    _ => reqwest::Method::GET,
+                };
+
+                send_json_request(
+                    &Client::new(),
+                    request_method,
+                    format!("https://{shop_name}/admin/api/2024-07{endpoint_path}"),
+                    request_headers,
+                    body,
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -1022,10 +1538,37 @@ impl Connector for GitLabConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_issue" => Ok(serde_json::json!({"id": "", "iid": ""})),
+            "create_issue" => {
+                let access_token = required_string(&params, "access_token")?;
+                let project_id = required_string(&params, "project_id")?;
+                let title = required_string(&params, "title")?;
+
+                let mut body = serde_json::json!({"title": title});
+                if let Some(description) = optional_string(&params, "description") {
+                    body["description"] = serde_json::Value::String(description);
+                }
+                if let Some(labels) = optional_value(&params, "labels") {
+                    body["labels"] = labels;
+                }
+                if let Some(assignee_ids) = optional_value(&params, "assignee_ids") {
+                    body["assignee_ids"] = assignee_ids;
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    format!("https://gitlab.com/api/v4/projects/{project_id}/issues"),
+                    HashMap::from([
+                        ("PRIVATE-TOKEN".to_string(), access_token),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -1059,10 +1602,31 @@ impl Connector for MondayConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "create_item" => Ok(serde_json::json!({"id": ""})),
+            "create_item" => {
+                let api_token = required_string(&params, "api_key")?;
+                let query = required_string(&params, "query")?;
+                let variables = optional_value(&params, "variables");
+
+                let mut body = serde_json::json!({"query": query});
+                if let Some(variables) = variables {
+                    body["variables"] = variables;
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://api.monday.com/v2".to_string(),
+                    HashMap::from([
+                        ("Authorization".to_string(), api_token),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
@@ -1096,10 +1660,40 @@ impl Connector for BrevoConnector {
         &self,
         _credentials: &Credentials,
         action_id: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<serde_json::Value, ConnectorError> {
         match action_id {
-            "send_email" => Ok(serde_json::json!({"messageId": ""})),
+            "send_email" => {
+                let api_key = required_string(&params, "api_key")?;
+                let from = required_string(&params, "from")?;
+                let to = normalize_recipients(&params, "to")?;
+                let subject = required_string(&params, "subject")?;
+                let html_content = required_string(&params, "html_content")?;
+                let reply_to = optional_string(&params, "reply_to");
+
+                let mut body = serde_json::json!({
+                    "sender": {"email": from},
+                    "to": to.into_iter().map(|email| serde_json::json!({"email": email})).collect::<Vec<_>>(),
+                    "subject": subject,
+                    "htmlContent": html_content,
+                });
+
+                if let Some(reply_to) = reply_to {
+                    body["replyTo"] = serde_json::json!({"email": reply_to});
+                }
+
+                send_json_request(
+                    &Client::new(),
+                    reqwest::Method::POST,
+                    "https://api.brevo.com/v3/smtp/email".to_string(),
+                    HashMap::from([
+                        ("api-key".to_string(), api_key),
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                    ]),
+                    Some(body),
+                )
+                .await
+            }
             _ => Err(ConnectorError::InvalidConfig(
                 format!("unknown action: {}", action_id),
             )),
