@@ -10,6 +10,8 @@ use core_connectors::{
 use core_vm::CoreVm;
 use rhai::{Array as RhaiArray, Dynamic, Engine, Map as RhaiMap};
 use serde_json::{Value, json};
+use crate::approval::ApprovalManager;
+use uuid::Uuid;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -894,8 +896,8 @@ impl FlowExecutor {
                 let mut last_error: Option<String> = None;
 
                 for attempt in 0..max_attempts {
-                    let exec_result = self
-                        .dispatch_connector_action(&connectors, &connector_name, &action_name, &input)
+                        let exec_result = self
+                        .dispatch_connector_action(&connectors, &connector_name, &action_name, &input, event)
                         .await;
 
                     match exec_result {
@@ -1673,8 +1675,11 @@ impl FlowExecutor {
         context_json: Value,
         expires_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<String, String> {
-        let approval_token = uuid::Uuid::new_v4().to_string();
-        let query = sqlx::query(
+        let approval_uuid = uuid::Uuid::new_v4();
+        let approval_token = approval_uuid.to_string();
+
+        // Insert pending approval and return the id
+        let row = sqlx::query!(
             r#"
             INSERT INTO pending_approvals (
                 flow_run_id,
@@ -1684,20 +1689,97 @@ impl FlowExecutor {
                 expires_at,
                 status
             ) VALUES ($1, $2, $3, $4, $5, 'pending')
+            RETURNING id
             "#,
+            flow_run_id,
+            &step.id,
+            approval_uuid,
+            &context_json,
+            expires_at
         )
-        .bind(flow_run_id)
-        .bind(&step.id)
-        .bind(&approval_token)
-        .bind(&context_json)
-        .bind(expires_at)
-        .execute(&self.pool)
-        .await;
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| format!("Failed to create pending approval: {}", e))?;
 
-        if let Err(error) = query {
-            return Err(error.to_string());
+        let approval_id: uuid::Uuid = row.id;
+
+        // Mark flow_run as waiting for approval
+        let _ = sqlx::query!(
+            r#"UPDATE flow_runs SET approval_state = 'pending_approval' WHERE id = $1"#,
+            flow_run_id
+        )
+        .execute(&self.pool)
+        .await; 
+
+        // If there is an approval config, evaluate routing rules and populate approval_approvers
+        if let Some(cfg) = &step.approval_config {
+            // Try to extract step_outputs and event_data from context_json
+            let step_outputs = context_json.get("step_outputs").cloned().unwrap_or_else(|| json!({}));
+            let event_data = context_json.get("trigger_event").cloned().unwrap_or(Value::Null);
+
+            // Convert step_outputs into HashMap<String, Value> expected by evaluator
+            let mut outputs_map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+            if let Value::Object(map) = step_outputs {
+                for (k, v) in map {
+                    outputs_map.insert(k, v);
+                }
+            }
+
+            // Evaluate routing rules to determine which rules match
+            if let Ok(matching_rules) = ApprovalManager::evaluate_routing_rules(cfg, &outputs_map, &event_data) {
+                for rule in matching_rules {
+                    // Resolve approvers by role if configured
+                    let mut approvers: Vec<(uuid::Uuid, String)> = Vec::new();
+
+                    if let Some(required_roles) = &rule.required_roles {
+                        // Query users in workspace with matching role
+                        let rows = sqlx::query!(
+                            r#"SELECT u.id AS user_id, u.email AS email FROM users u JOIN workspace_members wm ON u.id = wm.user_id WHERE wm.workspace_id = $1 AND wm.role = ANY($2) LIMIT $3"#,
+                            context_json.get("workspace_id").and_then(Value::as_str).and_then(|s| uuid::Uuid::parse_str(s).ok()).unwrap_or(Uuid::nil()),
+                            required_roles as &Vec<String>,
+                            rule.required_approvers as i64
+                        )
+                        .fetch_all(&self.pool)
+                        .await
+                        .unwrap_or_default();
+
+                        for r in rows {
+                            approvers.push((r.user_id, r.email));
+                        }
+                    }
+
+                    // If we don't have enough approvers, use fallback email(s)
+                    while approvers.len() < (rule.required_approvers as usize) {
+                        if let Some(fallback) = &rule.fallback_email {
+                            // generate a placeholder UUID for external approver
+                            approvers.push((uuid::Uuid::new_v4(), fallback.clone()));
+                        } else if let Some(emails) = &cfg.notify_emails {
+                            if !emails.is_empty() {
+                                approvers.push((uuid::Uuid::new_v4(), emails[0].clone()));
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // Insert approvers into approval_approvers table
+                    for (user_id, email) in approvers {
+                        let _ = sqlx::query!(
+                            r#"INSERT INTO approval_approvers (approval_id, approver_id, approver_email, status, created_at, updated_at) VALUES ($1, $2, $3, 'pending', NOW(), NOW()) ON CONFLICT DO NOTHING"#,
+                            approval_id,
+                            user_id,
+                            email
+                        )
+                        .execute(&self.pool)
+                        .await;
+                    }
+                }
+            }
         }
 
+        // Send generic notifications (also specific approver emails were added above)
         if let Err(error) = self.send_approval_notification(&approval_token, &context_json).await {
             eprintln!("failed to send approval notification: {}", error);
         }
@@ -1770,12 +1852,105 @@ impl FlowExecutor {
         Ok(())
     }
 
+    async fn send_circuit_open_alert(
+        &self,
+        connector_id: &str,
+        workspace_id: uuid::Uuid,
+        error_rate: f64,
+    ) -> Result<(), String> {
+        let message = format!(
+            "🚨 Circuit breaker opened for connector '{}': error rate {:.1}% exceeded 50% threshold",
+            connector_id,
+            error_rate * 100.0
+        );
+
+        // Try Slack webhook first
+        if let Ok(webhook_url) = std::env::var("APPROVAL_SLACK_WEBHOOK_URL") {
+            let client = reqwest::Client::new();
+            let _ = client
+                .post(webhook_url)
+                .json(&json!({
+                    "text": message,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": &message
+                            }
+                        },
+                        {
+                            "type": "section",
+                            "fields": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": format!("*Connector:*\n{}", connector_id)
+                                },
+                                {
+                                    "type": "mrkdwn",
+                                    "text": format!("*Workspace:*\n{}", workspace_id)
+                                },
+                                {
+                                    "type": "mrkdwn",
+                                    "text": format!("*Error Rate:*\n{:.1}%", error_rate * 100.0)
+                                },
+                                {
+                                    "type": "mrkdwn",
+                                    "text": format!("*Status:*\nCircuit Open")
+                                }
+                            ]
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "_All flows using this connector have been paused. They will resume once the error rate drops below 50%._"
+                            }
+                        }
+                    ]
+                }))
+                .send()
+                .await;
+            return Ok(());
+        }
+
+        // Fallback to email via Resend
+        let resend_api_key = match std::env::var("RESEND_API_KEY") {
+            Ok(value) => value,
+            Err(_) => return Ok(()), // No alert service configured, skip silently
+        };
+
+        let alert_email_to = std::env::var("ALERT_EMAIL_TO")
+            .unwrap_or_else(|_| "ops@pulsegrid.local".to_string());
+        let resend_from = std::env::var("RESEND_FROM_EMAIL")
+            .unwrap_or_else(|_| "alerts@pulsegrid.local".to_string());
+
+        let client = reqwest::Client::new();
+        let _ = client
+            .post("https://api.resend.com/emails")
+            .bearer_auth(resend_api_key)
+            .json(&json!({
+                "from": resend_from,
+                "to": [alert_email_to],
+                "subject": format!("🚨 Circuit Breaker Alert: {}", connector_id),
+                "html": format!(
+                    "<h2>{}</h2><p><strong>Details:</strong></p><ul><li>Connector: {}</li><li>Workspace: {}</li><li>Error Rate: {:.1}%</li><li>Status: Circuit Open</li></ul><p><em>All flows using this connector have been paused. They will resume once the error rate drops below 50%.</em></p>",
+                    message, connector_id, workspace_id, error_rate * 100.0
+                ),
+            }))
+            .send()
+            .await;
+
+        Ok(())
+    }
+
     async fn dispatch_connector_action(
         &self,
         connectors: &Connectors,
         connector: &str,
         action: &str,
         input: &Value,
+        event: &PulseEvent,
     ) -> Result<Value, String> {
         // Check circuit breaker before executing connector action
         if self.is_circuit_open(connector).await.unwrap_or(false) {
@@ -2065,9 +2240,55 @@ impl FlowExecutor {
             }
         };
 
-        // Track errors on failure and return result
+        // Track errors on failure and return result. If error rate crosses threshold,
+        // mark connector health as circuit_open, pause affected flows and send alerts.
         if result.is_err() {
             self.track_connector_error(connector).await.ok();
+
+            // Check recent window counts to compute error rate
+            let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379/".to_string());
+            if let Ok(client) = redis::Client::open(redis_url) {
+                if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                    let window = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() / 300;
+
+                    use redis::AsyncCommands;
+                    let calls_key = format!("connector:calls:{}:{}", connector, window);
+                    let errors_key = format!("connector:errors:{}:{}", connector, window);
+                    let calls_count: i32 = con.get(&calls_key).await.unwrap_or(0);
+                    let errors_count: i32 = con.get(&errors_key).await.unwrap_or(0);
+
+                    if calls_count > 0 {
+                        let error_rate = errors_count as f64 / calls_count as f64;
+                        if error_rate > 0.5 {
+                            // Update connector_health table
+                            let _ = sqlx::query!(
+                                r#"
+                                INSERT INTO connector_health (connector_id, workspace_id, status, error_rate, call_count, error_count, last_error_at, circuit_open_at, updated_at)
+                                VALUES ($1, $2, 'circuit_open', $3, $4, $5, NOW(), NOW(), NOW())
+                                ON CONFLICT (connector_id, workspace_id)
+                                DO UPDATE SET status = 'circuit_open', error_rate = $3, call_count = $4, error_count = $5, last_error_at = NOW(), circuit_open_at = NOW(), updated_at = NOW()
+                                "#,
+                                connector,
+                                event.tenant_id,
+                                error_rate as f32,
+                                calls_count,
+                                errors_count
+                            )
+                            .execute(&self.pool)
+                            .await;
+
+                            // Pause affected flows for this connector/workspace
+                            let _ = self.pause_flows_for_circuit(connector, event.tenant_id).await;
+
+                            // Send alert to configured channels
+                            let _ = self.send_circuit_open_alert(connector, event.tenant_id, error_rate).await;
+                        }
+                    }
+                }
+            }
         }
 
         result
