@@ -1,33 +1,98 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { computed, ref, watch } from 'vue';
+import {
+  buildPulseApiUrl,
+  buildPulseAuthHeaders,
+  extractRuns,
+  parsePulseResponse,
+  pickLatestRunTimestamp,
+  type PulseAnalyticsRunsResponse,
+} from '../lib/pulse-api';
 
 const props = defineProps<{
   workspaceId?: string;
+  flowId?: string;
   apiKey?: string;
+  apiBaseUrl?: string;
   theme?: string;
 }>();
 
 const status = ref('Ready');
 const lastRun = ref('');
+const errorMessage = ref('');
+const isLoading = ref(false);
 
-onMounted(() => {
-  if (props.workspaceId) {
-    status.value = 'Idle';
-    lastRun.value = new Date().toISOString();
-  } else {
+const statusClass = computed(() => status.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'));
+const formattedLastRun = computed(() =>
+  lastRun.value ? new Date(lastRun.value).toLocaleString() : '',
+);
+
+const refreshStatus = async () => {
+  if (!props.workspaceId || !props.apiKey) {
     status.value = 'Unconfigured';
+    lastRun.value = '';
+    errorMessage.value = '';
+    return;
   }
-});
+
+  isLoading.value = true;
+  errorMessage.value = '';
+
+  try {
+    const query = new URLSearchParams({ workspaceId: props.workspaceId, limit: '1' });
+    if (props.flowId) {
+      query.set('flowId', props.flowId);
+    }
+
+    const response = await fetch(buildPulseApiUrl(`/analytics/runs?${query.toString()}`, props.apiBaseUrl), {
+      method: 'GET',
+      headers: {
+        ...buildPulseAuthHeaders(props.apiKey),
+      },
+    });
+
+    const payload = await parsePulseResponse<PulseAnalyticsRunsResponse>(response);
+    const runs = extractRuns(payload);
+    const latestRun = runs[0];
+
+    if (latestRun) {
+      const latestStatus = latestRun.status || 'idle';
+      status.value = latestStatus.charAt(0).toUpperCase() + latestStatus.slice(1);
+      lastRun.value = pickLatestRunTimestamp(latestRun);
+      return;
+    }
+
+    status.value = 'Idle';
+    lastRun.value = '';
+  } catch (error) {
+    status.value = 'Unavailable';
+    lastRun.value = '';
+    errorMessage.value = error instanceof Error ? error.message : 'Unable to load status';
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+watch(
+  () => [props.workspaceId, props.flowId, props.apiKey, props.apiBaseUrl],
+  () => {
+    void refreshStatus();
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
   <div :class="['pulse-status-container', theme]">
     <div class="status-indicator">
-      <span class="dot" :class="status.toLowerCase()"></span>
-      <span class="status-text">{{ status }}</span>
+      <span class="dot" :class="statusClass"></span>
+      <span class="status-text">{{ isLoading ? 'Refreshing…' : status }}</span>
     </div>
-    <div class="last-run" v-if="lastRun">
-      Last run: {{ new Date(lastRun).toLocaleString() }}
+    <div class="last-run" v-if="formattedLastRun">
+      Last run: {{ formattedLastRun }}
+    </div>
+    <div class="status-error" v-if="errorMessage">
+      {{ errorMessage }}
     </div>
   </div>
 </template>
@@ -61,7 +126,11 @@ onMounted(() => {
   background-color: #94a3b8;
 }
 .dot.idle { background-color: #34d399; }
+.dot.success { background-color: #34d399; }
+.dot.running { background-color: #3b82f6; }
+.dot.failed { background-color: #ef4444; }
 .dot.unconfigured { background-color: #f87171; }
+.dot.unavailable { background-color: #f59e0b; }
 .status-text {
   font-weight: 500;
   font-size: 0.875rem;
@@ -70,7 +139,14 @@ onMounted(() => {
   font-size: 0.75rem;
   color: #64748b;
 }
+.status-error {
+  font-size: 0.75rem;
+  color: #b91c1c;
+}
 .dark .last-run {
   color: #94a3b8;
+}
+.dark .status-error {
+  color: #fca5a5;
 }
 </style>

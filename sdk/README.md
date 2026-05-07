@@ -27,7 +27,7 @@ You can instantly use the components without a build step by including the scrip
 
 ## Usage & Components
 
-All components support `workspace-id`, `api-key`, and optional `theme` attributes.
+All components support `workspace-id`, `api-key`, `api-base-url`, and optional `theme` attributes. The trigger component also accepts `flow-id`.
 
 ### 1. Pulse Trigger (`<pulse-trigger>`)
 Renders a configurable button that fires a flow via the public API.
@@ -35,7 +35,9 @@ Renders a configurable button that fires a flow via the public API.
 ```html
 <pulse-trigger 
   workspace-id="ws_12345" 
+  flow-id="flow_abc123"
   api-key="pk_live_123" 
+  api-base-url="https://api.pulsegrid.io"
   theme="light">
   Run Pulse Flow
 </pulse-trigger>
@@ -48,6 +50,7 @@ Shows the last run status and timestamp.
 <pulse-status 
   workspace-id="ws_12345" 
   api-key="pk_live_123" 
+  api-base-url="https://api.pulsegrid.io"
   theme="dark">
 </pulse-status>
 ```
@@ -58,9 +61,14 @@ Renders the full flow management panel embeddable in any SaaS app.
 ```html
 <pulse-panel 
   workspace-id="ws_12345" 
-  api-key="pk_live_123">
+  api-key="pk_live_123"
+  api-base-url="https://api.pulsegrid.io">
 </pulse-panel>
 ```
+
+## API Authentication
+
+The SDK sends the provided `api-key` as both `Authorization: Bearer ...` and `X-API-Key` so it can talk to PulseGrid deployments that validate either header.
 
 ## Automated Versioning
 This repository uses `semantic-release` to automate version incrementation and NPM publishing. Commits pushed to the `main` branch will automatically trigger a release sequence.

@@ -1,16 +1,70 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref, watch } from 'vue';
+import {
+  buildPulseApiUrl,
+  buildPulseAuthHeaders,
+  extractFlows,
+  parsePulseResponse,
+  type PulseFlowSummary,
+} from '../lib/pulse-api';
 
 const props = defineProps<{
   workspaceId?: string;
   apiKey?: string;
+  apiBaseUrl?: string;
   theme?: string;
 }>();
 
-const flows = ref([
-  { id: 1, name: 'Onboarding Flow', status: 'active' },
-  { id: 2, name: 'Data Sync', status: 'inactive' }
-]);
+const flows = ref<PulseFlowSummary[]>([]);
+const isLoading = ref(false);
+const errorMessage = ref('');
+
+const normalizedFlows = computed(() =>
+  flows.value.map((flow, index) => ({
+    id: flow.id || flow.flow_id || flow.name || flow.flow_name || flow.title || `flow-${index}`,
+    name: flow.name || flow.flow_name || flow.title || flow.id || 'Untitled Flow',
+    status: String(flow.status || (flow.enabled === false ? 'inactive' : 'active')).toLowerCase(),
+  })),
+);
+
+const loadFlows = async () => {
+  if (!props.workspaceId || !props.apiKey) {
+    flows.value = [];
+    errorMessage.value = '';
+    return;
+  }
+
+  isLoading.value = true;
+  errorMessage.value = '';
+
+  try {
+    const response = await fetch(
+      buildPulseApiUrl(`/flows?workspaceId=${encodeURIComponent(props.workspaceId)}`, props.apiBaseUrl),
+      {
+        method: 'GET',
+        headers: {
+          ...buildPulseAuthHeaders(props.apiKey),
+        },
+      },
+    );
+
+    const payload = await parsePulseResponse<unknown>(response);
+    flows.value = extractFlows(payload);
+  } catch (error) {
+    flows.value = [];
+    errorMessage.value = error instanceof Error ? error.message : 'Unable to load flows';
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+watch(
+  () => [props.workspaceId, props.apiKey, props.apiBaseUrl],
+  () => {
+    void loadFlows();
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -21,8 +75,17 @@ const flows = ref([
     </div>
     
     <div class="panel-content" v-if="workspaceId && apiKey">
+      <div class="panel-loading" v-if="isLoading">
+        Loading flows…
+      </div>
+      <div class="panel-error" v-if="errorMessage">
+        {{ errorMessage }}
+      </div>
+      <div class="panel-empty-state" v-if="!isLoading && !errorMessage && normalizedFlows.length === 0">
+        No flows found for this workspace.
+      </div>
       <ul class="flow-list">
-        <li v-for="flow in flows" :key="flow.id" class="flow-item">
+        <li v-for="flow in normalizedFlows" :key="String(flow.id)" class="flow-item">
           <span class="flow-name">{{ flow.name }}</span>
           <span :class="['flow-status', flow.status]">{{ flow.status }}</span>
         </li>
@@ -77,6 +140,31 @@ const flows = ref([
 .panel-content, .panel-empty {
   padding: 1rem;
 }
+.panel-loading,
+.panel-error {
+  font-size: 0.875rem;
+  margin-bottom: 0.75rem;
+}
+.panel-empty-state {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin-bottom: 0.75rem;
+}
+.panel-loading {
+  color: #475569;
+}
+.panel-error {
+  color: #b91c1c;
+}
+.dark .panel-loading {
+  color: #cbd5e1;
+}
+.dark .panel-empty-state {
+  color: #94a3b8;
+}
+.dark .panel-error {
+  color: #fca5a5;
+}
 .panel-empty p {
   margin: 0;
   color: #64748b;
@@ -116,9 +204,33 @@ const flows = ref([
   background: #dcfce7;
   color: #166534;
 }
+.flow-status.success {
+  background: #dcfce7;
+  color: #166534;
+}
+.flow-status.running {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.flow-status.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
 .dark .flow-status.active {
   background: #064e3b;
   color: #34d399;
+}
+.dark .flow-status.success {
+  background: #064e3b;
+  color: #34d399;
+}
+.dark .flow-status.running {
+  background: #1e3a8a;
+  color: #93c5fd;
+}
+.dark .flow-status.failed {
+  background: #7f1d1d;
+  color: #fca5a5;
 }
 .flow-status.inactive {
   background: #f1f5f9;
