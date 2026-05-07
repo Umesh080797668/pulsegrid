@@ -86,7 +86,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   if (!accessToken) {
-    return <AuthScreen />;
+    // When unauthenticated, render the auth screen and after successful login
+    // redirect users back to the path they originally requested (e.g. /dashboard).
+    return <AuthScreen redirectTo={pathname || '/dashboard'} />;
   }
 
   const onLogout = async () => {
