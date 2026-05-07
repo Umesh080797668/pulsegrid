@@ -10,6 +10,18 @@ interface AnomalyEvent {
   confidence: number;
 }
 
+type SlackWebhookPayload = {
+  text: string;
+  attachments: Array<{
+    color: string;
+    title: string;
+    text: string;
+    fields: Array<{ title: string; value: string; short: boolean }>;
+    footer: string;
+    ts: number;
+  }>;
+};
+
 type RedisStreamEntry = [string, string[]];
 
 /**
@@ -244,6 +256,47 @@ export class AnomalyNotificationService implements OnModuleInit, OnModuleDestroy
       }
     } catch (error) {
       this.logger.error(`Failed to send multicast message for workspace ${workspaceId}:`, error);
+    }
+
+    await this.sendSlackAlert(workspaceId, anomaly);
+  }
+
+  private async sendSlackAlert(workspaceId: string, anomaly: AnomalyEvent): Promise<void> {
+    const webhookUrl = process.env.SLACK_WEBHOOK_URL || '';
+    if (!webhookUrl) {
+      this.logger.debug('SLACK_WEBHOOK_URL not configured; skipping Slack anomaly alert');
+      return;
+    }
+
+    const payload: SlackWebhookPayload = {
+      text: `Anomaly detected in workspace ${workspaceId}`,
+      attachments: [
+        {
+          color: anomaly.confidence >= 0.95 ? 'danger' : 'warning',
+          title: '⚠️ Anomaly Detected',
+          text: anomaly.description,
+          fields: [
+            { title: 'Workspace', value: workspaceId, short: true },
+            { title: 'Confidence', value: `${(anomaly.confidence * 100).toFixed(0)}%`, short: true },
+          ],
+          footer: 'PulseGrid',
+          ts: Math.floor(Date.now() / 1000),
+        },
+      ],
+    };
+
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        this.logger.warn(`Slack alert returned ${response.status} for workspace ${workspaceId}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to send Slack anomaly alert for workspace ${workspaceId}:`, error);
     }
   }
 }

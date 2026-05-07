@@ -109,6 +109,7 @@ export function FlowCanvas({
   flowLibrary = [],
   currentFlowId = '',
   versionDiff = null,
+  onGenerateFlowPrompt,
 }: {
   definitionJson: string;
   onDefinitionJsonChange: (value: string) => void;
@@ -116,8 +117,12 @@ export function FlowCanvas({
   flowLibrary?: FlowRecord[];
   currentFlowId?: string;
   versionDiff?: { added_nodes: string[]; removed_nodes: string[]; changed_nodes: string[] } | null;
+  onGenerateFlowPrompt?: (prompt: string) => Promise<void> | void;
 }) {
   const [selectedStepId, setSelectedStepId] = useState('');
+  const [promptDraft, setPromptDraft] = useState('');
+  const [promptBusy, setPromptBusy] = useState(false);
+  const [promptError, setPromptError] = useState('');
 
   const connectorOptions = useMemo(
     () => Array.from(new Set(catalog.map((item) => item.connector))),
@@ -235,6 +240,28 @@ export function FlowCanvas({
 
   function updateDefinition(next: FlowDefinition) {
     onDefinitionJsonChange(JSON.stringify(next, null, 2));
+  }
+
+  async function generateFromPrompt() {
+    if (!onGenerateFlowPrompt) return;
+
+    const prompt = promptDraft.trim();
+    if (!prompt) {
+      setPromptError('Describe the automation first.');
+      return;
+    }
+
+    setPromptBusy(true);
+    setPromptError('');
+
+    try {
+      await Promise.resolve(onGenerateFlowPrompt(prompt));
+      setPromptDraft('');
+    } catch (error) {
+      setPromptError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPromptBusy(false);
+    }
   }
 
   function addStep() {
@@ -556,6 +583,37 @@ export function FlowCanvas({
       <div className="muted">
         Visual builder for trigger + actions. Connect nodes safely to build parallel DAGs or complex logic.
       </div>
+
+      {onGenerateFlowPrompt ? (
+        <div style={{ padding: 16, borderRadius: 12, border: '1px solid rgba(124,156,255,0.22)', background: 'linear-gradient(180deg, rgba(124,156,255,0.10), rgba(255,255,255,0.03))', display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Describe your automation in plain English</div>
+              <div className="muted" style={{ fontSize: 12 }}>PulseAI will generate a flow draft, then you can refine it on the canvas.</div>
+            </div>
+            <span className="badge b-neutral" style={{ fontSize: 10 }}>AI assisted</span>
+          </div>
+
+          <textarea
+            value={promptDraft}
+            onChange={(e) => setPromptDraft(e.target.value)}
+            placeholder="Example: When a Shopify order is refunded, send a Slack message to #ops and create a follow-up task."
+            rows={4}
+            style={{ width: '100%', padding: 12, borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(10,10,12,0.55)', color: 'inherit', resize: 'vertical' }}
+          />
+
+          {promptError ? <div className="alert alert-error" style={{ marginBottom: 0 }}>{promptError}</div> : null}
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={generateFromPrompt} disabled={promptBusy || !promptDraft.trim()}>
+              {promptBusy ? 'Generating…' : 'Generate flow draft'}
+            </button>
+            <button className="btn btn-secondary" onClick={() => { setPromptDraft(''); setPromptError(''); }} disabled={promptBusy || !promptDraft}>
+              Clear
+            </button>
+          </div>
+        </div>
+      ) : null}
       
       {!canEdit ? (
         <div className="muted">

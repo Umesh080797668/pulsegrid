@@ -8,6 +8,7 @@
     android:orientation="vertical"
     android:padding="16dp">
 
+    <!-- Title -->
     <TextView
         android:id="@+id/widget_title"
         android:layout_width="match_parent"
@@ -17,21 +18,146 @@
         android:textSize="20sp"
         android:textStyle="bold" />
 
+    <!-- Main Message (Hours Saved + Message) -->
     <TextView
         android:id="@+id/widget_message"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="Pair IoT devices, unlock with biometrics, and sync quick actions."
+        android:text="You saved 0 hours across 0 runs"
         android:textColor="#D1D5DB"
-        android:textSize="13sp" />
+        android:textSize="14sp"
+        android:textStyle="bold" />
 
+    <!-- Status (Top Flow) -->
     <TextView
         android:id="@+id/widget_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="Open PulseGrid to refresh this snapshot."
+        android:layout_marginTop="8dp"
+        android:text="Top flow: N/A"
         android:textColor="#93C5FD"
-        android:textSize="11sp" />
+        android:textSize="12sp" />
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="10dp"
+        android:layout_marginBottom="10dp"
+        android:background="#374151" />
+
+    <!-- Stats Row Container -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_horizontal">
+
+        <!-- Success Rate -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/widget_success_rate_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Success Rate"
+                android:textColor="#9CA3AF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/widget_success_rate"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="0%"
+                android:textColor="#86EFAC"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Vertical Divider -->
+        <View
+            android:layout_width="1dp"
+            android:layout_height="40dp"
+            android:background="#374151"
+            android:layout_marginHorizontal="8dp" />
+
+        <!-- Total Runs -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/widget_total_runs_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Total Runs"
+                android:textColor="#9CA3AF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/widget_total_runs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="0"
+                android:textColor="#60A5FA"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Vertical Divider -->
+        <View
+            android:layout_width="1dp"
+            android:layout_height="40dp"
+            android:background="#374151"
+            android:layout_marginHorizontal="8dp" />
+
+        <!-- Hours Saved -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/widget_hours_saved_label"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Hours Saved"
+                android:textColor="#9CA3AF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/widget_hours_saved"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="0h"
+                android:textColor="#FBBF24"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Updated At (smaller timestamp) -->
+    <TextView
+        android:id="@+id/widget_updated_at"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="Updated just now"
+        android:textColor="#6B7280"
+        android:textSize="9sp"
+        android:gravity="end" />
 </LinearLayout>

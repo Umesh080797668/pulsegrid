@@ -335,6 +335,38 @@ export default function FlowEditorPage() {
     }
   };
 
+  const handleGenerateFlowFromPrompt = async (prompt: string) => {
+    if (!accessToken || !workspaceId) {
+      throw new Error('Select a workspace before generating a flow.');
+    }
+
+    const response = await authenticatedFetch(`${apiBase}/ai/generate-flow`, accessToken, setAccessToken, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error_message || payload.message || `Generation failed (${response.status})`);
+    }
+
+    const generatedFlow = payload.flow_json ? JSON.parse(payload.flow_json) : payload;
+    const nextDefinition = {
+      ...(generatedFlow || {}),
+      id: flow?.id || generatedFlow?.id || flowId,
+      name: generatedFlow?.name || name || 'Generated flow',
+      description: generatedFlow?.description || description || '',
+      published: false,
+    };
+
+    setDefinitionJson(JSON.stringify(nextDefinition, null, 2));
+    setName(String(nextDefinition.name || 'Generated flow'));
+    setDescription(String(nextDefinition.description || ''));
+    setPublished(false);
+    setError('');
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div className="page-hd">
@@ -379,6 +411,7 @@ export default function FlowEditorPage() {
         flowLibrary={reusableLibrary}
         currentFlowId={flowId}
         versionDiff={versionDiff}
+        onGenerateFlowPrompt={handleGenerateFlowFromPrompt}
       />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(360px, 1fr)', gap: 16 }}>

@@ -15,6 +15,8 @@ export default function MarketPage() {
   const { accessToken, workspaceId, setAccessToken } = useDashboardStore();
   const [templates, setTemplates] = useState<MarketTemplate[]>([]);
   const [error, setError] = useState('');
+  const [creatorLoading, setCreatorLoading] = useState(false);
+  const [creatorMessage, setCreatorMessage] = useState('');
 
   const loadTemplates = async () => {
     if (!accessToken) {
@@ -76,6 +78,39 @@ export default function MarketPage() {
     window.alert('Template installed successfully');
   };
 
+  const onboardCreator = async () => {
+    if (!accessToken) {
+      setError('Sign in first');
+      return;
+    }
+
+    setCreatorLoading(true);
+    setCreatorMessage('');
+    setError('');
+
+    try {
+      const response = await authenticatedFetch(`${apiBase}/market/onboard-creator`, accessToken, setAccessToken, {
+        method: 'POST',
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || `Stripe onboarding failed (${response.status})`);
+      }
+
+      if (payload.url) {
+        window.location.href = payload.url;
+        return;
+      }
+
+      setCreatorMessage('Stripe onboarding link not returned.');
+    } catch (onboardingError) {
+      setError(onboardingError instanceof Error ? onboardingError.message : String(onboardingError));
+    } finally {
+      setCreatorLoading(false);
+    }
+  };
+
   return (
     <div>
       <div className="page-hd">
@@ -85,10 +120,21 @@ export default function MarketPage() {
         </div>
         <div className="page-actions">
           <button className="btn btn-secondary" onClick={loadTemplates}>Refresh</button>
+          <button className="btn btn-primary" onClick={onboardCreator} disabled={creatorLoading}>
+            {creatorLoading ? 'Starting onboarding…' : 'Become a creator'}
+          </button>
         </div>
       </div>
 
       {error && <div className="alert alert-error mb-16">{error}</div>}
+      {creatorMessage && <div className="alert alert-success mb-16">{creatorMessage}</div>}
+
+      <div className="card mb-16" style={{ display: 'grid', gap: 8 }}>
+        <div style={{ fontWeight: 700 }}>Creator payouts</div>
+        <div className="muted" style={{ fontSize: 13 }}>
+          Connect Stripe to receive the 70% creator share from paid template sales. PulseGrid retains the 30% platform fee automatically.
+        </div>
+      </div>
 
       {templates.length === 0 ? (
         <div className="card">

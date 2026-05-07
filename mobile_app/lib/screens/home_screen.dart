@@ -74,11 +74,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _syncWidget() async {
     try {
-      await HomeWidgetService.syncSnapshot(
-        title: 'PulseGrid',
-        message: 'PulseGrid is ready for quick actions',
-        status: _authenticated ? 'Biometrics unlocked' : 'Biometrics locked',
-      );
+      // Try to fetch real digest data from backend
+      final success = await HomeWidgetService.syncWeeklyDigestWidget();
+      
+      if (!success) {
+        // Fallback to default widget if digest fetch fails
+        await HomeWidgetService.syncSnapshot(
+          title: 'PulseGrid',
+          message: 'PulseGrid is ready for quick actions',
+          status: _authenticated ? 'Biometrics unlocked' : 'Biometrics locked',
+        );
+      }
 
       setState(() {
         _widgetSynced = true;

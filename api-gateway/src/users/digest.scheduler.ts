@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { Pool } from 'pg';
 import * as admin from 'firebase-admin';
 import { UsersService } from './users.service';
+import { DigestReportService } from './digest-report.service';
 
 type WorkspaceDigestRow = {
   workspace_id: string;
@@ -19,7 +20,10 @@ export class DigestScheduler {
   private readonly pool: Pool;
   private firebaseInitialized = false;
 
-  constructor(private readonly usersService: UsersService) {
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly digestReportService: DigestReportService,
+  ) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
       throw new Error('DATABASE_URL must be set for digest scheduling');
@@ -52,6 +56,8 @@ export class DigestScheduler {
 
   @Cron('0 8 * * 1', { timeZone: 'UTC', name: 'weekly_digest' })
   async sendWeeklyDigest(): Promise<void> {
+    this.logger.log('Starting weekly digest job at', new Date().toISOString());
+
     await this.ensureFirebaseInitialized();
 
     const workspaces = await this.pool.query<WorkspaceDigestRow>(
@@ -98,28 +104,71 @@ export class DigestScheduler {
       const tokens = tokensByUser.flatMap((entry) => entry.tokens.map((token) => token.token));
 
       if (tokens.length === 0) {
+        this.logger.warn(`No FCM tokens for workspace ${workspace.workspace_name}; skipping push`);
         continue;
       }
 
-      const result = await (admin.messaging() as any).sendMulticast({
-        tokens,
+      const notificationPayload = {
         notification: {
           title: 'Weekly digest',
           body: `Your flows saved ${estimatedHoursSaved.toFixed(1)} hours this week`,
         },
         data: {
+          type: 'weekly_digest',
           workspaceId: workspace.workspace_id,
           workspaceName: workspace.workspace_name,
           totalRuns: String(totalRuns),
           estimatedHoursSaved: estimatedHoursSaved.toFixed(2),
           mostRunFlow: workspace.most_run_flow_name ?? 'Unknown flow',
           mostRunCount: String(Number(workspace.most_run_count ?? 0)),
+          deepLink: 'pulsegrid://analytics',
         },
-      });
+      };
 
-      this.logger.log(
-        `Sent weekly digest to workspace ${workspace.workspace_name} (${workspace.workspace_id}) with ${result.successCount} successes`,
-      );
+      if (!this.firebaseInitialized) {
+        this.logger.warn(`Firebase not initialized; skipping push for ${workspace.workspace_name}`);
+        continue;
+      }
+
+      try {
+        const result = await (admin.messaging() as any).sendMulticast({
+          tokens,
+          ...notificationPayload,
+          android: { priority: 'high' },
+          apns: { headers: { 'apns-priority': '10' } },
+        });
+
+        this.logger.log(
+          `Sent weekly digest to workspace ${workspace.workspace_name} (${workspace.workspace_id}) with ${result.successCount} successes`,
+        );
+
+        if (result.failureCount > 0) {
+          for (let i = 0; i < result.responses.length; i++) {
+            const response = result.responses[i];
+            if (!response.success) {
+              const token = tokens[i];
+              const errorCode = response.error?.code ?? '';
+              if (
+                errorCode.includes('registration-token-not-registered') ||
+                errorCode.includes('invalid-registration-token')
+              ) {
+                const userEntry = tokensByUser.find((entry) =>
+                  entry.tokens.some((t) => t.token === token),
+                );
+                if (userEntry) {
+                  await this.usersService.removeFcmToken(userEntry.userId, token);
+                }
+              }
+            }
+          }
+        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to send weekly digest to workspace ${workspace.workspace_name}: ${error}`,
+        );
+      }
     }
+
+    this.logger.log('Weekly digest job completed at', new Date().toISOString());
   }
 }
