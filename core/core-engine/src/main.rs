@@ -199,9 +199,25 @@ fn month_start_utc() -> chrono::NaiveDate {
     chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap_or(now)
 }
 
-fn is_polling_connector(connector: &str) -> bool {
-    let normalized = connector.trim().to_lowercase();
-    !matches!(normalized.as_str(), "webhook" | "schedule")
+fn flow_has_opt_in_polling(definition: &FlowDefinition) -> bool {
+    let connector = definition.trigger.connector.trim().to_lowercase();
+    if matches!(connector.as_str(), "webhook" | "schedule") {
+        return false;
+    }
+
+    definition.trigger.filters.iter().any(|filter| {
+        let field = filter.field.trim().to_lowercase();
+        let interval = match field.as_str() {
+            "poll_interval_seconds" | "poll_every_seconds" | "interval_seconds" | "poll_interval" => filter
+                .value
+                .as_i64()
+                .or_else(|| filter.value.as_str().and_then(|value| value.parse::<i64>().ok())),
+            "polling_enabled" => Some(if filter.value.as_bool().unwrap_or(false) { 1 } else { 0 }),
+            _ => None,
+        };
+
+        matches!(interval, Some(value) if value > 0)
+    })
 }
 
 fn trigger_poll_interval_seconds(definition: &FlowDefinition) -> i64 {
@@ -447,7 +463,7 @@ async fn start_polling_worker(poll_pool: sqlx::PgPool, redis_url: String) {
                 Err(_) => continue,
             };
 
-            if !is_polling_connector(&def.trigger.connector) {
+            if !flow_has_opt_in_polling(&def) {
                 continue;
             }
 

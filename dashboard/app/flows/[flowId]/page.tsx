@@ -344,6 +344,7 @@ export default function FlowEditorPage() {
         </div>
         <div className="page-actions">
           <button className="btn btn-secondary" onClick={() => router.push('/flows')}>Back to flows</button>
+          <button className="btn btn-secondary" onClick={() => router.push(`/flows/${flowId}/runs`)}>Run history</button>
           <button className="btn btn-primary" onClick={saveFlow} disabled={saving || !flow}>Save flow</button>
         </div>
       </div>

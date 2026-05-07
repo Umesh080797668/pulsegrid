@@ -122,6 +122,7 @@ export default function FlowsPage() {
                   <td>{flow.description || '—'}</td>
                   <td>
                     <Link className="btn btn-secondary btn-sm" href={`/flows/${flow.id}`}>Edit</Link>
+                    <Link className="btn btn-ghost btn-sm" href={`/flows/${flow.id}/runs`} style={{ marginLeft: 8 }}>Runs</Link>
                     <button className="btn btn-danger btn-sm" onClick={() => removeFlow(flow.id)}>Delete</button>
                     <button className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={() => analyseLastFailure(flow.id)}>Analyse with AI</button>
                   </td>
