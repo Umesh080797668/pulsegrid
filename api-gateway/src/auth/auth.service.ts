@@ -72,7 +72,8 @@ export class AuthService {
       };
     }
 
-    return this.issueTokens(user);
+    const defaultWorkspace = await this.authStore.getDefaultWorkspaceIdForUser(user.id);
+    return this.issueTokens(user, defaultWorkspace);
   }
 
   async refresh(refreshToken: string): Promise<AuthTokens> {
@@ -97,7 +98,20 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
 
-    return this.issueTokens(user);
+    // Prefer workspace from token if user still has access, otherwise resolve default
+    let workspaceId: string | null = (payload as any).workspaceId ?? null;
+    if (workspaceId) {
+      const ok = await this.authStore.canAccessWorkspace(user.id, workspaceId);
+      if (!ok) {
+        workspaceId = null;
+      }
+    }
+
+    if (!workspaceId) {
+      workspaceId = await this.authStore.getDefaultWorkspaceIdForUser(user.id);
+    }
+
+    return this.issueTokens(user, workspaceId ?? undefined);
   }
 
   async logout(refreshToken: string): Promise<void> {
@@ -115,15 +129,20 @@ export class AuthService {
     });
 
     const user = this.toAuthUser(row);
-
-    return this.issueTokens(user);
+    const defaultWorkspace = await this.authStore.getDefaultWorkspaceIdForUser(user.id);
+    return this.issueTokens(user, defaultWorkspace);
   }
 
-  private async issueTokens(user: AuthUser): Promise<AuthTokens> {
+  private async issueTokens(user: AuthUser, activeWorkspaceId?: string | null): Promise<AuthTokens> {
+    let workspaceId = activeWorkspaceId ?? null;
+    if (!workspaceId) {
+      workspaceId = await this.authStore.getDefaultWorkspaceIdForUser(user.id) ?? user.id;
+    }
+
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      workspaceId: user.id, // Use user ID as default workspace ID
+      workspaceId,
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
@@ -206,7 +225,22 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
 
-    return this.issueTokens(user);
+    const defaultWorkspace = await this.authStore.getDefaultWorkspaceIdForUser(userId);
+    return this.issueTokens(user, defaultWorkspace);
+  }
+
+  async switchWorkspace(userId: string, workspaceId: string): Promise<AuthTokens> {
+    const can = await this.authStore.canAccessWorkspace(userId, workspaceId);
+    if (!can) {
+      throw new UnauthorizedException('Forbidden');
+    }
+
+    const user = await this.getUserById(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return this.issueTokens(user, workspaceId);
   }
 
 }

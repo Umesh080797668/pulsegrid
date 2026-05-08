@@ -140,6 +140,23 @@ export class AuthStore implements OnModuleDestroy {
     return result.rows[0]?.allowed === true;
   }
 
+  async getDefaultWorkspaceIdForUser(userId: string): Promise<string | null> {
+    // Prefer owned workspace, then any membership
+    const ownerRes = await this.pool.query<{ id: string }>(
+      `SELECT id FROM workspaces WHERE owner_user_id = $1::uuid LIMIT 1`,
+      [userId],
+    );
+    if (ownerRes.rows[0]?.id) {
+      return ownerRes.rows[0].id;
+    }
+
+    const memberRes = await this.pool.query<{ workspace_id: string }>(
+      `SELECT workspace_id FROM workspace_members WHERE user_id = $1::uuid LIMIT 1`,
+      [userId],
+    );
+    return memberRes.rows[0]?.workspace_id ?? null;
+  }
+
   async storeEmailVerificationToken(params: {
     token: string;
     userId: string;

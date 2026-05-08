@@ -1,6 +1,7 @@
-import { Body, Controller, Get, Headers, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Post, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 import { AuthService } from './auth.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 import { EmailService } from '../email/email.service';
 import { SendVerificationEmailDto, VerifyEmailDto } from '../dto';
 import { Request, Response } from 'express';
@@ -30,6 +31,12 @@ class LoginDto {
   @IsString()
   @IsNotEmpty()
   password!: string;
+}
+
+class SwitchWorkspaceDto {
+  @IsString()
+  @IsNotEmpty()
+  workspaceId!: string;
 }
 
 @Controller('auth')
@@ -353,6 +360,20 @@ export class AuthController {
     }
     const tokens = await this.authService.socialLogin('microsoft', fallbackEmail, fallbackName);
     res?.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
+    return { accessToken: tokens.accessToken };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('switch-workspace')
+  async switchWorkspace(@Body() body: SwitchWorkspaceDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const payload = (req as any).user as any;
+    const userId = payload?.sub as string | undefined;
+    if (!userId) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+
+    const tokens = await this.authService.switchWorkspace(userId, body.workspaceId);
+    res.cookie('refresh_token', tokens.refreshToken, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 30 * 86400000 });
     return { accessToken: tokens.accessToken };
   }
   private async checkAuthRateLimit(req: Request, keySuffix: string, limit: number): Promise<void> {
