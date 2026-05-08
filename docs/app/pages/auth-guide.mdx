@@ -6,7 +6,47 @@ title: Authentication Guide
 
 This page describes authentication flows used by PulseGrid API and how to obtain tokens.
 
-- Management API keys: include `X-Management-Api-Key` header for management endpoints.
-- JWT auth: use `Authorization: Bearer <token>` for user-scoped endpoints.
+This section covers the main authentication methods used across the PulseGrid platform, how to use them, and security best practices.
 
-For more details, see the `api-gateway` source and the auth connector implementations.
+## Management API Keys
+
+- Purpose: long-lived keys for management and automation operations (service-to-service).
+- Usage: include an `X-Management-Api-Key` header in requests to management endpoints.
+- Rotation: treat keys as secrets and rotate them periodically. Revoke via the Workspace API when compromised.
+
+Example:
+
+```http
+GET /admin/workspaces HTTP/1.1
+Host: api.example.com
+X-Management-Api-Key: mgmt_ABCD1234
+```
+
+## JWT / User Authentication
+
+- Purpose: short-lived user-scoped tokens for UI and user actions.
+- Usage: Include `Authorization: Bearer <token>` header.
+- Refresh: use the `/auth/refresh` endpoint (cookie-based refresh token) to obtain new access tokens.
+
+Example:
+
+```http
+GET /workspaces/123/profile HTTP/1.1
+Host: api.example.com
+Authorization: Bearer eyJhbGciOiJ...
+```
+
+## OAuth Connectors
+
+Some connectors (e.g., Shopify, Slack) require OAuth flows. The typical pattern:
+
+1. User clicks "Connect" in the dashboard which redirects to the provider's auth page.
+2. Provider redirects back to the API Gateway `POST /connectors/oauth/callback` with a code.
+3. Gateway exchanges the code for tokens and stores an installation record (encrypted).
+
+## Best Practices
+- Keep secrets in Vault and avoid embedding them in code.
+- Use scoped API keys and least privilege for connectors.
+- Enforce HTTPS and verify signatures for webhooks.
+
+For implementation details see the `api-gateway` auth modules and connectors in the `connectors/` folder.

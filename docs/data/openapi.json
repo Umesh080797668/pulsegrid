@@ -1,0 +1,82 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PulseGrid API (snapshot)",
+    "version": "1.0.0",
+    "description": "A snapshot of API used for docs validation and examples."
+  },
+  "paths": {
+    "/connectors/catalog": {
+      "get": {
+        "summary": "List connector catalog",
+        "responses": {
+          "200": {
+            "description": "Catalog list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/ConnectorCatalogItem" }
+                },
+                "example": [
+                  {
+                    "connector": "shopify",
+                    "action": "order.created",
+                    "category": "ecommerce",
+                    "auth": "oauth2",
+                    "required_input_fields": ["shop", "access_token"]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/flows/{flowId}/versions": {
+      "get": {
+        "summary": "List flow versions",
+        "parameters": [
+          {
+            "name": "flowId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Flow versions",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array" },
+                "example": [
+                  {
+                    "id": "v1",
+                    "flow_id": "flow_abc123",
+                    "definition": {},
+                    "created_at": "2026-01-01T00:00:00Z"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ConnectorCatalogItem": {
+        "type": "object",
+        "properties": {
+          "connector": { "type": "string" },
+          "action": { "type": "string" },
+          "category": { "type": "string" },
+          "auth": { "type": "string" },
+          "required_input_fields": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

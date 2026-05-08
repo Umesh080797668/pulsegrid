@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "check-links": "bash -lc \"find app/pages -name '*.mdx' -print0 | while IFS= read -r -d '' f; do npx -y markdown-link-check -c .mlc.json \"$f\" || exit 2; done\"",
+    "validate-openapi": "node scripts/validate-openapi.js",
+    "test:docs": "npm run build && npm run check-links && npm run validate-openapi"
   },
   "dependencies": {
     "next": "^14.0.0",
@@ -16,6 +19,9 @@
   },
   "devDependencies": {
     "@types/node": "25.6.0",
-    "@types/react": "19.2.14"
+    "@types/react": "19.2.14",
+    "markdown-link-check": "^3.4.0",
+    "@apidevtools/swagger-cli": "4.0.4",
+    "swagger-parser": "10.0.2"
   }
 }

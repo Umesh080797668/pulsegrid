@@ -1,0 +1,22 @@
+---
+title: Billing and Subscriptions
+---
+
+# Billing and Subscriptions
+
+This page describes billing models, subscription lifecycle, and webhooks for billing events.
+
+## Plans and Pricing
+
+- PulseGrid supports per-workspace plans (e.g., `free`, `pro`, `enterprise`).
+- Upgrades and downgrades are requested via the billing API and processed asynchronously.
+
+## Webhooks & Events
+
+- Billing lifecycle events (invoice.created, invoice.paid, subscription.updated) are emitted and can be consumed by integrations.
+- Secure these webhooks using signatures and verify payloads before acting on them.
+
+## Implementation Notes
+
+- The dashboard provides `getWorkspaceSubscriptionStatus()` and `upgradeWorkspacePlan()` helpers in `dashboard/lib/api.ts`.
+- Store payment provider IDs (customer, subscription) encrypted and map them to workspace records.

@@ -37,3 +37,29 @@ Below is a canonical Flow DSL JSON example (copied from the blueprint):
 ```
 
 Use this as the canonical example for authoring Flow DSL definitions.
+
+## Authoring Guidelines
+
+- Keep triggers and steps small and well-scoped.
+- Prefer idempotent actions and include `idempotency_key` where connector supports it.
+- Use `depends_on` to express ordering when steps must wait for previous outputs.
+
+## Versioning and Rollbacks
+
+- Each persisted Flow has versions. Use the API to list versions and rollback when necessary.
+- When making breaking changes, create a new version and test in `staging` before promoting to `production`.
+
+## Common Patterns
+
+- Data mapping: use template expressions like `{{trigger.field}}` to copy values from previous steps.
+- Error handling: use `error_policy` to control retries and owner notification.
+
+## Validation
+
+Flow definitions should be validated server-side before saving. Validation checks include:
+
+- Required fields present (`id`, `name`, `trigger`, `steps`).
+- Step references (`depends_on`) reference existing step ids.
+- Input template expressions reference available variables (`trigger`, `steps.*`).
+
+The UI and server will reject malformed DSL JSON and return helpful diagnostics.

@@ -1,0 +1,13 @@
+{
+  "rejectUnauthorized": false,
+  "ignorePatterns": [
+    "http://localhost*",
+    "https://127.0.0.1*"
+  ],
+  "filters": [
+    {
+      "pattern": "^mailto:",
+      "action": "ignore"
+    }
+  ]
+}

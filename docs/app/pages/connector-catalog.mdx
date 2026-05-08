@@ -3,19 +3,33 @@ title: Connector Catalog
 ---
 
 # Connector Catalog
+This page renders the connector catalog used by PulseGrid. The site will attempt to use a live API at build time; if the API Gateway is not available, a prebuilt snapshot is used instead (see `docs/data/connector-catalog.json`).
 
-This page should auto-render the connector catalog from the running API Gateway endpoint at `/connectors/catalog`.
+Rendering strategy:
 
-Example fetch snippet to render at build or runtime (adjust as appropriate):
+- At build time: attempt to fetch `http://localhost:3000/connectors/catalog`.
+- If fetch fails, fallback to the bundled snapshot at `docs/data/connector-catalog.json`.
+
+Example renderer (Next.js page):
 
 ```js
-export async function getServerSideProps() {
-  const res = await fetch('http://localhost:3000/connectors/catalog');
-  const catalog = await res.json();
-  return { props: { catalog } };
+import fs from 'fs';
+import path from 'path';
+
+export async function getStaticProps() {
+  try {
+    const res = await fetch('http://localhost:3000/connectors/catalog');
+    if (!res.ok) throw new Error('live fetch failed');
+    const catalog = await res.json();
+    return { props: { catalog } };
+  } catch (err) {
+    const file = path.join(process.cwd(), 'docs', 'data', 'connector-catalog.json');
+    const catalog = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { props: { catalog } };
+  }
 }
 
-// Render `catalog` in the page body
+// In the page component render `catalog` as a table or cards
 ```
 
-If the endpoint is not available at build time, fetch at runtime from the browser or provide a prebuilt JSON snapshot in `docs/data/`.
+Sample snapshot used by the docs build is included at `docs/data/connector-catalog.json`.

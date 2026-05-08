@@ -6,8 +6,34 @@ title: Webhooks Guide
 
 This page documents how to configure and secure webhooks for connectors.
 
-- Verify webhook signatures where available.
-- Store secrets securely in Vault.
-- Use idempotency keys for safe retry logic.
+This page documents configuring and securing webhooks for connectors, plus retry and scaling guidance.
 
-Example: validating a `X-Hub-Signature` header in a connector.
+## Security and Verification
+
+- Verify provider signatures (e.g., `X-Hub-Signature`, `X-Shopify-Hmac-Sha256`) using provider secret.
+- Always use HTTPS endpoints.
+- Store webhook secrets in Vault and reference them from connector configuration (never inline secrets in code).
+
+Example signature validation (pseudocode):
+
+```js
+const expected = computeHmac(secret, request.rawBody);
+if (!timingSafeEqual(expected, request.headers['x-hub-signature'])) {
+	return 401;
+}
+```
+
+## Idempotency and Retry
+
+- Use an idempotency key or deduplication store to avoid duplicate processing.
+- Respond quickly (2xx) after enqueueing processing; do not block on long-running tasks.
+
+## Delivery & Backoff
+
+- Implement exponential backoff for retries and include a maximum retry window.
+- Track delivery attempts and expose a dead-letter or manual-retry UI for failed deliveries.
+
+## Scaling
+
+- For high volume connectors, offload webhook processing to a queue or worker pool.
+- Use batching where supported by the connector to reduce pressure on downstream services.
