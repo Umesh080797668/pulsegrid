@@ -9,6 +9,7 @@ import {
   TriggerFlowDto,
   SetSecretDto,
   UpsertWorkspaceCredentialDto,
+  EncryptedCredentialPayload,
   CreateWorkspaceDto,
   CreateFlowDto,
   UpdateFlowDto,
@@ -17,6 +18,7 @@ import {
 import { ManagementApiKeyGuard } from './management-api-key.guard';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RateLimitService } from './rate-limit.service';
+import { CredentialEncryptionService } from './credential-encryption.service';
 import { DEFAULT_CONNECTOR_CATALOG, getCatalogFromUrl, validateCatalogItem } from './connectorCatalog';
 
 interface PulseCoreService {
@@ -732,6 +734,28 @@ export class AppController implements OnModuleInit {
   }
 
   @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)
+  @UseGuards(JwtAuthGuard)
+  @Get('workspaces/:workspaceId/encryption/public-key')
+  async getWorkspacePublicKey(
+    @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
+  ) {
+    try {
+      const response = await this.coreRequest(`/api/v1/workspaces/${workspaceId}/encryption/public-key`, {
+        method: 'GET',
+      });
+      return response;
+    } catch (error) {
+      // If core doesn't have the endpoint yet, generate and return a temporary key
+      // In production, core should persist workspace keys
+      const keys = CredentialEncryptionService.generateWorkspaceKeypair();
+      return {
+        publicKey: keys.publicKey,
+        version: 1,
+      };
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('workspaces/:workspaceId/credentials')
   async upsertWorkspaceCredential(
     @Param('workspaceId', new ParseUUIDPipe({ version: '4' })) workspaceId: string,
@@ -744,14 +768,42 @@ export class AppController implements OnModuleInit {
       60,
     );
 
-    return this.coreRequest(`/api/v1/workspaces/${workspaceId}/secrets`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: body.name,
-        value: body.value,
-      }),
-    });
+    // Handle both encrypted (new) and plaintext (legacy) formats
+    if (body.encrypted_payload) {
+      // Validate encrypted payload structure
+      if (!CredentialEncryptionService.validateEncryptedPayload(body.encrypted_payload)) {
+        throw new BadRequestException('Invalid encrypted payload structure');
+      }
+
+      // Send encrypted payload to core for decryption and storage
+      return this.coreRequest(`/api/v1/workspaces/${workspaceId}/secrets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: body.name,
+          encrypted_payload: CredentialEncryptionService.encryptedPayloadToTransport(
+            body.encrypted_payload,
+          ),
+        }),
+      });
+    } else if (body.value) {
+      // Legacy plaintext format (for backward compatibility, eventually remove)
+      console.warn(
+        `[DEPRECATION] Plaintext credential submission for workspace ${workspaceId}. Use encrypted payloads.`,
+      );
+      return this.coreRequest(`/api/v1/workspaces/${workspaceId}/secrets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: body.name,
+          value: body.value,
+        }),
+      });
+    } else {
+      throw new BadRequestException(
+        'Either encrypted_payload or value must be provided',
+      );
+    }
   }
 
   @UseGuards(JwtAuthGuard, ManagementApiKeyGuard)

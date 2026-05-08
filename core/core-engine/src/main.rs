@@ -1016,6 +1016,11 @@ async fn main() {
             "/api/v1/credentials/{credential_id}/dependents",
             get(get_credential_dependents),
         )
+        // Workspace encryption endpoints
+        .route(
+            "/api/v1/workspaces/{workspace_id}/encryption/public-key",
+            get(get_workspace_public_key),
+        )
         // Flow run endpoints
         .route("/api/v1/flow-runs/{workspace_id}", get(list_flow_runs))
         .route("/api/v1/flow-run/{run_id}", get(get_flow_run))
@@ -3979,12 +3984,40 @@ async fn upsert_credential(
         ));
     }
 
-    if payload.value.trim().is_empty() {
+    // Determine the plaintext value: either from encrypted payload or plaintext field
+    let plaintext_value = if let Some(encrypted) = &payload.encrypted_payload {
+        // Decrypt client-encrypted payload
+        state
+            .workspace_vaults
+            .decrypt_client_encrypted_payload(
+                workspace_id,
+                &encrypted.ephemeral_public_key,
+                &encrypted.ciphertext,
+                &encrypted.nonce,
+                encrypted.workspace_key_version,
+            )
+            .await
+            .map_err(|e| {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("Failed to decrypt client payload: {e:?}"),
+                )
+            })?
+    } else if let Some(value) = &payload.value {
+        // Legacy plaintext format
+        if value.trim().is_empty() {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "Secret value is required".to_string(),
+            ));
+        }
+        value.clone()
+    } else {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
-            "Secret value is required".to_string(),
+            "Either encrypted_payload or value must be provided".to_string(),
         ));
-    }
+    };
 
     // BILLING: Enforce connector tier and count limits per plan
     enforce_connector_limit(&state.pool, workspace_id, &connector_id).await?;
@@ -4002,7 +4035,7 @@ async fn upsert_credential(
 
     let (encrypted_blob, nonce, workspace_key_version) = state
         .workspace_vaults
-        .encrypt_workspace_secret(workspace_id, &payload.value)
+        .encrypt_workspace_secret(workspace_id, &plaintext_value)
         .await
         .map_err(|e| {
             (
@@ -4094,6 +4127,27 @@ async fn delete_workspace_secret(
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+async fn get_workspace_public_key(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let (public_key, version) = state
+        .workspace_vaults
+        .get_workspace_public_key(workspace_id)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get workspace public key: {e:?}"),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "publicKey": public_key,
+        "version": version,
+    })))
 }
 
 async fn get_credential_dependents(

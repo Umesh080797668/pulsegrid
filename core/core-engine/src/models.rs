@@ -19,9 +19,20 @@ pub struct WorkspaceSecret {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct EncryptedCredentialPayload {
+    pub ephemeral_public_key: String,
+    pub ciphertext: String,
+    pub nonce: String,
+    pub workspace_key_version: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpsertWorkspaceSecretRequest {
     pub name: String,
-    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_payload: Option<EncryptedCredentialPayload>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

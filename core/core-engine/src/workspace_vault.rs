@@ -207,6 +207,191 @@ impl WorkspaceVaultService {
             .map_err(|e| WorkspaceVaultError::Crypto(format!("{:?}", e)))
     }
 
+    /**
+     * Decrypts a client-encrypted credential payload using the workspace's encryption key.
+     * 
+     * The client encrypts credentials with the workspace's public key using NaCl box.
+     * The server decrypts using the corresponding private key, then re-encrypts with
+     * the vault master key for storage.
+     */
+    pub async fn decrypt_client_encrypted_payload(
+        &self,
+        workspace_id: Uuid,
+        ephemeral_public_key_b64: &str,
+        ciphertext_b64: &str,
+        nonce_b64: &str,
+        _workspace_key_version: u32,
+    ) -> Result<String, WorkspaceVaultError> {
+        match self.backend.as_ref() {
+            WorkspaceVaultBackend::Legacy { .. } => {
+                // For legacy mode, public key encryption is not supported
+                Err(WorkspaceVaultError::Crypto(
+                    "client-encrypted payloads require HSM/escrowed backend".to_string(),
+                ))
+            }
+            WorkspaceVaultBackend::Escrowed { pool, .. } => {
+                // Fetch workspace's encryption key
+                let row = sqlx::query(
+                    r#"
+                    SELECT public_key, private_key_plaintext
+                    FROM workspace_encryption_keys
+                    WHERE workspace_id = $1
+                    ORDER BY key_version DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(workspace_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| WorkspaceVaultError::Database(e.to_string()))?
+                .ok_or_else(|| WorkspaceVaultError::Crypto("workspace encryption key not found".to_string()))?;
+
+                let _public_key_b64: String = row
+                    .try_get("public_key")
+                    .map_err(|e| WorkspaceVaultError::Database(e.to_string()))?;
+                let private_key_b64_opt: Option<String> = row
+                    .try_get("private_key_plaintext")
+                    .ok();
+
+                // Decode base64 inputs
+                let ephemeral_public_key = base64::engine::general_purpose::STANDARD
+                    .decode(ephemeral_public_key_b64)
+                    .map_err(|_| WorkspaceVaultError::Crypto("invalid ephemeral_public_key encoding".to_string()))?;
+
+                let ciphertext = base64::engine::general_purpose::STANDARD
+                    .decode(ciphertext_b64)
+                    .map_err(|_| WorkspaceVaultError::Crypto("invalid ciphertext encoding".to_string()))?;
+
+                let nonce = base64::engine::general_purpose::STANDARD
+                    .decode(nonce_b64)
+                    .map_err(|_| WorkspaceVaultError::Crypto("invalid nonce encoding".to_string()))?;
+
+                // Validate lengths
+                if ephemeral_public_key.len() != 32 {
+                    return Err(WorkspaceVaultError::Crypto(
+                        format!("ephemeral_public_key must be 32 bytes, got {}", ephemeral_public_key.len()),
+                    ));
+                }
+                if nonce.len() != 24 {
+                    return Err(WorkspaceVaultError::Crypto(
+                        format!("nonce must be 24 bytes, got {}", nonce.len()),
+                    ));
+                }
+
+                // Decrypt using workspace private key
+                let private_key_b64 = private_key_b64_opt
+                    .ok_or_else(|| WorkspaceVaultError::Crypto("private key not available".to_string()))?;
+
+                let private_key_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&private_key_b64)
+                    .map_err(|_| WorkspaceVaultError::Crypto("invalid private_key encoding".to_string()))?;
+
+                if private_key_bytes.len() != 32 {
+                    return Err(WorkspaceVaultError::Crypto(
+                        format!("private key must be 32 bytes, got {}", private_key_bytes.len()),
+                    ));
+                }
+
+                // Use sodium to decrypt
+                use sodiumoxide::crypto::box_;
+
+                let mut ephemeral_pk = [0u8; 32];
+                let mut sk = [0u8; 32];
+                let mut nonce_arr = [0u8; 24];
+
+                ephemeral_pk.copy_from_slice(&ephemeral_public_key);
+                sk.copy_from_slice(&private_key_bytes);
+                nonce_arr.copy_from_slice(&nonce);
+
+                let ephemeral_public_key = box_::PublicKey(ephemeral_pk);
+                let secret_key = box_::SecretKey(sk);
+                let nonce = box_::Nonce(nonce_arr);
+
+                let plaintext = box_::open(&ciphertext, &nonce, &ephemeral_public_key, &secret_key)
+                    .map_err(|_| WorkspaceVaultError::Crypto("failed to decrypt client payload".to_string()))?;
+
+                String::from_utf8(plaintext)
+                    .map_err(|_| WorkspaceVaultError::Crypto("decrypted payload is not valid UTF-8".to_string()))
+            }
+        }
+    }
+
+    /**
+     * Gets the workspace's public key for client-side encryption.
+     * Creates keys if they don't exist.
+     */
+    pub async fn get_workspace_public_key(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<(String, u32), WorkspaceVaultError> {
+        match self.backend.as_ref() {
+            WorkspaceVaultBackend::Legacy { .. } => {
+                // Generate a temporary key for legacy mode (for testing only)
+                use sodiumoxide::crypto::box_;
+                let (pk, _sk) = box_::gen_keypair();
+                let public_key_b64 = base64::engine::general_purpose::STANDARD
+                    .encode(pk.0);
+                Ok((public_key_b64, 1))
+            }
+            WorkspaceVaultBackend::Escrowed { pool, .. } => {
+                // Try to fetch existing key
+                let existing = sqlx::query(
+                    r#"
+                    SELECT public_key, key_version
+                    FROM workspace_encryption_keys
+                    WHERE workspace_id = $1
+                    ORDER BY key_version DESC
+                    LIMIT 1
+                    "#,
+                )
+                .bind(workspace_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| WorkspaceVaultError::Database(e.to_string()))?;
+
+                if let Some(row) = existing {
+                    let public_key: String = row
+                        .try_get("public_key")
+                        .map_err(|e| WorkspaceVaultError::Database(e.to_string()))?;
+                    let key_version: i32 = row
+                        .try_get("key_version")
+                        .map_err(|e| WorkspaceVaultError::Database(e.to_string()))?;
+                    return Ok((public_key, key_version as u32));
+                }
+
+                // Generate new keypair
+                use sodiumoxide::crypto::box_;
+                let (pk, sk) = box_::gen_keypair();
+                let public_key_b64 = base64::engine::general_purpose::STANDARD
+                    .encode(pk.0);
+                let private_key_b64 = base64::engine::general_purpose::STANDARD
+                    .encode(sk.0);
+
+                // Store in database
+                sqlx::query(
+                    r#"
+                    INSERT INTO workspace_encryption_keys (
+                        workspace_id,
+                        key_version,
+                        public_key,
+                        private_key_plaintext
+                    ) VALUES ($1, $2, $3, $4)
+                    ON CONFLICT DO NOTHING
+                    "#,
+                )
+                .bind(workspace_id)
+                .bind(1)
+                .bind(&public_key_b64)
+                .bind(&private_key_b64)
+                .execute(pool)
+                .await
+                .map_err(|e| WorkspaceVaultError::Database(e.to_string()))?;
+
+                Ok((public_key_b64, 1))
+            }
+        }
+    }
+
     pub async fn current_key_version(&self, workspace_id: Uuid) -> Result<i32, WorkspaceVaultError> {
         match self.backend.as_ref() {
             WorkspaceVaultBackend::Legacy { .. } => Ok(DEFAULT_KEY_VERSION),

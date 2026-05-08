@@ -46,6 +46,24 @@ export class SetSecretDto {
   value!: string;
 }
 
+export class EncryptedCredentialPayload {
+  @IsString()
+  @IsNotEmpty()
+  ephemeral_public_key!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  ciphertext!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  nonce!: string;
+
+  @IsNumber()
+  @IsNotEmpty()
+  workspace_key_version!: number;
+}
+
 export class UpsertWorkspaceCredentialDto {
   @IsString()
   @IsNotEmpty()
@@ -53,11 +71,16 @@ export class UpsertWorkspaceCredentialDto {
   @MinLength(1)
   name!: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(4096)
   @MinLength(1)
-  value!: string;
+  value?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => EncryptedCredentialPayload)
+  encrypted_payload?: EncryptedCredentialPayload;
 }
 
 export class CreateWorkspaceDto {

@@ -97,6 +97,24 @@ export async function listWorkspaceCredentials(params: {
   return Array.isArray(payload) ? payload : payload.items || [];
 }
 
+export async function getWorkspacePublicKey(params: {
+  workspaceId: string;
+  token: string;
+  setToken: (token: string) => void;
+}): Promise<{ publicKey: string; version: number }> {
+  const response = await authenticatedFetch(
+    `${apiBase}/workspaces/${params.workspaceId}/encryption/public-key`,
+    params.token,
+    params.setToken,
+  );
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch workspace public key');
+  }
+
+  return response.json();
+}
+
 export async function upsertWorkspaceCredential(params: {
   workspaceId: string;
   name: string;
@@ -104,6 +122,20 @@ export async function upsertWorkspaceCredential(params: {
   token: string;
   setToken: (token: string) => void;
 }): Promise<boolean> {
+  // Import encryption utilities
+  const { encryptCredential } = await import('./encryption');
+
+  // Fetch workspace public key
+  const keyData = await getWorkspacePublicKey({
+    workspaceId: params.workspaceId,
+    token: params.token,
+    setToken: params.setToken,
+  });
+
+  // Encrypt credential value on client-side (plaintext never sent to server)
+  const encryptedPayload = encryptCredential(params.value, keyData.publicKey, keyData.version);
+
+  // Send only encrypted payload + metadata
   const response = await authenticatedFetch(
     `${apiBase}/workspaces/${params.workspaceId}/credentials`,
     params.token,
@@ -111,7 +143,10 @@ export async function upsertWorkspaceCredential(params: {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: params.name, value: params.value }),
+      body: JSON.stringify({
+        name: params.name,
+        encrypted_payload: encryptedPayload,
+      }),
     },
   );
 
