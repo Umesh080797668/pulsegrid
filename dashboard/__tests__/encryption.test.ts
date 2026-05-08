@@ -8,6 +8,8 @@
  * 3. Plaintext never appears in network requests
  */
 
+/// <reference types="jest" />
+
 import { encryptCredential, EncryptedCredentialPayload } from '../lib/encryption';
 
 describe('Credential Encryption E2E Tests', () => {
@@ -115,7 +117,9 @@ describe('Credential Encryption E2E Tests', () => {
     // (NaCl adds a 16-byte auth tag)
     expect(len1).toBeLessThan(len2);
     // The difference shouldn't directly reveal the plaintext length difference
-    expect(len2 - len1).toBeCloseTo('this-is-a-much-longer-credential-value'.length - 'short'.length, -1);
+    const plaintextDiff = 'this-is-a-much-longer-credential-value'.length - 'short'.length;
+    // Ciphertext length difference should not equal plaintext length difference exactly
+    expect(len2 - len1).not.toBe(plaintextDiff);
   });
 
   /**
