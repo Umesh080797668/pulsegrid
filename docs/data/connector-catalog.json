@@ -1,0 +1,18 @@
+[
+  {
+    "connector": "shopify",
+    "action": "order.created",
+    "category": "ecommerce",
+    "auth": "oauth2",
+    "required_input_fields": ["shop", "access_token"],
+    "notes": ["Supports webhook subscription and polling"]
+  },
+  {
+    "connector": "slack",
+    "action": "send_message",
+    "category": "messaging",
+    "auth": "oauth2",
+    "required_input_fields": ["channel", "text"],
+    "notes": ["Supports blocks and attachments"]
+  }
+]

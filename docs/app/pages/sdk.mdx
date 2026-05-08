@@ -1,0 +1,28 @@
+---
+title: SDK and Client Libraries
+---
+
+# SDK and Client Libraries
+
+PulseGrid exposes both REST and GraphQL APIs. This page documents official SDKs and how to call APIs safely.
+
+## JavaScript SDK (example)
+
+Install:
+
+```bash
+npm i @pulsegrid/sdk
+```
+
+Usage (examples):
+
+```js
+import PulseGrid from '@pulsegrid/sdk';
+const client = PulseGrid({ apiKey: process.env.PULSEGRID_KEY });
+await client.flows.list();
+```
+
+## SDK Guidelines
+
+- Provide typed clients where possible and support both browser and Node.js runtimes.
+- Keep client methods thin wrappers around the API and document edge-case behavior (timeouts, retries).
