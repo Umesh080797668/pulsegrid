@@ -157,6 +157,9 @@ const PRO_CONNECTORS: &[&str] = &[
     "APPLE_HEALTH",
 ];
 
+const REPLAY_RING_BUFFER_LIMIT: isize = 500;
+const REPLAY_TTL_SECONDS: usize = 24 * 60 * 60;
+
 // BILLING: Plan limit configuration per workspace tier
 // Phase 1/2 enforcement baseline: static plan limits used by runtime checks.
 // 
@@ -334,6 +337,31 @@ async fn publish_event_to_redis(redis_url: &str, event: &PulseEvent) {
             let _ = redis::AsyncCommands::xadd::<_, _, _, _, ()>(&mut con, &workspace_stream, "*", &[("payload", payload)]).await;
         }
     }
+}
+
+async fn store_replay_event(
+    con: &mut redis::aio::MultiplexedConnection,
+    replay_entry: &ReplayEventRecord,
+) -> Result<(), redis::RedisError> {
+    store_replay_event_with_ttl(con, replay_entry, REPLAY_TTL_SECONDS as i64).await
+}
+
+async fn store_replay_event_with_ttl(
+    con: &mut redis::aio::MultiplexedConnection,
+    replay_entry: &ReplayEventRecord,
+    ttl_seconds: i64,
+) -> Result<(), redis::RedisError> {
+    let ring_buffer_key = replay_ring_buffer_key(replay_entry.flow_id);
+    let payload = serde_json::to_string(replay_entry).unwrap_or_default();
+    let score = replay_entry.recorded_at.timestamp_millis();
+
+    let _: () = con.zadd(&ring_buffer_key, payload, score).await?;
+    let _: () = con
+        .zremrangebyrank(&ring_buffer_key, 0, -(REPLAY_RING_BUFFER_LIMIT + 1))
+        .await?;
+    let _: bool = con.expire(&ring_buffer_key, ttl_seconds).await?;
+
+    Ok(())
 }
 
 async fn start_schedule_worker(cron_pool: sqlx::PgPool, redis_url: String) {
@@ -1028,7 +1056,7 @@ async fn main() {
         .route("/api/v1/flows/{flow_id}/runs/{run_id}", get(get_flow_run_details))
         .route("/api/v1/flows/{flow_id}/runs/{run_id}/steps/{step_id}/replay", post(replay_flow_run_step))
         .route("/api/v1/flows/{flow_id}/stats", get(get_flow_stats))
-        .route("/api/v1/replay/{workspace_id}", get(get_replay_events))
+        .route("/api/v1/replay/{flow_id}", get(get_replay_events))
         // Approval endpoints
         .route("/api/v1/approvals/decision", post(approval_decision_handler))
         .route("/api/v1/approvals/{flow_run_id}/pending", get(get_pending_approvals))
@@ -1475,6 +1503,19 @@ fn workspace_stream_key(workspace_id: uuid::Uuid) -> String {
     format!("stream:events:{}", workspace_id)
 }
 
+fn replay_ring_buffer_key(flow_id: uuid::Uuid) -> String {
+    format!("flow:{}:events", flow_id)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReplayEventRecord {
+    flow_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    environment: String,
+    recorded_at: chrono::DateTime<chrono::Utc>,
+    event: PulseEvent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlowEnvironment {
     Production,
@@ -1732,25 +1773,6 @@ async fn start_event_listener(
                                         }
                                     }
 
-                                    // EVENT REPLAY: Store event in ring buffer (sorted set capped at 500)
-                                    // Get current Unix timestamp in milliseconds
-                                    let unix_ms = chrono::Utc::now().timestamp_millis();
-                                    let ring_buffer_key = format!(
-                                        "workspace:{}:events:{}",
-                                        event.tenant_id,
-                                        execution_environment.as_str()
-                                    );
-                                    
-                                    // Add event to sorted set with timestamp as score
-                                    let _: Result<(), _> = con.zadd(
-                                        &ring_buffer_key,
-                                        &payload_str.to_string(),
-                                        unix_ms
-                                    ).await;
-                                    
-                                    // Cap at 500 events: remove oldest events if count exceeds 500
-                                    let _: Result<(), _> = con.zremrangebyrank(&ring_buffer_key, 0, -501).await;
-                                    
                                     // BILLING: Increment event count
                                     let _ = increment_usage(&pg_pool, event.tenant_id, 1, 0).await;
 
@@ -1844,6 +1866,22 @@ async fn start_event_listener(
                                                 flow_name
                                             );
                                             continue;
+                                        }
+
+                                        let replay_entry = ReplayEventRecord {
+                                            flow_id,
+                                            workspace_id: event.tenant_id,
+                                            environment: execution_environment.as_str().to_string(),
+                                            recorded_at: chrono::Utc::now(),
+                                            event: event.clone(),
+                                        };
+
+                                        if let Err(error) = store_replay_event(&mut con, &replay_entry).await {
+                                            eprintln!(
+                                                "   ⚠️  Failed to store replay history for flow {}: {}",
+                                                flow_name,
+                                                error
+                                            );
                                         }
 
                                         println!("   ⚡ Executing flow: {}", flow_name);
@@ -5303,8 +5341,17 @@ async fn get_flow_stats(
 }
 
 async fn get_replay_events(
-    Path(workspace_id): Path<uuid::Uuid>,
+    Path(flow_id): Path<uuid::Uuid>,
     Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    get_replay_events_with_redis_url(flow_id, params, &redis_url).await
+}
+
+async fn get_replay_events_with_redis_url(
+    flow_id: uuid::Uuid,
+    params: std::collections::HashMap<String, String>,
+    redis_url: &str,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let limit = params
         .get("limit")
@@ -5312,7 +5359,6 @@ async fn get_replay_events(
         .unwrap_or(50)
         .clamp(1, 500);
 
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
     let client = redis::Client::open(redis_url)
         .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     let mut con = client
@@ -5320,7 +5366,7 @@ async fn get_replay_events(
         .await
         .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
-    let ring_buffer_key = format!("workspace:{}:events", workspace_id);
+    let ring_buffer_key = replay_ring_buffer_key(flow_id);
     let events: Vec<String> = redis::cmd("ZREVRANGE")
         .arg(&ring_buffer_key)
         .arg(0)
@@ -5329,15 +5375,42 @@ async fn get_replay_events(
         .await
         .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
-    let parsed_events: Vec<serde_json::Value> = events
+    let environment_filter = params.get("environment").map(|value| value.to_ascii_lowercase());
+    let event_type_filter = params.get("event_type").map(|value| value.to_string());
+
+    let parsed_events: Vec<ReplayEventRecord> = events
         .into_iter()
-        .filter_map(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
+        .filter_map(|payload| serde_json::from_str::<ReplayEventRecord>(&payload).ok())
+        .filter(|entry| {
+            let environment_matches = environment_filter
+                .as_ref()
+                .map(|environment| entry.environment.eq_ignore_ascii_case(environment))
+                .unwrap_or(true);
+            let event_type_matches = event_type_filter
+                .as_ref()
+                .map(|event_type| entry.event.event_type == *event_type)
+                .unwrap_or(true);
+            environment_matches && event_type_matches
+        })
+        .collect();
+
+    let events: Vec<serde_json::Value> = parsed_events
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "flow_id": entry.flow_id,
+                "workspace_id": entry.workspace_id,
+                "environment": entry.environment,
+                "recorded_at": entry.recorded_at,
+                "event": entry.event,
+            })
+        })
         .collect();
 
     Ok(Json(serde_json::json!({
-        "workspace_id": workspace_id,
-        "total": parsed_events.len(),
-        "events": parsed_events,
+        "flow_id": flow_id,
+        "total": events.len(),
+        "events": events,
     })))
 }
 
@@ -5604,4 +5677,169 @@ async fn get_pending_approvals(
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(approvals))
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use redis::AsyncCommands;
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::process::{Child, Command, Stdio};
+
+    struct RedisTestServer {
+        _temp_dir: PathBuf,
+        child: Child,
+        redis_url: String,
+    }
+
+    impl Drop for RedisTestServer {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    async fn start_redis_test_server() -> RedisTestServer {
+        let temp_dir = std::env::temp_dir().join(format!("pulsegrid-replay-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let child = Command::new("redis-server")
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--bind")
+            .arg("127.0.0.1")
+            .arg("--save")
+            .arg("")
+            .arg("--appendonly")
+            .arg("no")
+            .arg("--dir")
+            .arg(&temp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to start redis-server");
+
+        let redis_url = format!("redis://127.0.0.1:{}/", port);
+
+        for _ in 0..50 {
+            if let Ok(client) = redis::Client::open(redis_url.clone()) {
+                if let Ok(mut con) = client.get_multiplexed_async_connection().await {
+                    let ping: Result<String, _> = redis::cmd("PING").query_async(&mut con).await;
+                    if ping.is_ok() {
+                        return RedisTestServer {
+                            _temp_dir: temp_dir,
+                            child,
+                            redis_url,
+                        };
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        panic!("redis-server did not become ready in time");
+    }
+
+    async fn redis_connection(url: &str) -> redis::aio::MultiplexedConnection {
+        let client = redis::Client::open(url).unwrap();
+        client.get_multiplexed_async_connection().await.unwrap()
+    }
+
+    fn replay_event(
+        flow_id: uuid::Uuid,
+        workspace_id: uuid::Uuid,
+        environment: &str,
+        event_type: &str,
+    ) -> ReplayEventRecord {
+        ReplayEventRecord {
+            flow_id,
+            workspace_id,
+            environment: environment.to_string(),
+            recorded_at: chrono::Utc::now(),
+            event: PulseEvent {
+                id: uuid::Uuid::new_v4(),
+                tenant_id: workspace_id,
+                source: Some("webhook".to_string()),
+                event_type: event_type.to_string(),
+                data: serde_json::json!({"environment": environment}),
+                sub_flow_depth: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_key_expires_after_ttl() {
+        let server = start_redis_test_server().await;
+        let mut con = redis_connection(&server.redis_url).await;
+        let flow_id = uuid::Uuid::new_v4();
+        let entry = replay_event(flow_id, uuid::Uuid::new_v4(), "production", "order.created");
+
+        store_replay_event_with_ttl(&mut con, &entry, 1).await.unwrap();
+
+        let key = replay_ring_buffer_key(flow_id);
+        let ttl: i64 = con.ttl(&key).await.unwrap();
+        assert!(ttl <= 1 && ttl >= 0, "expected short TTL, got {ttl}");
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let exists: bool = con.exists(&key).await.unwrap();
+        assert!(!exists, "expected replay key to expire");
+    }
+
+    #[tokio::test]
+    async fn replay_endpoint_returns_events_for_one_flow_and_filters_by_environment() {
+        let server = start_redis_test_server().await;
+        let mut con = redis_connection(&server.redis_url).await;
+
+        let workspace_id = uuid::Uuid::new_v4();
+        let flow_id = uuid::Uuid::new_v4();
+        let other_flow_id = uuid::Uuid::new_v4();
+
+        store_replay_event_with_ttl(
+            &mut con,
+            &replay_event(flow_id, workspace_id, "production", "order.created"),
+            REPLAY_TTL_SECONDS as i64,
+        )
+        .await
+        .unwrap();
+        store_replay_event_with_ttl(
+            &mut con,
+            &replay_event(flow_id, workspace_id, "staging", "order.created"),
+            REPLAY_TTL_SECONDS as i64,
+        )
+        .await
+        .unwrap();
+        store_replay_event_with_ttl(
+            &mut con,
+            &replay_event(other_flow_id, workspace_id, "production", "order.created"),
+            REPLAY_TTL_SECONDS as i64,
+        )
+        .await
+        .unwrap();
+
+        let mut params = HashMap::new();
+        params.insert("environment".to_string(), "production".to_string());
+
+        let response = get_replay_events_with_redis_url(flow_id, params, &server.redis_url)
+            .await
+            .unwrap();
+        let payload: Value = response.0;
+
+        assert_eq!(payload["flow_id"], flow_id.to_string());
+        assert_eq!(payload["total"], 1);
+
+        let events = payload["events"].as_array().expect("events array");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["flow_id"], flow_id.to_string());
+        assert_eq!(events[0]["environment"], "production");
+        assert_eq!(events[0]["event"]["event_type"], "order.created");
+    }
 }
