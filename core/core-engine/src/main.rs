@@ -392,15 +392,24 @@ async fn store_replay_event_with_ttl(
     replay_entry: &ReplayEventRecord,
     ttl_seconds: i64,
 ) -> Result<(), redis::RedisError> {
-    let ring_buffer_key = replay_ring_buffer_key(replay_entry.flow_id);
+    let environment = FlowEnvironment::parse(Some(replay_entry.environment.as_str()));
+    let ring_buffer_key = replay_ring_buffer_key(replay_entry.flow_id, environment);
+    let legacy_ring_buffer_key = legacy_replay_ring_buffer_key(replay_entry.flow_id);
     let payload = serde_json::to_string(replay_entry).unwrap_or_default();
     let score = replay_entry.recorded_at.timestamp_millis();
 
     let _: () = con.zadd(&ring_buffer_key, payload, score).await?;
     let _: () = con
+        .zadd(&legacy_ring_buffer_key, serde_json::to_string(replay_entry).unwrap_or_default(), score)
+        .await?;
+    let _: () = con
         .zremrangebyrank(&ring_buffer_key, 0, -(REPLAY_RING_BUFFER_LIMIT + 1))
         .await?;
+    let _: () = con
+        .zremrangebyrank(&legacy_ring_buffer_key, 0, -(REPLAY_RING_BUFFER_LIMIT + 1))
+        .await?;
     let _: bool = con.expire(&ring_buffer_key, ttl_seconds).await?;
+    let _: bool = con.expire(&legacy_ring_buffer_key, ttl_seconds).await?;
 
     Ok(())
 }
@@ -1544,7 +1553,11 @@ fn workspace_stream_key(workspace_id: uuid::Uuid) -> String {
     format!("stream:events:{}", workspace_id)
 }
 
-fn replay_ring_buffer_key(flow_id: uuid::Uuid) -> String {
+fn replay_ring_buffer_key(flow_id: uuid::Uuid, environment: FlowEnvironment) -> String {
+    format!("flow:{}:events:{}", flow_id, environment.as_str())
+}
+
+fn legacy_replay_ring_buffer_key(flow_id: uuid::Uuid) -> String {
     format!("flow:{}:events", flow_id)
 }
 
@@ -5459,6 +5472,38 @@ async fn get_replay_events(
     get_replay_events_with_redis_url(flow_id, params, &redis_url).await
 }
 
+async fn fetch_replay_payloads(
+    con: &mut redis::aio::MultiplexedConnection,
+    key: &str,
+    limit: isize,
+) -> Result<Vec<String>, redis::RedisError> {
+    redis::cmd("ZREVRANGE")
+        .arg(key)
+        .arg(0)
+        .arg(limit - 1)
+        .query_async(con)
+        .await
+}
+
+async fn backfill_replay_entries(
+    con: &mut redis::aio::MultiplexedConnection,
+    key: &str,
+    entries: &[ReplayEventRecord],
+) -> Result<(), redis::RedisError> {
+    for entry in entries {
+        let payload = serde_json::to_string(entry).unwrap_or_default();
+        let score = entry.recorded_at.timestamp_millis();
+        let _: () = con.zadd(key, payload, score).await?;
+    }
+
+    let _: () = con
+        .zremrangebyrank(key, 0, -(REPLAY_RING_BUFFER_LIMIT + 1))
+        .await?;
+    let _: bool = con.expire(key, REPLAY_TTL_SECONDS as i64).await?;
+
+    Ok(())
+}
+
 async fn get_replay_events_with_redis_url(
     flow_id: uuid::Uuid,
     params: std::collections::HashMap<String, String>,
@@ -5477,33 +5522,59 @@ async fn get_replay_events_with_redis_url(
         .await
         .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
-    let ring_buffer_key = replay_ring_buffer_key(flow_id);
-    let events: Vec<String> = redis::cmd("ZREVRANGE")
-        .arg(&ring_buffer_key)
-        .arg(0)
-        .arg(limit - 1)
-        .query_async(&mut con)
-        .await
-        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-
     let environment_filter = params.get("environment").map(|value| value.to_ascii_lowercase());
     let event_type_filter = params.get("event_type").map(|value| value.to_string());
 
-    let parsed_events: Vec<ReplayEventRecord> = events
-        .into_iter()
-        .filter_map(|payload| serde_json::from_str::<ReplayEventRecord>(&payload).ok())
+    let requested_environments: Vec<FlowEnvironment> = match environment_filter.as_deref() {
+        Some("staging") => vec![FlowEnvironment::Staging],
+        Some("production") => vec![FlowEnvironment::Production],
+        Some(_) => vec![FlowEnvironment::Production],
+        None => vec![FlowEnvironment::Production, FlowEnvironment::Staging],
+    };
+
+    let legacy_ring_buffer_key = legacy_replay_ring_buffer_key(flow_id);
+    let mut parsed_events_by_id: std::collections::HashMap<uuid::Uuid, ReplayEventRecord> =
+        std::collections::HashMap::new();
+
+    for environment in requested_environments.iter().copied() {
+        let ring_buffer_key = replay_ring_buffer_key(flow_id, environment);
+        let env_events = fetch_replay_payloads(&mut con, &ring_buffer_key, limit)
+            .await
+            .unwrap_or_default();
+        let legacy_events = fetch_replay_payloads(&mut con, &legacy_ring_buffer_key, limit)
+            .await
+            .unwrap_or_default();
+
+        let mut parsed_for_environment: Vec<ReplayEventRecord> = env_events
+            .into_iter()
+            .chain(legacy_events.into_iter())
+            .filter_map(|payload| serde_json::from_str::<ReplayEventRecord>(&payload).ok())
+            .filter(|entry| entry.environment.eq_ignore_ascii_case(environment.as_str()))
+            .collect();
+
+        if !parsed_for_environment.is_empty() {
+            backfill_replay_entries(&mut con, &ring_buffer_key, &parsed_for_environment)
+                .await
+                .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        }
+
+        for entry in parsed_for_environment.drain(..) {
+            parsed_events_by_id.insert(entry.event.id, entry);
+        }
+    }
+
+    let mut parsed_events: Vec<ReplayEventRecord> = parsed_events_by_id
+        .into_values()
         .filter(|entry| {
-            let environment_matches = environment_filter
-                .as_ref()
-                .map(|environment| entry.environment.eq_ignore_ascii_case(environment))
-                .unwrap_or(true);
-            let event_type_matches = event_type_filter
+            event_type_filter
                 .as_ref()
                 .map(|event_type| entry.event.event_type == *event_type)
-                .unwrap_or(true);
-            environment_matches && event_type_matches
+                .unwrap_or(true)
         })
         .collect();
+
+    parsed_events.sort_by(|left, right| right.recorded_at.cmp(&left.recorded_at));
+    parsed_events.truncate(limit as usize);
 
     let events: Vec<serde_json::Value> = parsed_events
         .into_iter()
@@ -5520,6 +5591,16 @@ async fn get_replay_events_with_redis_url(
 
     Ok(Json(serde_json::json!({
         "flow_id": flow_id,
+        "filters": {
+            "environment": environment_filter,
+            "event_type": event_type_filter,
+        },
+        "replay_keys": requested_environments
+            .iter()
+            .copied()
+            .map(|environment| replay_ring_buffer_key(flow_id, environment))
+            .collect::<Vec<String>>(),
+        "legacy_replay_key": legacy_replay_ring_buffer_key(flow_id),
         "total": events.len(),
         "events": events,
     })))
@@ -5895,14 +5976,20 @@ mod replay_tests {
 
         store_replay_event_with_ttl(&mut con, &entry, 1).await.unwrap();
 
-        let key = replay_ring_buffer_key(flow_id);
+        let key = replay_ring_buffer_key(flow_id, FlowEnvironment::Production);
         let ttl: i64 = con.ttl(&key).await.unwrap();
         assert!(ttl <= 1 && ttl >= 0, "expected short TTL, got {ttl}");
+
+        let legacy_key = legacy_replay_ring_buffer_key(flow_id);
+        let legacy_ttl: i64 = con.ttl(&legacy_key).await.unwrap();
+        assert!(legacy_ttl <= 1 && legacy_ttl >= 0, "expected short TTL on legacy key, got {legacy_ttl}");
 
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let exists: bool = con.exists(&key).await.unwrap();
         assert!(!exists, "expected replay key to expire");
+        let legacy_exists: bool = con.exists(&legacy_key).await.unwrap();
+        assert!(!legacy_exists, "expected legacy replay key to expire");
     }
 
     #[tokio::test]
@@ -5945,6 +6032,7 @@ mod replay_tests {
         let payload: Value = response.0;
 
         assert_eq!(payload["flow_id"], flow_id.to_string());
+        assert_eq!(payload["filters"]["environment"], "production");
         assert_eq!(payload["total"], 1);
 
         let events = payload["events"].as_array().expect("events array");
@@ -5952,5 +6040,35 @@ mod replay_tests {
         assert_eq!(events[0]["flow_id"], flow_id.to_string());
         assert_eq!(events[0]["environment"], "production");
         assert_eq!(events[0]["event"]["event_type"], "order.created");
+    }
+
+    #[tokio::test]
+    async fn replay_endpoint_backfills_from_legacy_key() {
+        let server = start_redis_test_server().await;
+        let mut con = redis_connection(&server.redis_url).await;
+
+        let workspace_id = uuid::Uuid::new_v4();
+        let flow_id = uuid::Uuid::new_v4();
+        let legacy_entry = replay_event(flow_id, workspace_id, "production", "legacy.created");
+        let legacy_key = legacy_replay_ring_buffer_key(flow_id);
+
+        let payload = serde_json::to_string(&legacy_entry).unwrap();
+        let score = legacy_entry.recorded_at.timestamp_millis();
+        let _: () = con.zadd(&legacy_key, payload, score).await.unwrap();
+
+        let mut params = HashMap::new();
+        params.insert("environment".to_string(), "production".to_string());
+
+        let response = get_replay_events_with_redis_url(flow_id, params, &server.redis_url)
+            .await
+            .unwrap();
+        let payload: Value = response.0;
+
+        assert_eq!(payload["total"], 1);
+        assert_eq!(payload["events"][0]["event"]["event_type"], "legacy.created");
+
+        let new_key = replay_ring_buffer_key(flow_id, FlowEnvironment::Production);
+        let backfilled: i64 = con.zcard(&new_key).await.unwrap();
+        assert_eq!(backfilled, 1);
     }
 }
