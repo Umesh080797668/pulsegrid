@@ -2332,6 +2332,7 @@ mod tests {
                 op: "gt".to_string(),
                 value: json!(100),
             }],
+            idempotency_key_path: None,
         };
 
         let event = PulseEvent {

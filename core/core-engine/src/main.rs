@@ -62,6 +62,47 @@ struct AppState {
     cache: Arc<LocalCache>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_with_configured_jsonpath_simple() {
+        let payload = json!({"id": "123"});
+        let got = extract_idempotency_key_from_payload(&payload, Some("$.id"));
+        assert_eq!(got.as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn test_extract_with_configured_jsonpath_nested() {
+        let payload = json!({"event": {"id": "abc"}});
+        let got = extract_idempotency_key_from_payload(&payload, Some("$.event.id"));
+        assert_eq!(got.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn test_extract_with_array_index() {
+        let payload = json!({"items": [{"uid":"x"}]});
+        let got = extract_idempotency_key_from_payload(&payload, Some("$.items.0.uid"));
+        assert_eq!(got.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn test_fallback_to_idempotency_key_field() {
+        let payload = json!({"idempotency_key": "k1"});
+        let got = extract_idempotency_key_from_payload(&payload, None);
+        assert_eq!(got.as_deref(), Some("k1"));
+    }
+
+    #[test]
+    fn test_configured_missing_fallbacks_used() {
+        let payload = json!({"id": "nope", "x-idempotency-key": "fallback"});
+        let got = extract_idempotency_key_from_payload(&payload, Some("$.missing.path"));
+        assert_eq!(got.as_deref(), Some("fallback"));
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PlanLimits {
     max_flows: i64,
@@ -4378,6 +4419,46 @@ struct WebhookPayload {
     signature: Option<String>,
 }
 
+fn extract_idempotency_key_from_payload(payload_value: &serde_json::Value, configured_path: Option<&str>) -> Option<String> {
+    // simple JSONPath resolver supporting $.a.b and array indices
+    fn resolve_json_path<'a>(data: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+        let trimmed = path.strip_prefix("$.").or_else(|| path.strip_prefix('$')).unwrap_or(path);
+        if trimmed.is_empty() { return Some(data); }
+        let mut current = data;
+        for segment in trimmed.split('.') {
+            if segment.is_empty() { continue; }
+            if let Ok(idx) = segment.parse::<usize>() {
+                current = current.as_array()?.get(idx)?;
+            } else {
+                current = current.as_object()?.get(segment)?;
+            }
+        }
+        Some(current)
+    }
+
+    // Try configured path first
+    if let Some(path) = configured_path {
+        if path.starts_with('$') {
+            if let Some(v) = resolve_json_path(payload_value, path) {
+                if let Some(s) = v.as_str() { return Some(s.to_string()); }
+                return Some(v.to_string());
+            }
+        }
+    }
+
+    // Fallback probes
+    if let Some(v) = payload_value.get("idempotency_key")
+        .or_else(|| payload_value.get("x-idempotency-key"))
+        .or_else(|| payload_value.pointer("/event/id"))
+        .or_else(|| payload_value.pointer("/id"))
+    {
+        if let Some(s) = v.as_str() { return Some(s.to_string()); }
+        return Some(v.to_string());
+    }
+
+    None
+}
+
 async fn webhook_receiver(
     State(state): State<AppState>,
     Path(workspace_id): Path<uuid::Uuid>,
@@ -4497,15 +4578,45 @@ async fn flow_webhook_receiver(
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     verify_workspace_webhook_signature(&state, workspace_id, &headers, &body).await?;
-
-    // Verify flow exists and is enabled
-    let _flow = sqlx::query!("SELECT id FROM flows WHERE id = $1 AND workspace_id = $2", flow_id, workspace_id)
+    // Verify flow exists and fetch its definition
+    let flow_row = sqlx::query!("SELECT definition FROM flows WHERE id = $1 AND workspace_id = $2", flow_id, workspace_id)
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or((axum::http::StatusCode::NOT_FOUND, "Flow not found".to_string()))?;
 
-    // Create flow run
+    // Parse incoming payload
+    let payload_value = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_else(|_| {
+        serde_json::json!({ "raw": String::from_utf8_lossy(&body).to_string() })
+    });
+
+    // Try to read configured idempotency JSONPath from the flow definition
+    let configured_path = flow_row.definition.get("trigger")
+        .and_then(|t| t.get("idempotency_key_path"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Extract idempotency key (configured JSONPath preferred, then fallbacks)
+    let idempotency_key = extract_idempotency_key_from_payload(&payload_value, configured_path.as_deref());
+
+    // If we have an idempotency key, check Redis and potentially short-circuit
+    if let Some(ref key) = idempotency_key {
+        let temp_executor = crate::executor::FlowExecutor::new(state.pool.clone(), state.vault.clone());
+        match temp_executor.check_idempotency(workspace_id, key).await {
+            Ok(true) => {
+                println!("   ⏭️  Skipping duplicate webhook for flow {} (idempotency_key: {})", flow_id, key);
+                return Ok(Json(serde_json::json!({"success": true, "skipped": true, "reason": "duplicate_idempotency_key"})));            
+            }
+            Ok(false) => {
+                println!("   ✓ New webhook for flow {}, idempotency key registered (idempotency_key: {})", flow_id, key);
+            }
+            Err(e) => {
+                eprintln!("   ⚠️  Webhook idempotency check failed: {}, proceeding with flow", e);
+            }
+        }
+    }
+
+    // Create flow run after idempotency check
     let run_id = sqlx::query!("
         INSERT INTO flow_runs (flow_id, workspace_id, environment, status, started_at) 
         VALUES ($1, $2, $3, $4, NOW())

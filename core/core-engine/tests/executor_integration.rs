@@ -120,6 +120,7 @@ async fn trigger_condition_matching_works() {
             op: "gt".into(),
             value: json!(50),
         }],
+        idempotency_key_path: None,
     };
 
         let event = PulseEvent {

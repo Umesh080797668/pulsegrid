@@ -136,6 +136,11 @@ export class TriggerDefinitionDto {
   filters?: FilterConditionDto[];
 
   @IsOptional()
+  @IsString()
+  @MinLength(1)
+  idempotency_key_path?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   debounce_ms?: number;

@@ -91,6 +91,8 @@ pub struct TriggerDefinition {
     pub connector: String,
     pub event: String,
     #[serde(default)]
+    pub idempotency_key_path: Option<String>,
+    #[serde(default)]
     pub filters: Vec<FilterCondition>,
 }
 
@@ -386,6 +388,7 @@ mod tests {
                     value: serde_json::json!(100),
                 },
             ],
+            idempotency_key_path: None,
         };
 
         let json = serde_json::to_string(&trigger).unwrap();
