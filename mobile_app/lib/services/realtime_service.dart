@@ -1,13 +1,16 @@
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 import 'dart:async';
+import '../config/app_config.dart';
 
 class RealtimeService {
   late socket_io.Socket _socket;
-  final String socketUrl;
+  late String socketUrl;
   final StreamController<Map<String, dynamic>> _eventStreamController =
       StreamController.broadcast();
 
-  RealtimeService({this.socketUrl = 'http://localhost:3001'});
+  RealtimeService({String? socketUrl}) {
+    this.socketUrl = socketUrl ?? AppConfig.socketUrl;
+  }
 
   Stream<Map<String, dynamic>> get eventStream => _eventStreamController.stream;
 

@@ -1,16 +1,32 @@
 import 'package:dio/dio.dart';
 import '../models/flow.dart';
+import '../config/app_config.dart';
 
 class ApiService {
   late Dio _dio;
-  static const String baseUrl = 'http://localhost:3001/api';
+  bool _initialized = false;
 
   ApiService() {
+    _initializeDio();
+  }
+
+  void _initializeDio() {
+    if (_initialized) return;
+    
     _dio = Dio(BaseOptions(
-      baseUrl: baseUrl,
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 10),
+      baseUrl: AppConfig.apiEndpoint,
+      connectTimeout: AppConfig.connectionTimeout,
+      receiveTimeout: AppConfig.receiveTimeout,
     ));
+    
+    _initialized = true;
+  }
+
+  Dio get _dioInstance {
+    if (!_initialized) {
+      _initializeDio();
+    }
+    return _dio;
   }
 
   Future<List<Flow>> getFlows() async {

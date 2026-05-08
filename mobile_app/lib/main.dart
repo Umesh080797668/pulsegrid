@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
+import 'config/app_config.dart';
+import 'config/app_flavor.dart';
 import 'screens/home_screen.dart';
 import 'screens/flow_list_screen.dart';
 import 'screens/flow_detail_screen.dart';
@@ -20,6 +22,10 @@ import 'services/home_widget_service.dart';
 import 'services/auth_service.dart';
 
 void main() {
+  // Initialize AppConfig with the desired flavor
+  // In production, this would be read from environment or build configuration
+  AppConfig.initialize(flavor: AppFlavor.production);
+  
   runApp(const ProviderScope(child: MyApp()));
 }
 

@@ -8,9 +8,14 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobile_app/main.dart';
+import 'package:mobile_app/config/app_config.dart';
+import 'package:mobile_app/config/app_flavor.dart';
 
 void main() {
   testWidgets('shows the PulseGrid home screen', (WidgetTester tester) async {
+    // Initialize AppConfig before pumping the widget
+    AppConfig.initialize(flavor: AppFlavor.development);
+    
     await tester.pumpWidget(const MyApp());
 
     expect(find.text('PulseGrid Smart Home'), findsOneWidget);

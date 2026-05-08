@@ -37,6 +37,32 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    flavorDimensions("environment")
+
+    productFlavors {
+        create("dev") {
+            dimension = "environment"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appName"] = "PulseGrid Dev"
+            manifestPlaceholders["flavorEnvironment"] = "development"
+        }
+
+        create("staging") {
+            dimension = "environment"
+            applicationIdSuffix = ".staging"
+            versionNameSuffix = "-staging"
+            manifestPlaceholders["appName"] = "PulseGrid Staging"
+            manifestPlaceholders["flavorEnvironment"] = "staging"
+        }
+
+        create("prod") {
+            dimension = "environment"
+            manifestPlaceholders["appName"] = "PulseGrid"
+            manifestPlaceholders["flavorEnvironment"] = "production"
+        }
+    }
 }
 
 flutter {

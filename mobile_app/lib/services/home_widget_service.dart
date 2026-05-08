@@ -1,5 +1,6 @@
 import 'package:home_widget/home_widget.dart';
 import 'package:dio/dio.dart';
+import '../config/app_config.dart';
 
 class HomeWidgetService {
   static const String appGroupId = 'group.com.pulsegrid.mobileApp';
@@ -19,19 +20,24 @@ class HomeWidgetService {
   static const String topFlowRunsKey = 'pulsegrid_widget_top_flow_runs';
 
   static bool _initialized = false;
-  static final Dio _dio = Dio(
-    BaseOptions(
-      baseUrl: 'http://localhost:3001/api/v1',
-      connectTimeout: const Duration(seconds: 5),
-      receiveTimeout: const Duration(seconds: 5),
-    ),
-  );
+  static late Dio _dio;
+
+  static void _initializeDio() {
+    _dio = Dio(
+      BaseOptions(
+        baseUrl: AppConfig.apiEndpoint,
+        connectTimeout: AppConfig.connectionTimeout,
+        receiveTimeout: AppConfig.receiveTimeout,
+      ),
+    );
+  }
 
   static Future<void> initialize() async {
     if (_initialized) {
       return;
     }
 
+    _initializeDio();
     await HomeWidget.setAppGroupId(appGroupId);
     _initialized = true;
   }
