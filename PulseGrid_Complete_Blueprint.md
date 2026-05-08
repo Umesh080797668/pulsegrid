@@ -24,6 +24,13 @@
 15. [Monetization Strategy](#15-monetization-strategy)
 16. [Go-To-Market Strategy](#16-go-to-market-strategy)
 17. [Development Roadmap](#17-development-roadmap)
+    - Phase 1 — Foundation MVP (Month 1–4)
+    - Phase 2 — Growth Product (Month 5–10)
+    - Phase 3 — Enterprise & Scale (Month 11–18)
+    - Phase 4 — Ecosystem & Expansion (Month 19–36)
+    - Phase 5 — Platform Maturity & Developer Ecosystem (Month 37–48)
+    - Phase 6 — Intelligence Autonomy & Vertical Market Penetration (Month 49–60)
+    - Phase 7 — Critical Infrastructure & Long-Term Moat (Month 61–84)
 18. [Team Structure (Solo to Scale)](#18-team-structure-solo-to-scale)
 19. [Competitive Analysis](#19-competitive-analysis)
 20. [Risk Analysis](#20-risk-analysis)
@@ -1766,15 +1773,500 @@ These are low-effort, high-impact features that build immediate developer love a
 
 ### Phase 4 — Ecosystem & Expansion (Month 19–36)
 
-- Edge deployment: Rust engine instances in multiple regions (Fly.io global)
-- On-premise enterprise offering (Helm chart for self-hosted K8s)
-- Partner API program (third-party connector marketplace)
-- Advanced ML: predictive automation, business intelligence layer
-- Native database connectors (direct PostgreSQL, MySQL, MongoDB, BigQuery)
-- PulseGrid for IoT: dedicated hardware gateway device (Raspberry Pi image)
-- Global expansion: i18n for 10 languages
-- ISO 27001 certification
-- Series A fundraise or strategic acquisition discussions
+**Objective:** Establish PulseGrid as the undisputed infrastructure layer for automation globally — deployed at the edge, embedded in enterprise networks, and powering a self-sustaining creator ecosystem.
+
+---
+
+**Milestone 4.1 — Global Edge Deployment (Month 19–21)**
+
+PulseGrid moves from a single-region cloud deployment to a globally distributed edge fleet, drastically reducing trigger-to-action latency for international users and satisfying data sovereignty requirements for enterprise customers in the EU, APAC, and LATAM.
+
+- Deploy PulseCore Rust engine instances to Fly.io machines in at minimum 12 regions: `iad` (US East), `lax` (US West), `lhr` (London), `fra` (Frankfurt), `sin` (Singapore), `nrt` (Tokyo), `syd` (Sydney), `gru` (São Paulo), `jnb` (Johannesburg), `bom` (Mumbai), `yyz` (Toronto), `cdg` (Paris)
+- Implement tenant-region affinity: each workspace is pinned to its closest region; event processing occurs locally, dramatically cutting cross-ocean latency
+- Build cross-region replication for PostgreSQL (read replicas in each region; primary writes to home region only)
+- Implement ClickHouse distributed table cluster for multi-region analytics query fan-out
+- Redis Cluster deployed per region; inter-region pub/sub uses a dedicated relay topic in the global event bus
+- Status page (`status.pulsegrid.io`) powered by real-time uptime data from every region, publicly accessible
+- Regional failover: if a region becomes unhealthy (p99 latency > 2s for 60s), tenant flows auto-migrate to the nearest healthy region within 30 seconds — no user action required
+- Data residency controls: enterprise tenants select their data region; all event data and credentials stay within the chosen geography
+
+**Milestone 4.2 — On-Premise Enterprise Distribution (Month 21–24)**
+
+Enterprise customers in regulated industries (finance, healthcare, government, defense) cannot use cloud-hosted SaaS. PulseGrid ships a self-hosted distribution that runs entirely on the customer's own Kubernetes cluster, with zero external data dependencies.
+
+- Helm chart monorepo: `helm/pulsegrid/` containing sub-charts for every service (`core-engine`, `api-gateway`, `enterprise`, `dashboard`, `guard`, `clickhouse`, `redis`, `postgres`)
+- Single-command install: `helm install pulsegrid pulsegrid/pulsegrid --values customer-values.yaml`
+- License enforcement: a Rust-compiled license daemon validates the enterprise seat count against a cryptographically signed license file; no external ping required (air-gapped environments supported)
+- OCI image distribution: all images published to Docker Hub and GitHub Container Registry; customer can mirror to their private registry
+- Offline AI mode: on-premise inference using `core-ai` (ONNX/tract) — PulseAI pattern detection, anomaly alerts, and flow suggestions all run locally; no data leaves the customer network
+- PulseGuard on-premise: triage engine routes to the customer's own locally-deployed Claude-compatible model endpoint instead of Anthropic API
+- Upgrade tooling: `pulse admin upgrade --version 2.x.x` performs a rolling upgrade of all pods with automatic rollback on health check failure
+- Support SLA: dedicated Slack channel + 4-hour response SLA for on-premise enterprise customers
+- Reference architecture documentation: AWS EKS, Azure AKS, GCP GKE, and bare-metal K3s deployment guides, each validated by the engineering team
+
+**Deliverable:** Signed pilot agreement with at least 3 enterprise customers running fully on-premise before Month 24.
+
+**Milestone 4.3 — Partner API Program & Third-Party Connector Marketplace (Month 22–26)**
+
+PulseGrid's 500+ built-in connectors cover the most popular services, but the long tail of niche SaaS tools requires a community-driven ecosystem. The Partner API Program turns PulseGrid into a platform that third parties build on.
+
+**Connector SDK (`@pulsegrid/connector-sdk`):**
+- TypeScript and Rust SDK for building custom connectors, installable via npm or Cargo
+- Connectors define: authentication schema, trigger event types (with JSON schema), action definitions, and rate-limit metadata
+- Local dev server: `pulse connector dev --watch` — hot-reloads connector in PulseCore sandbox for instant iteration
+- Connector testing harness: `pulse connector test --connector ./my-connector --fixture ./events.json` — runs the connector against fixture payloads and validates output schema
+- Packaging: `pulse connector publish` bundles the connector, generates a manifest, and submits for marketplace review
+
+**Third-Party Connector Marketplace (within AutoMarket):**
+- Dedicated "Connectors" tab in AutoMarket, separate from Flow templates
+- Partners publish connectors (free or paid subscription); PulseGrid takes 20% revenue share
+- Verification tiers: `Community` (user-submitted, sandboxed), `Verified` (reviewed by PulseGrid engineering), `Official` (maintained by the service itself — e.g., Shopify publishes its own connector)
+- Connector versioning: users pin to a major version; breaking changes require a new major version
+- Usage analytics: connector publishers see install count, active users, and error rate dashboards — incentivises quality
+
+**Partner Program tiers:**
+- `Builder`: free, community connector, basic support, listed in marketplace
+- `Partner`: $299/month, verified badge, co-marketing, 15% revenue share (vs 20%), dedicated Slack support
+- `Technology Partner`: negotiated; official connector, joint press release, API credits, revenue share negotiated
+
+**Milestone 4.4 — Advanced ML & Predictive Intelligence (Month 24–28)**
+
+PulseAI evolves from reactive suggestions to proactive prediction, moving PulseGrid from an automation tool into a genuine intelligence layer.
+
+**Predictive Flow Triggering:**
+- Train per-tenant time-series models on flow run history using the on-device ONNX runtime
+- Predict when a trigger is likely to occur in the next N minutes based on historical patterns
+- Pre-warm connectors (refresh OAuth tokens, prime Redis caches) before the predicted trigger window — eliminating cold-start latency on high-frequency flows
+- "Predicted next run" shown in dashboard for each flow, with confidence score
+
+**Business Intelligence Layer:**
+- Auto-generated KPI dashboards from connected business services: pull revenue data from Stripe, deal pipeline from HubSpot, support ticket volume from Zendesk — synthesise into a unified business intelligence view updated in real time
+- Anomaly scoring: each metric tracked with a rolling baseline; deviations beyond 2σ trigger a PulseAI alert with a plain-English explanation ("Your Stripe MRR dropped 18% compared to the same period last week — your most recent Flow 'Subscription Renewal Retry' had a 34% higher failure rate than normal")
+- Natural language queries against your own business data: "What was my average order value last week broken down by Shopify product category?" — PulseAI translates to a ClickHouse query and renders the result as a chart in the dashboard
+
+**AI Flow Optimiser:**
+- Analyses all flows for redundancy, inefficiency, and error patterns across the workspace
+- Generates an "Optimisation Report" weekly: "Flow X and Flow Y both fetch the same GitHub repo data — consolidate them to save 47 API calls/day"
+- One-click apply: accepts the suggestion, merges the flows, and runs a test against historical replay events before activating
+
+**Milestone 4.5 — Native Database Connectors (Month 25–27)**
+
+Direct database connectivity unlocks entire categories of data pipeline and ETL automation that previously required custom middleware.
+
+**Supported databases:**
+- PostgreSQL, MySQL, MariaDB (via native async drivers in Rust: `sqlx`)
+- MongoDB (via `mongodb` crate — async, connection-pooled)
+- Redis (already present as internal infrastructure — exposed as user-connectable data source)
+- BigQuery (via Google REST API with streaming inserts and query jobs)
+- Snowflake (via HTTP API)
+- ClickHouse (via HTTP interface — self-referential: users can query PulseGrid's own analytics store)
+- Microsoft SQL Server (via `tiberius` Rust crate)
+
+**Trigger types per database connector:**
+- `new_row`: polls a table at a configurable interval (minimum 30s for free, 5s for Pro, 1s for Enterprise) for new records since last poll (based on an `id` or `updated_at` column)
+- `query_result_change`: runs a user-supplied SELECT query; triggers when the result changes (hash comparison)
+- `cdc_event` (Enterprise only): connects to PostgreSQL logical replication slot or MySQL binlog for true change-data-capture — zero-latency row-level events without polling
+
+**Action types per database connector:**
+- `execute_query`: run any parameterized SQL or aggregation pipeline
+- `upsert_row`: insert or update a record (idempotent, idempotency key configurable)
+- `bulk_insert`: batch insert arrays of records in a single transaction (for ETL flows)
+
+**Security:** database credentials stored in VaultGuard with the same AES-256-GCM zero-knowledge encryption as all other credentials. Connection strings never logged. Query parameters never interpolated as raw strings — always parameterised at the driver level.
+
+**Milestone 4.6 — PulseGrid for IoT: PulseBox Hardware Gateway (Month 26–30)**
+
+The PulseBox is PulseGrid's dedicated IoT edge device: a small form-factor gateway that runs PulseCore natively on local hardware, enabling real-time automation over physical devices without cloud round-trips.
+
+**Hardware spec (reference design):**
+- Compute: Raspberry Pi 5 (8GB RAM) or compatible ARM64 SBC
+- OS: custom Debian-based image (`PulseOS`) with PulseCore pre-installed as a systemd service
+- Connectivity: WiFi 6, Ethernet, Bluetooth 5.2 (BLE), Zigbee (via CC2652 USB stick), Z-Wave (via Z-Wave.me USB stick), Matter (software, via `matter-rs` crate)
+- Local storage: 64GB SD card + optional NVMe SSD for RocksDB local event cache
+- Display: optional 2.8" TFT status screen showing active flow count, CPU, and last event
+
+**PulseOS capabilities:**
+- PulseCore runs offline: all flows using only local device connectors continue to execute even when internet is unavailable; cloud sync resumes automatically on reconnect
+- Local MQTT broker (`rumqttd`, written in Rust) for connecting any MQTT-speaking device (sensors, actuators, industrial PLCs)
+- BLE scanner: passively scans for BLE advertisements from supported devices (Govee sensors, iBeacons, Tile trackers); each advertisement is a PulseCore event
+- Zigbee coordinator: pairs with Zigbee devices (lights, sensors, plugs) via `zigbee2mqtt` adapter layer; exposes each device as a PulseGrid connector
+- Matter controller: natively pairs with Matter-certified devices; triggers on state changes (door opened, motion detected, temperature threshold crossed)
+- Local AI inference: `core-ai` runs on-device (ARM64 ONNX runtime) — pattern detection and anomaly alerts work without cloud connectivity
+
+**Distribution and pricing:**
+- PulseBox sold as hardware kit at cost + margin: $149 (DIY Raspberry Pi image download, free), $199 (pre-assembled PulseBox Mini), $349 (PulseBox Pro with NVMe + status screen)
+- PulseBox requires an active Pro or Business PulseGrid plan for cloud sync; works in standalone mode on Free plan (local-only flows)
+- OEM program: hardware partners can license PulseOS and pre-install it on their own gateway hardware
+
+**Milestone 4.7 — Global Expansion & Localisation (Month 28–32)**
+
+**Language support (i18n):**
+Full UI localisation for 12 languages in priority order:
+1. English (base)
+2. Spanish (ES/LATAM)
+3. German
+4. French
+5. Portuguese (BR)
+6. Japanese
+7. Korean
+8. Simplified Chinese
+9. Italian
+10. Dutch
+11. Polish
+12. Turkish
+
+**Implementation:**
+- Next.js `next-intl` for dashboard; Angular `@ngx-translate` for admin; Flutter `flutter_localizations` for mobile; i18next for Vue SDK
+- Translation managed via Crowdin (community contributors + professional review for tier-1 languages)
+- RTL support: Arabic and Hebrew added as stretch goals post-Month 32
+- Currency and date formatting: locale-aware rendering for analytics and billing dashboards
+- Localised documentation site: `docs.pulsegrid.io/[locale]` with community translation contributions via GitHub PRs
+
+**Regional compliance additions:**
+- **EU:** GDPR Article 17 (right to erasure) automated pipeline — single API call deletes all tenant data across PostgreSQL, ClickHouse, Redis, and RocksDB within 30 days
+- **Brazil:** LGPD data processing agreement template bundled in enterprise onboarding
+- **Japan:** APPI compliance audit log format exported on request
+- **India:** DPDP Act readiness checklist built into enterprise onboarding wizard
+
+**Milestone 4.8 — ISO 27001 Certification & Compliance Expansion (Month 30–34)**
+
+- Engage a UKAS-accredited certification body for ISO 27001:2022 audit
+- Implement all required Information Security Management System (ISMS) controls: asset inventory, access review cycles, vulnerability management policy, supplier security assessments, incident response playbook
+- PulseGuard audit trail feeds directly into ISO 27001 evidence collection — every security-relevant event is immutably logged and exportable
+- SOC 2 Type II report: engage a PCAOB-registered CPA firm for the 6-month observation period, targeting report delivery by Month 34
+- HIPAA Business Associate Agreement (BAA): make available to healthcare customers on Enterprise plan; data processing controls for PHI documented and tested
+- PCI DSS SAQ-A compliance: Stripe handles all cardholder data, but document and test the PulseGrid side of the integration to produce a complete SAQ-A self-assessment for enterprise customers who require it
+- Publish a public Trust Centre (`trust.pulsegrid.io`) with live compliance status, current certifications, penetration test executive summaries, and uptime history
+
+**Milestone 4.9 — Series A Fundraise (Month 33–36)**
+
+**Fundraise readiness checklist:**
+- ARR ≥ $1M before approaching Series A investors
+- ≥ 12 months of audited financial statements
+- Data room: cap table, employment agreements, IP assignments, customer contracts, security audit reports, ISO 27001 certificate
+- Metrics deck: MAU, DAU, MRR, churn, LTV:CAC, NPS, flow run volume, connector count, marketplace GMV
+
+**Target investors:**
+- Infrastructure-focused SaaS funds: Bessemer Venture Partners, Sequoia, a16z, Redpoint
+- Horizontal SaaS funds with automation portfolio: Tiger Global, Insight Partners
+- Strategic corporate VCs: Salesforce Ventures, Google Ventures, Microsoft M12
+
+**Use of funds ($4M–$8M target):**
+- 40% — Engineering headcount (Rust engineers, ML engineers, DevRel)
+- 25% — GTM (enterprise sales team, SDRs, partnerships)
+- 20% — Infrastructure (Kubernetes scaling, multi-region redundancy, ISO certification)
+- 15% — Product (design, PM, mobile, SDK)
+
+**Phase 4 deliverables:**
+- PulseCore live in 12+ global edge regions with automatic tenant failover
+- On-premise Helm chart distribution live; 3+ signed enterprise on-premise pilots
+- Third-party Connector SDK published; Partner Marketplace live with 50+ community connectors
+- Predictive flow triggering and BI layer live
+- Native connectors for PostgreSQL, MySQL, MongoDB, BigQuery, Snowflake, MSSQL
+- PulseBox hardware shipping; PulseOS image freely available
+- UI fully localised in 12 languages
+- ISO 27001 certified; SOC 2 Type II in observation period
+- Series A closed or in final diligence
+- 5,000+ paying customers; $1M+ ARR; Enterprise NPS > 65
+
+---
+
+### Phase 5 — Platform Maturity & Developer Ecosystem (Month 37–48)
+
+**Objective:** Transform PulseGrid from a product into a developer platform — the automation infrastructure layer that other applications are built on top of. Achieve the network effects that make PulseGrid structurally difficult to replace.
+
+---
+
+**Milestone 5.1 — PulseGrid as a Platform (PaaP): Embedded Automation-as-a-Service (Month 37–40)**
+
+Any SaaS application can embed PulseGrid's automation engine directly into their own product using the Embedded SDK — giving their users native automation superpowers without the SaaS building it themselves. This is PulseGrid's Twilio moment: the infrastructure that disappears inside other products.
+
+**White-label embedded mode:**
+- SaaS partners integrate `@pulsegrid/sdk` (Vue web component) into their dashboard in under a day
+- Users see the flow builder rendered inside the partner's UI — branded with the partner's colors and logo, no PulseGrid branding visible
+- Auth delegation: partner sends a signed JWT to PulseGrid identifying the end-user workspace; no PulseGrid login required
+- Connectors available to end-users are scoped by the partner (e.g., a CRM can expose only its own connector + Gmail + Slack)
+
+**Embedded API billing model:**
+- Partner pays PulseGrid per active embedded workspace/month (graduated pricing: cheaper at volume)
+- Partners can pass through the cost to their end-users or absorb it as a product differentiator
+- Revenue split: 100% to PulseGrid (no marketplace commission in embedded mode — partner is the customer)
+
+**Milestone 5.2 — PulseGrid University: Certification & Education Platform (Month 38–42)**
+
+Education is one of the highest-leverage growth channels for developer tools. PulseGrid University transforms the documentation site into a structured learning platform that creates certified PulseGrid experts — a talent pool that sells PulseGrid into organisations.
+
+**Course catalogue:**
+- **PulseGrid Fundamentals** (free): 6-module video course covering flow building, connectors, triggers, actions, error handling, and the AutoMarket marketplace. Completion badge shareable on LinkedIn.
+- **PulseGrid Developer Certification** ($149): 12-module deep dive: Connector SDK, custom code steps (WASM), REST and GraphQL API integration, CLI automation, and best practices. Written exam + practical project graded by PulseGrid team. Globally recognised certification with PDF + Credly digital badge.
+- **PulseGrid Enterprise Architect** ($499): Advanced course for IT architects: multi-tenant workspace design, SSO integration, compliance configuration, on-premise deployment, Kubernetes operations, PulseGuard tuning. Intended for enterprise implementation consultants.
+- **Connector Builder Bootcamp** ($99): Hands-on workshop for building, testing, and publishing connectors to the marketplace. Graduates get `Verified Builder` status on their marketplace profile.
+
+**PulseGrid Expert Network:**
+- Certified experts can list themselves in the PulseGrid Expert Directory — a curated, searchable directory of automation consultants
+- Businesses searching for implementation help are directed to the directory first
+- PulseGrid takes a 10% referral fee on engagements sourced through the directory (optional, experts can opt out)
+- Expert Slack community: private workspace for certified experts — early access to new features, direct channel to PulseGrid product team, peer knowledge sharing
+
+**Milestone 5.3 — PulseGrid MCP Server: Native AI Agent Integration (Month 39–42)**
+
+With the rise of AI agents (Claude, ChatGPT, Gemini, open-source LLM agents), PulseGrid must become a first-class tool in the AI agent ecosystem. A PulseGrid MCP (Model Context Protocol) server exposes PulseGrid flows as callable tools for any MCP-compatible AI agent.
+
+**PulseGrid MCP Server capabilities:**
+- `list_flows`: returns all flows in the authenticated workspace with descriptions and trigger types
+- `run_flow`: manually triggers a named flow, with optional input payload
+- `get_flow_status`: returns the current status and last run result of a flow
+- `create_flow_from_description`: passes a natural language description to PulseAI and returns the generated flow DSL for user review
+- `get_event_history`: returns recent events from a specified connector
+- `get_connector_status`: returns the health state of a specified connector
+
+**Deployment:**
+- MCP server implemented as a Rust binary (`pulse-mcp-server`) that runs locally or in the cloud
+- Registered in the official MCP Server Registry (Anthropic, OpenAI, etc.) for discoverability
+- `pulse mcp start --workspace my-workspace` — one command to start the MCP server locally
+- Claude Desktop integration: PulseGrid MCP server listed as a first-party integration in Claude Desktop's MCP settings
+
+**Milestone 5.4 — Advanced Flow Collaboration (Month 40–43)**
+
+As teams scale to dozens of engineers using PulseGrid, the solo-user flow builder becomes a bottleneck. Phase 5 introduces true multi-user collaboration on flows — the "Google Docs for automation."
+
+**Real-time collaborative editing:**
+- Multiple users can open and edit the same flow simultaneously on the AutoFlow canvas
+- Cursor presence: each collaborator's mouse position shown with their name and avatar (colour-coded)
+- Operational Transformation (OT) or CRDT-based conflict resolution: simultaneous edits to different nodes merge cleanly; simultaneous edits to the same node show a conflict resolution UI
+- Change attribution: every node change records `last_modified_by` and `last_modified_at` — visible in the version history timeline
+
+**Flow ownership and access control:**
+- Per-flow permission levels: `Owner`, `Editor`, `Viewer`, `Commenter`
+- Workspace-level default: new flows inherit the workspace's default sharing policy
+- Folder organisation: flows grouped into folders (e.g., `Finance`, `DevOps`, `Marketing`) with folder-level permissions
+- Flow templates from your workspace: internal template library separate from the public AutoMarket — share approved flow patterns across your organisation without publishing them publicly
+
+**Flow review and approval workflow:**
+- Production flows can be locked: changes require a pull-request-style review
+- Reviewer receives a notification, views the visual diff (as per Phase 3.B), and approves or requests changes
+- Merge history: full audit trail of who approved what change and when — satisfies SOC 2 change management controls
+
+**Milestone 5.5 — PulseGrid Data Mesh: Cross-Workspace Event Sharing (Month 42–46)**
+
+Enterprises with multiple PulseGrid workspaces (departments, subsidiaries, acquired companies) need a secure way to share events and trigger cross-workspace flows — without merging workspaces or sharing credentials.
+
+**Event Bus Federation:**
+- Workspace A can publish selected events to a shared "Event Mesh" channel
+- Workspace B subscribes to that channel and consumes the events as triggers in its own flows
+- All inter-workspace events are encrypted in transit; the producing workspace never exposes its credentials or internal flow logic to the consuming workspace
+- Access control: producer workspace approves each subscriber; revoke at any time
+- Use cases: HR workspace publishes `employee.onboarded` event → IT workspace flow triggers to provision accounts → Finance workspace flow triggers to set up payroll
+
+**Data Mesh pricing:**
+- Included in Enterprise plan: unlimited internal mesh channels within the same billing account
+- Cross-account mesh: add-on ($99/month per active channel) for connecting workspaces on different billing accounts (e.g., connecting with a partner or subsidiary)
+
+**Phase 5 deliverables:**
+- Embedded SDK (PaaP model) live with at least 5 SaaS partner integrations
+- PulseGrid University launched: Fundamentals free course, Developer Certification, Enterprise Architect track live
+- PulseGrid MCP Server published and listed in major AI agent registries
+- Real-time collaborative flow editing live
+- Flow review and approval workflow live (SOC 2 change management ready)
+- Cross-workspace Event Mesh live for Enterprise plan
+- 15,000+ paying customers; $3M+ ARR; Developer NPS > 70
+
+---
+
+### Phase 6 — Intelligence Autonomy & Vertical Market Penetration (Month 49–60)
+
+**Objective:** Move PulseGrid from a tool users configure to an intelligent system that increasingly manages itself — reducing the operational overhead of running automation at scale. Simultaneously, build vertical-specific editions for the highest-value industries.
+
+---
+
+**Milestone 6.1 — Autonomous Flow Maintenance Agent (Month 49–52)**
+
+The most expensive hidden cost of automation is maintenance: connector APIs change, schemas drift, credentials expire, flows break silently. The Autonomous Maintenance Agent (built on top of PulseGuard) closes this loop automatically.
+
+**Self-healing flows:**
+- **Connector schema drift detection:** When a connector's API returns a field with a new name or structure, PulseAI detects the mismatch between the expected schema (from the connector definition) and the actual response. It automatically updates the connector definition and re-maps affected flow steps, raising a change notification to the flow owner for review — not a breaking error.
+- **Credential auto-rotation:** OAuth tokens close to expiry are refreshed proactively (24 hours before expiry) without user intervention. API key rotation: if a connector supports key rotation (e.g., Stripe publishable keys), PulseGrid rotates the key in VaultGuard and updates the connector — with a log entry to the compliance audit trail.
+- **Dead flow detection and cleanup:** Flows that have not run successfully in 30 days and have no scheduled future trigger are flagged as "dormant." The workspace admin receives a weekly digest with a one-click cleanup option — preventing credential sprawl and reducing audit surface area.
+- **Dependency-aware disabling:** When a connector becomes permanently unavailable (API returns 410 Gone for 72+ hours), PulseGrid automatically disables all flows using that connector, notifies the workspace, and opens a PulseGuard alert for triage.
+
+**Autonomous capacity management:**
+- PulseCore monitors its own throughput metrics in real time; when a workspace's flow run volume approaches its plan limits, it automatically schedules low-priority flows to off-peak windows (configurable blackout periods)
+- Enterprise workspaces: auto-provision additional worker replicas via Kubernetes HPA signal when sustained throughput demand exceeds 80% capacity for more than 5 minutes
+
+**Milestone 6.2 — Vertical Editions (Month 50–56)**
+
+Generic automation platforms lose to purpose-built vertical tools in sales cycles. PulseGrid Vertical Editions are purpose-configured bundles — the same underlying engine, but pre-loaded with the connectors, templates, compliance settings, and dashboards that a specific industry needs out of the box.
+
+**PulseGrid for DevOps:**
+- Pre-installed connectors: GitHub, GitLab, Jira, Linear, PagerDuty, Opsgenie, Datadog, New Relic, AWS CloudWatch, GCP Monitoring, Kubernetes API, Terraform Cloud, Vault (HashiCorp)
+- Pre-built flow templates: incident response runbook, deploy notification pipeline, on-call escalation, PR review assignment, cost anomaly alert
+- DevOps-specific dashboard: DORA metrics overlay (deployment frequency, lead time, MTTR, change failure rate) calculated from flow run data
+- Integrates with PulseGuard for unified alerting: one pane of glass for both infrastructure alerts and PulseGrid flow health
+
+**PulseGrid for E-Commerce:**
+- Pre-installed connectors: Shopify, WooCommerce, Magento, Amazon Seller, Stripe, PayPal, ShipStation, EasyPost, Klaviyo, Mailchimp, Google Merchant Center, Meta Ads, TikTok Shop
+- Pre-built flow templates: inventory reorder trigger, abandoned cart recovery, refund fulfilment, review request sequence, cross-platform inventory sync, flash sale launch sequence
+- E-Commerce KPI dashboard: GMV, AOV, refund rate, cart abandonment rate, ad ROAS — all pulled in real time from connected services
+
+**PulseGrid for Healthcare:**
+- Pre-installed connectors: HL7 FHIR API, Epic SMART on FHIR, Salesforce Health Cloud, Twilio (SMS/voice), Zoom Health, DocuSign, Google Workspace
+- Compliance mode: HIPAA Business Associate Agreement enforced at workspace level; PHI data masking in flow logs (field-level masking configurable per step); all data within HIPAA-compliant regions only
+- Pre-built flow templates: appointment reminder sequence (SMS + email), lab result routing, referral tracking, patient intake document collection, billing exception alert
+- Healthcare-specific audit trail format exportable for HIPAA audit readiness
+
+**PulseGrid for Finance & FinTech:**
+- Pre-installed connectors: Plaid, Stripe, Brex, Mercury, QuickBooks, Xero, NetSuite, Coupa, Bloomberg API, Refinitiv Eikon, Alpaca (trading), CoinGecko, Chainlink
+- Compliance mode: SOX controls — flow change approval workflow enforced for all production financial flows; immutable audit trail; dual-approval for flows that execute financial transactions
+- Pre-built flow templates: expense report automation, bank reconciliation pipeline, invoice generation and chasing, treasury cash position alert, crypto portfolio rebalancing trigger, fraud alert routing
+- Real-time P&L dashboard: synthesised from Stripe + QuickBooks + Plaid into a single live view
+
+**Vertical Edition pricing:**
+- Each vertical edition available as an add-on to existing plans: +$29/month on Pro, +$99/month on Business, included on Enterprise
+- Vertical templates remain private to the workspace — not published to the public AutoMarket unless the owner explicitly opts in
+
+**Milestone 6.3 — PulseGrid Intelligence API: AI-Powered Automation as a Service (Month 54–58)**
+
+Beyond running automations, PulseGrid's intelligence layer is itself a product. The Intelligence API exposes PulseAI's capabilities to external developers, enabling them to embed automation intelligence into their own applications.
+
+**Endpoints:**
+- `POST /intelligence/flow-from-description`: submit a natural language description, receive a validated Flow DSL — developers can embed PulseAI's NL→Flow translation in their own products
+- `POST /intelligence/anomaly-score`: submit a time-series array, receive an anomaly score and explanation — developers can use PulseGrid's trained models on their own data
+- `POST /intelligence/pattern-detect`: submit a sequence of events, receive detected recurring patterns with confidence scores
+- `GET /intelligence/flow-suggestions`: returns AI-generated optimisation suggestions for the authenticated workspace
+- `POST /intelligence/classify`: submit a text payload, receive a classification label and confidence score (powered by an on-device ONNX classifier — no external LLM call)
+
+**Pricing:** intelligence API calls billed per request (graduated: cheaper at volume), separate from event processing billing. This creates a new, high-margin revenue stream that grows with the ecosystem.
+
+**Phase 6 deliverables:**
+- Autonomous Flow Maintenance Agent live (self-healing, auto-rotation, dead flow cleanup)
+- Vertical editions live for DevOps, E-Commerce, Healthcare, and Finance
+- Intelligence API published and documented
+- 40,000+ paying customers; $8M+ ARR
+- Healthcare and Finance verticals each generating $500K+ ARR independently
+- Series B fundraise initiated or bootstrapped profitability achieved
+
+---
+
+### Phase 7 — Critical Infrastructure & Long-Term Moat (Month 61–84)
+
+**Objective:** Cement PulseGrid as foundational digital infrastructure — the automation OS that enterprises cannot remove, developers build entire businesses on, and individuals use daily without thinking about it. Achieve the scale, security, and ecosystem depth of a generational infrastructure company.
+
+---
+
+**Milestone 7.1 — PulseGrid OS: Native Desktop & Mobile Daemon (Month 61–66)**
+
+The browser tab closes. The phone goes to sleep. But automation should never stop. PulseGrid OS extends the platform into native operating system territory — a lightweight daemon that runs 24/7 on personal devices, bridging local device events to the PulseGrid cloud engine.
+
+**macOS daemon (`PulseGrid.app` menu bar app):**
+- Packaged as a signed and notarized macOS application with a menu bar icon (native SwiftUI shell wrapping a Rust daemon)
+- Local event sources available only on macOS: `calendar_event_start`, `focus_mode_changed`, `active_app_changed`, `clipboard_content_changed`, `file_system_watch` (arbitrary path), `screenshot_taken`, `audio_input_level`, `battery_level_threshold`
+- Local action types: `show_notification`, `play_sound`, `set_focus_mode`, `copy_to_clipboard`, `open_url`, `run_shell_script` (sandboxed), `write_file`
+- Offline-capable: flows using only local sources and local actions execute entirely on the device without a network connection; cloud flows resume sync when online
+
+**Windows daemon:**
+- Packaged as a Windows service + system tray app (Rust binary + Tauri shell)
+- Equivalent local event sources and actions adapted to Windows APIs: `registry_change`, `usb_device_connected`, `process_start`, `window_focused`
+
+**Linux daemon:**
+- systemd service + optional GTK tray icon
+- Supports headless server deployments: flows triggered by `systemd_unit_state_change`, `cron_expression`, `file_system_watch`, `process_exit_code`
+- Power users run PulseGrid as their personal automation server on a home NAS or VPS
+
+**Flutter mobile deep integration (beyond push notifications):**
+- iOS Shortcuts integration: PulseGrid flows callable from the Shortcuts app, Siri, and the iOS home screen
+- Android Tasker/Automate integration: PulseGrid exposed as a Tasker action and event source
+- Background flows on mobile: use iOS BGTaskScheduler and Android WorkManager to execute flows in the background even when the app is not open
+- Wearable triggers: Apple Watch complications showing live flow status; Watch app for approving human-in-the-loop steps
+
+**Milestone 7.2 — PulseGrid for AI Agents: Native Agentic Automation Runtime (Month 63–68)**
+
+AI agents (autonomous LLM-based systems performing multi-step tasks) need persistent, reliable, observable infrastructure to execute long-running tasks. PulseGrid becomes the preferred runtime for deploying AI agents in production.
+
+**Agent-native flow primitives:**
+- `ai_agent_step`: a new step type that invokes an LLM with a structured prompt, a set of available tools (drawn from the workspace's connected connectors), and a max-step budget — executing a mini agentic loop within a single flow step
+- `memory_read` / `memory_write`: steps that read from and write to a structured key-value memory store (backed by RocksDB in PulseCore), allowing agents to maintain state across flow runs
+- `human_escalation`: AI agent can autonomously decide to escalate to a human when confidence is below a threshold — routes to the existing human-in-the-loop approval system
+
+**Agent observability:**
+- Full step-level trace of every LLM call within an agentic flow: prompt, model, token count, latency, tool calls, and final output — all stored in ClickHouse and viewable in the flow debugger
+- Agent cost dashboard: total LLM API spend per flow, per workspace, per month — with budget caps and auto-pause when a budget is exceeded
+
+**Integration with the AI ecosystem:**
+- PulseGrid published as a native tool in the Claude API tool-use registry, OpenAI GPT Actions store, and LangChain ToolKit
+- `pulse agent deploy --flow agent-flow.json` — deploys an agentic flow and returns a stable HTTP endpoint that any LLM can invoke
+
+**Milestone 7.3 — PulseGrid Marketplace: Global Automation Economy (Month 64–72)**
+
+AutoMarket scales from a template library into a fully-fledged creator economy — the App Store of automation.
+
+**Creator programme expansion:**
+- Revenue share increased to 80%/20% for creators with 500+ installs (was 70%/30%)
+- `Pro Creator` badge for creators generating $1K+/month through the marketplace; includes priority review, marketing co-promotion, and a monthly call with the PulseGrid product team
+- Creator analytics dashboard: install trends, active user count, churn rate per template, support ticket volume, revenue forecasting
+
+**B2B template licensing:**
+- Enterprise buyers can license a template privately from a creator — no public listing required; negotiated pricing, revenue share still applies
+- Template subscription bundles: creators publish a monthly bundle subscription (e.g., "Marketing Automation Pack — $19/month") covering a curated set of related templates with ongoing updates
+
+**AutoMarket search and discovery:**
+- Semantic search: `POST /market/search` accepts natural language queries ("automate my Shopify order notifications") and returns semantically ranked results using an ONNX embedding model
+- Personalised recommendations: based on connected connectors, past installs, and workspace industry vertical
+- "Works with" filter: show only templates compatible with connectors the user has already installed
+
+**Marketplace GMV target:** $1M+ in annual creator payouts by end of Phase 7.
+
+**Milestone 7.4 — Regulatory & Compliance Fortress (Month 66–72)**
+
+At enterprise scale, compliance is not a feature — it is the sales cycle. Phase 7 completes the compliance stack that makes PulseGrid the only automation platform that regulated industries can actually buy.
+
+- **FedRAMP Moderate authorisation**: engage a 3PAO for the assessment; target ATO by Month 72. Unlocks US federal government and defence contractor market.
+- **HITRUST CSF Certification**: healthcare-specific security framework; required by major US health systems for vendor approval. Builds on the HIPAA controls established in Phase 6.
+- **SOC 2 Type II renewal**: annual renewal with expanded scope covering the on-premise distribution and PulseBox hardware supply chain
+- **BSI C5 (Germany)**: required for German public sector and heavily regulated financial services customers in the EU
+- **IRAP (Australia)**: required for Australian government customers
+- **Penetration testing cadence**: bi-annual external penetration test by a CREST-certified firm; results summarised in the public Trust Centre
+- **Bug bounty programme**: launch on HackerOne with $500–$25,000 reward tiers; critical RCE, privilege escalation, and credential exposure in scope
+
+**Milestone 7.5 — Acquisition Readiness or IPO Foundation (Month 72–84)**
+
+At $20M+ ARR, PulseGrid becomes a credible acquisition target for large enterprise software companies or a viable IPO candidate. Phase 7 prepares the business for either outcome.
+
+**Acquisition readiness:**
+- Maintain a clean, audited corporate structure: US C-Corp (Delaware), fully executed IP assignments for all contributors, no outstanding IP disputes
+- Revenue quality metrics: ≥ 80% of ARR from multi-year contracts or annual subscriptions; NRR (Net Revenue Retention) > 120%
+- Strategic buyer map: Salesforce (automation + CRM), ServiceNow (enterprise workflow), Microsoft (Power Platform consolidation), HubSpot (SMB automation), Atlassian (DevOps workflow), Zapier (acqui-hire + technology)
+- Maintain relationships with strategic VCs (Salesforce Ventures, Microsoft M12, Google Ventures) who can facilitate introductions
+
+**IPO foundation (if bootstrapped or post-Series B):**
+- Appoint independent board members with public company experience
+- Implement SOX-ready financial controls: revenue recognition (ASC 606), equity accounting, quarterly close process
+- Engage Big Four audit firm for audited financial statements
+- Dual-class share structure consideration: preserve founder voting control while enabling public market liquidity
+
+**Long-term moat summary at Phase 7 completion:**
+
+| Moat Layer | Strength by Month 84 |
+|---|---|
+| Rust engine cost advantage | 10–15× cheaper per event than competitors; pricing advantage widens as scale increases |
+| Network effects (marketplace) | 5,000+ templates, 2,000+ creators, $1M+ annual GMV — self-reinforcing |
+| Zero-knowledge encryption trust | Only platform with HSM-backed E2E encryption; competitors cannot match retroactively without a full rebuild |
+| Compliance certifications | FedRAMP, HITRUST, SOC 2, ISO 27001, BSI C5 — 5-year head start; replication takes years |
+| Embedded SDK distribution | Automation engine embedded inside 20+ SaaS products — distribution moat |
+| AI agent runtime | First automation platform natively designed for agentic AI workloads |
+| Developer ecosystem (CLI + MCP + SDK) | 10,000+ developers building on PulseGrid; switching cost is high |
+| Vertical editions | Purpose-built for DevOps, E-Commerce, Healthcare, Finance — each vertical is a defensible sub-market |
+| Hardware (PulseBox) | Physical device in customer's home/office creates the deepest switching cost possible |
+
+**Phase 7 deliverables:**
+- PulseGrid OS daemon live on macOS, Windows, and Linux
+- iOS Shortcuts and Android Tasker integration live
+- Native AI agent runtime with `ai_agent_step`, `memory_read`/`memory_write`, and human escalation live
+- PulseGrid published in Claude API, OpenAI, and LangChain tool registries
+- AutoMarket generating $1M+ in annual creator payouts
+- FedRAMP Moderate ATO obtained
+- HITRUST CSF certified
+- 100,000+ paying customers; $20M+ ARR; NRR > 120%
+- Acquisition discussions active or Series C / IPO process initiated
 
 ---
 
