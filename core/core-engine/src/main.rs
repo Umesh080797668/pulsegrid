@@ -737,12 +737,126 @@ async fn enforce_event_quota(
 }
 
 #[allow(dead_code)]
+/// Production ML-based pattern detection with model versioning and drift monitoring
+async fn detect_workspace_patterns_v3(
+    pool: &sqlx::PgPool,
+    workspace_id: uuid::Uuid,
+    model_manager: &core_ai::pattern_detection_v3::ModelManager,
+    metrics_collector: &core_ai::pattern_detection_v3::MetricsCollector,
+) -> Result<Vec<AIPatternRecord>, (axum::http::StatusCode, String)> {
+    // Phase 1: Fetch recent events (30-day window)
+    let event_rows = sqlx::query(
+        r#"
+        SELECT id, event_type, payload_data, status, created_at, duration_ms,
+               retry_count, error_flag, connector_name
+        FROM pulse_events
+        WHERE workspace_id = $1
+          AND created_at >= NOW() - INTERVAL '30 days'
+        ORDER BY created_at ASC
+        "#,
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if event_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Phase 2: Build EventEntry vector for ML pipeline
+    let mut events = Vec::new();
+    for row in event_rows {
+        let event_type: String = row.get("event_type");
+        let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+        let duration_ms: Option<i32> = row.get("duration_ms");
+        let retry_count: Option<i32> = row.get("retry_count");
+        let error_flag: bool = row.get("error_flag");
+        let connector_name: String = row.get("connector_name");
+
+        let event = core_ai::pattern_detection::EventBuilder::new(
+            event_type,
+            connector_name,
+        )
+        .with_timestamp(created_at)
+        .with_step_duration_ms(duration_ms.unwrap_or(0) as u32)
+        .with_retry_count(retry_count.unwrap_or(0) as u32)
+        .with_error(error_flag)
+        .build();
+
+        events.push(event);
+    }
+
+    // Phase 3: Build tenant context
+    let workspace: Option<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT plan, connector_count, flow_count FROM workspaces WHERE id = $1"
+    )
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (plan, connector_count, flow_count) = workspace
+        .unwrap_or(("free".to_string(), Some(0), Some(0)));
+
+    let plan_encoded = match plan.as_str() {
+        "pro" => 1u8,
+        "business" => 2u8,
+        "enterprise" => 3u8,
+        _ => 0u8,
+    };
+
+    let tenant_ctx = core_ai::pattern_detection::TenantContextBuilder::new(workspace_id)
+        .plan(plan_encoded)
+        .flow_count(flow_count.unwrap_or(0) as u32)
+        .connector_count(connector_count.unwrap_or(0) as u32)
+        .avg_daily_events(events.len() as f32 / 30.0)
+        .build();
+
+    // Phase 4: Run production ML pipeline with model versioning
+    let patterns = core_ai::pattern_detection_v3::analyze_event_history_v3(
+        workspace_id,
+        events,
+        tenant_ctx,
+        model_manager,
+        metrics_collector,
+    )
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // Phase 5: Convert to AIPatternRecord for database storage
+    let mut ai_patterns = Vec::new();
+    for pattern in patterns {
+        let suggested_trigger = pattern.suggested_trigger.clone();
+        let suggested_actions = pattern.suggested_actions.clone();
+        ai_patterns.push(AIPatternRecord {
+            id: uuid::Uuid::new_v4(),
+            workspace_id,
+            pattern_type: format!("{:?}", pattern.pattern_type),
+            description: pattern.description,
+            confidence: pattern.confidence,
+            frequency: pattern.frequency,
+            events_involved: serde_json::to_value(&pattern.events_involved)
+                .unwrap_or(serde_json::json!([])),
+            suggested_trigger: suggested_trigger.clone(),
+            suggested_actions: serde_json::to_value(&suggested_actions)
+                .unwrap_or(serde_json::json!([])),
+            suggested_flow: serde_json::json!({
+                "trigger": suggested_trigger,
+                "actions": suggested_actions
+            }),
+            detected_at: chrono::Utc::now(),
+        });
+    }
+
+    Ok(ai_patterns)
+}
+
+#[allow(dead_code)]
+/// Fallback: Heuristic-based pattern detection (legacy)
 async fn detect_workspace_patterns(
     pool: &sqlx::PgPool,
     workspace_id: uuid::Uuid,
 ) -> Result<Vec<AIPatternRecord>, (axum::http::StatusCode, String)> {
-    // STUB: Pattern detection analysis - uses runtime queries since tables might not exist at compile time
-    // TODO Phase 3: Replace with actual ML model inference
     let rows = sqlx::query(
         r#"
         SELECT fr.id, fr.flow_id, fr.started_at, fr.status, f.name AS flow_name
@@ -757,7 +871,6 @@ async fn detect_workspace_patterns(
     .fetch_all(pool)
     .await
     .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
     let mut patterns = Vec::new();
     if rows.is_empty() {
         return Ok(patterns);
@@ -879,7 +992,18 @@ async fn refresh_workspace_patterns(
     pool: &sqlx::PgPool,
     workspace_id: uuid::Uuid,
 ) -> Result<Vec<AIPatternRecord>, (axum::http::StatusCode, String)> {
-    let patterns = detect_workspace_patterns(pool, workspace_id).await?;
+    let model_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("core-ai")
+        .join("models");
+    let model_manager = core_ai::pattern_detection_v3::ModelManager::new(model_dir)
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let metrics_collector = core_ai::pattern_detection_v3::MetricsCollector::new();
+
+    let patterns = match detect_workspace_patterns_v3(pool, workspace_id, &model_manager, &metrics_collector).await {
+        Ok(p) => p,
+        Err(_) => detect_workspace_patterns(pool, workspace_id).await?,
+    };
     let mut tx = pool
         .begin()
         .await

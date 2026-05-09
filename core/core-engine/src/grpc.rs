@@ -898,20 +898,17 @@ impl PulseCoreService for MyPulseCoreService {
         request: Request<DetectPatternsRequest>,
     ) -> Result<Response<DetectPatternsResponse>, Status> {
         let req = request.into_inner();
-        
-        // STUB: Pattern detection RPC - Phase 3 will implement actual detection
-        // For now, return empty patterns from database if they exist
         let ws_id = Uuid::parse_str(&req.workspace_id)
             .map_err(|_| Status::invalid_argument("Invalid workspace ID"))?;
 
-        let rows = sqlx::query(
+        let event_rows = sqlx::query(
             r#"
-            SELECT id, workspace_id, pattern_type, description, confidence, frequency,
-                   events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at
-            FROM ai_detected_patterns
+            SELECT event_type, status, created_at, duration_ms
+            FROM flow_events
             WHERE workspace_id = $1
-            ORDER BY detected_at DESC
-            LIMIT 50
+              AND created_at >= NOW() - INTERVAL '30 days'
+            ORDER BY created_at DESC
+            LIMIT 100
             "#,
         )
         .bind(ws_id)
@@ -919,25 +916,111 @@ impl PulseCoreService for MyPulseCoreService {
         .await
         .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
 
-        let patterns = rows.iter().map(|row| {
-            let detected_at: chrono::DateTime<chrono::Utc> = row.get("detected_at");
+        if event_rows.is_empty() {
+            let rows = sqlx::query(
+                r#"
+                SELECT id, workspace_id, pattern_type, description, confidence, frequency,
+                       events_involved, suggested_trigger, suggested_actions, suggested_flow, detected_at
+                FROM ai_detected_patterns
+                WHERE workspace_id = $1
+                ORDER BY detected_at DESC
+                LIMIT 50
+                "#,
+            )
+            .bind(ws_id)
+            .fetch_all(&self.pg_pool)
+            .await
+            .map_err(|e| Status::internal(format!("Database error: {}", e)))?;
+
+            let patterns = rows.iter().map(|row| {
+                let detected_at: chrono::DateTime<chrono::Utc> = row.get("detected_at");
+                DetectedPattern {
+                    id: row.get::<String, _>("id"),
+                    workspace_id: row.get::<uuid::Uuid, _>("workspace_id").to_string(),
+                    pattern_type: row.get::<String, _>("pattern_type"),
+                    description: row.get::<String, _>("description"),
+                    confidence: row.get::<f32, _>("confidence"),
+                    frequency: row.get::<String, _>("frequency"),
+                    suggested_trigger: row.get::<Option<String>, _>("suggested_trigger").unwrap_or_default(),
+                    suggested_actions_json: row.get::<serde_json::Value, _>("suggested_actions").to_string(),
+                    suggested_flow_json: row.get::<serde_json::Value, _>("suggested_flow").to_string(),
+                    detected_at_unix: detected_at.timestamp(),
+                }
+            }).collect();
+
+            return Ok(Response::new(DetectPatternsResponse {
+                success: true,
+                patterns,
+                error_message: String::new(),
+            }));
+        }
+
+        let mut events = Vec::new();
+        for row in event_rows {
+            let event_type: String = row.get("event_type");
+            let created_at: chrono::DateTime<chrono::Utc> = row.get("created_at");
+            let duration_ms: Option<i32> = row.get("duration_ms");
+            let status: String = row.get("status");
+
+            events.push(core_ai::pattern_detection::EventBuilder::new(event_type, "connector")
+                .with_timestamp(created_at)
+                .with_step_duration_ms(duration_ms.unwrap_or(0) as u32)
+                .with_error(status.to_lowercase().contains("error"))
+                .build());
+        }
+
+        let plan = sqlx::query_scalar::<_, String>("SELECT plan FROM workspaces WHERE id = $1")
+            .bind(ws_id)
+            .fetch_optional(&self.pg_pool)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to fetch workspace: {}", e)))?
+            .unwrap_or_else(|| "free".to_string());
+
+        let plan_encoded = match plan.as_str() {
+            "pro" => 1u8,
+            "business" => 2u8,
+            "enterprise" => 3u8,
+            _ => 0u8,
+        };
+
+        let flow_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM flows WHERE workspace_id = $1")
+            .bind(ws_id)
+            .fetch_one(&self.pg_pool)
+            .await
+            .unwrap_or(0);
+
+        let tenant_ctx = core_ai::pattern_detection::TenantContextBuilder::new(ws_id)
+            .plan(plan_encoded)
+            .avg_daily_events(events.len() as f32)
+            .flow_count(flow_count as u32)
+            .build();
+
+        let patterns = core_ai::pattern_detection::analyze_event_history(ws_id, events, tenant_ctx)
+            .unwrap_or_default();
+
+        let detected_patterns: Vec<DetectedPattern> = patterns.into_iter().map(|p| {
+            let suggested_trigger = p.suggested_trigger.clone();
+            let suggested_actions = p.suggested_actions.clone();
             DetectedPattern {
-                id: row.get::<String, _>("id"),
-                workspace_id: row.get::<uuid::Uuid, _>("workspace_id").to_string(),
-                pattern_type: row.get::<String, _>("pattern_type"),
-                description: row.get::<String, _>("description"),
-                confidence: row.get::<f32, _>("confidence"),
-                frequency: row.get::<String, _>("frequency"),
-                suggested_trigger: row.get::<Option<String>, _>("suggested_trigger").unwrap_or_default(),
-                suggested_actions_json: row.get::<serde_json::Value, _>("suggested_actions").to_string(),
-                suggested_flow_json: row.get::<serde_json::Value, _>("suggested_flow").to_string(),
-                detected_at_unix: detected_at.timestamp(),
+                id: p.id,
+                workspace_id: ws_id.to_string(),
+                pattern_type: format!("{:?}", p.pattern_type),
+                description: p.description,
+                confidence: p.confidence,
+                frequency: p.frequency,
+                suggested_trigger: p.suggested_trigger.unwrap_or_default(),
+                suggested_actions_json: serde_json::to_string(&suggested_actions).unwrap_or_default(),
+                suggested_flow_json: serde_json::json!({
+                    "trigger": suggested_trigger,
+                    "actions": suggested_actions
+                }).to_string(),
+                detected_at_unix: chrono::Utc::now().timestamp(),
             }
         }).collect();
 
         Ok(Response::new(DetectPatternsResponse {
             success: true,
-            patterns,
+            patterns: detected_patterns,
             error_message: String::new(),
         }))
     }

@@ -10,6 +10,8 @@ use chrono::{DateTime, Utc, Datelike, Timelike};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub mod pattern_detection_v3;
+
 pub mod pattern_detection {
     use super::*;
     
