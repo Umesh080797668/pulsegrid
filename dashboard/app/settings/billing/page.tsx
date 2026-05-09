@@ -4,10 +4,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { getWorkspaceSubscriptionStatus, upgradeWorkspacePlan, type WorkspaceSubscriptionStatus } from '../../../lib/api';
 import { useDashboardStore } from '../../../lib/store';
 
+type BillingCycle = 'monthly' | 'yearly';
+
 interface PlanTier {
   name: string;
   price: number;
+  yearlyPrice?: number;
   billing: string;
+  yearlyBilling?: string;
   features: string[];
   limits: {
     flows: number | string;
@@ -43,6 +47,8 @@ const PLAN_TIERS: Record<string, PlanTier> = {
     name: 'Pro',
     price: 12,
     billing: '/month',
+    yearlyPrice: 120,
+    yearlyBilling: '/year',
     features: ['For growing teams', 'Advanced connectors', 'Higher limits'],
     limits: {
       flows: 50,
@@ -86,8 +92,28 @@ function isFinalStatus(status?: string) {
   return normalized === 'active' || normalized === 'canceled' || normalized === 'incomplete_expired';
 }
 
-function PlanCard({ planKey, tier, isCurrent, isUpgrade, onUpgrade, loading }: 
-  { planKey: string; tier: PlanTier; isCurrent: boolean; isUpgrade: boolean; onUpgrade: () => void; loading: boolean }) {
+function PlanCard({
+  planKey,
+  tier,
+  isCurrent,
+  isUpgrade,
+  billingCycle,
+  onBillingCycleChange,
+  onUpgrade,
+  loading,
+}: {
+  planKey: string;
+  tier: PlanTier;
+  isCurrent: boolean;
+  isUpgrade: boolean;
+  billingCycle?: BillingCycle;
+  onBillingCycleChange?: (cycle: BillingCycle) => void;
+  onUpgrade: (cycle?: BillingCycle) => void;
+  loading: boolean;
+}) {
+  const displayPrice = billingCycle === 'yearly' && tier.yearlyPrice ? tier.yearlyPrice : tier.price;
+  const displayBilling = billingCycle === 'yearly' && tier.yearlyBilling ? tier.yearlyBilling : tier.billing;
+
   return (
     <div className={`plan-card ${isCurrent ? 'current' : ''} ${tier.recommended ? 'recommended' : ''}`} style={{
       border: tier.recommended ? '2px solid #ff6b35' : '1px solid #ddd',
@@ -116,9 +142,36 @@ function PlanCard({ planKey, tier, isCurrent, isUpgrade, onUpgrade, loading }:
       <div style={{ marginTop: tier.recommended ? '8px' : '0' }}>
         <h3 style={{ margin: '0 0 8px 0', fontSize: '20px', fontWeight: 'bold' }}>{tier.name}</h3>
         <div style={{ marginBottom: '16px' }}>
-          <span style={{ fontSize: '32px', fontWeight: 'bold' }}>${tier.price}</span>
-          <span style={{ fontSize: '14px', color: '#666' }}>{tier.billing}</span>
+          <span style={{ fontSize: '32px', fontWeight: 'bold' }}>${displayPrice}</span>
+          <span style={{ fontSize: '14px', color: '#666' }}>{displayBilling}</span>
         </div>
+
+        {planKey === 'pro' && onBillingCycleChange && tier.yearlyPrice ? (
+          <div style={{ display: 'flex', gap: 8, marginBottom: '16px' }}>
+            <button
+              type="button"
+              className={billingCycle === 'monthly' ? 'btn btn-primary' : 'btn btn-secondary'}
+              onClick={() => onBillingCycleChange('monthly')}
+              style={{ flex: 1 }}
+            >
+              Monthly
+            </button>
+            <button
+              type="button"
+              className={billingCycle === 'yearly' ? 'btn btn-primary' : 'btn btn-secondary'}
+              onClick={() => onBillingCycleChange('yearly')}
+              style={{ flex: 1 }}
+            >
+              Yearly
+            </button>
+          </div>
+        ) : null}
+
+        {planKey === 'pro' && billingCycle === 'yearly' && tier.yearlyPrice ? (
+          <div style={{ marginBottom: '12px', fontSize: '13px', color: '#555' }}>
+            Save two months with annual billing.
+          </div>
+        ) : null}
         
         <div style={{ marginBottom: '16px' }}>
           {tier.features.map((feature, idx) => (
@@ -152,20 +205,20 @@ function PlanCard({ planKey, tier, isCurrent, isUpgrade, onUpgrade, loading }:
         ) : isUpgrade ? (
           <button 
             className="btn btn-primary" 
-            onClick={onUpgrade} 
+            onClick={() => onUpgrade(billingCycle)} 
             disabled={loading}
             style={{ width: '100%' }}
           >
-            {loading ? 'Processing…' : `Upgrade to ${tier.name}`}
+            {loading ? 'Processing…' : `Upgrade to ${tier.name}${billingCycle ? ` (${billingCycle})` : ''}`}
           </button>
         ) : (
           <button 
             className="btn btn-secondary" 
-            onClick={onUpgrade} 
+            onClick={() => onUpgrade(billingCycle)} 
             disabled={loading}
             style={{ width: '100%' }}
           >
-            {loading ? 'Processing…' : `Downgrade to ${tier.name}`}
+            {loading ? 'Processing…' : `Downgrade to ${tier.name}${billingCycle ? ` (${billingCycle})` : ''}`}
           </button>
         )}
       </div>
@@ -180,6 +233,7 @@ export default function BillingSettingsPage() {
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [selectedUpgradePlan, setSelectedUpgradePlan] = useState<string | null>(null);
+  const [selectedProBillingCycle, setSelectedProBillingCycle] = useState<BillingCycle>('monthly');
 
   const currentWorkspace = useMemo(
     () => workspaces.find((ws) => ws.id === workspaceId) || null,
@@ -228,7 +282,7 @@ export default function BillingSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.billing?.status, accessToken, workspaceId]);
 
-  const onUpgradePlan = async (plan: string) => {
+  const onUpgradePlan = async (plan: string, billingCycle?: BillingCycle) => {
     if (!accessToken || !workspaceId) {
       return;
     }
@@ -240,6 +294,7 @@ export default function BillingSettingsPage() {
       const response = await upgradeWorkspacePlan({
         workspaceId,
         plan,
+        billingCycle,
         token: accessToken,
         setToken: setAccessToken,
       });
@@ -254,10 +309,11 @@ export default function BillingSettingsPage() {
       }
 
       setStatus(payload);
+      const billingLabel = billingCycle ? ` (${billingCycle})` : '';
       setMessage(
         payload?.billing?.status === 'active'
-          ? `Upgrade to ${plan.charAt(0).toUpperCase() + plan.slice(1)} confirmed!`
-          : `Upgrade to ${plan.charAt(0).toUpperCase() + plan.slice(1)} requested. Waiting for confirmation…`,
+          ? `Upgrade to ${plan.charAt(0).toUpperCase() + plan.slice(1)}${billingLabel} confirmed!`
+          : `Upgrade to ${plan.charAt(0).toUpperCase() + plan.slice(1)}${billingLabel} requested. Waiting for confirmation…`,
       );
 
       const finalPlan = payload?.billing?.confirmed_plan || payload?.workspace?.plan;
@@ -283,6 +339,7 @@ export default function BillingSettingsPage() {
 
   const displayPlan = status?.workspace?.plan || currentWorkspace?.plan || 'free';
   const requestedPlan = status?.billing?.requested_plan || '—';
+  const requestedBillingCycle = status?.billing?.requested_billing_cycle || 'monthly';
   const subscriptionStatus = status?.billing?.status || 'none';
 
   return (
@@ -316,6 +373,10 @@ export default function BillingSettingsPage() {
               <td>{requestedPlan}</td>
             </tr>
             <tr>
+              <th>Requested billing cycle</th>
+              <td>{requestedBillingCycle}</td>
+            </tr>
+            <tr>
               <th>Subscription status</th>
               <td>
                 <span className="badge b-accent">{subscriptionStatus}</span>
@@ -341,7 +402,9 @@ export default function BillingSettingsPage() {
               tier={tier}
               isCurrent={displayPlan === planKey}
               isUpgrade={displayPlan === 'free' || (displayPlan === 'pro' && planKey === 'business')}
-              onUpgrade={() => onUpgradePlan(planKey)}
+              billingCycle={planKey === 'pro' ? selectedProBillingCycle : undefined}
+              onBillingCycleChange={planKey === 'pro' ? setSelectedProBillingCycle : undefined}
+              onUpgrade={(billingCycle) => onUpgradePlan(planKey, billingCycle)}
               loading={upgradeLoading && selectedUpgradePlan === planKey}
             />
           ))}

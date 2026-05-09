@@ -1392,7 +1392,7 @@ fn parse_stripe_signature_header(headers: &HeaderMap) -> Result<(String, String)
 }
 
 fn stripe_subscription_plan_tier(object: &serde_json::Value) -> String {
-    object
+    let tier = object
         .get("plan")
         .and_then(|plan| plan.get("nickname"))
         .and_then(|value| value.as_str())
@@ -1404,7 +1404,12 @@ fn stripe_subscription_plan_tier(object: &serde_json::Value) -> String {
         })
         .unwrap_or("free")
         .trim()
-        .to_lowercase()
+        .to_lowercase();
+
+    match tier.as_str() {
+        "pro" | "pro_monthly" | "pro_yearly" => "pro".to_string(),
+        _ => tier,
+    }
 }
 
 fn stripe_secret_key() -> Result<String, (axum::http::StatusCode, String)> {
@@ -1412,9 +1417,18 @@ fn stripe_secret_key() -> Result<String, (axum::http::StatusCode, String)> {
         .map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "STRIPE_SECRET_KEY is not set".to_string()))
 }
 
-fn stripe_pro_price_id() -> Result<String, (axum::http::StatusCode, String)> {
-    std::env::var("PRO_PRICE_ID")
-        .map_err(|_| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "PRO_PRICE_ID is not set".to_string()))
+fn stripe_pro_price_id(billing_cycle: &str) -> Result<String, (axum::http::StatusCode, String)> {
+    let env_var = match billing_cycle {
+        "yearly" => "PRO_YEARLY_PRICE_ID",
+        _ => "PRO_MONTHLY_PRICE_ID",
+    };
+
+    std::env::var(env_var).map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{} is not set", env_var),
+        )
+    })
 }
 
 async fn stripe_create_customer(
@@ -1458,9 +1472,15 @@ async fn stripe_create_customer(
 async fn stripe_create_subscription(
     customer_id: &str,
     workspace_id: uuid::Uuid,
+    plan: &str,
+    billing_cycle: &str,
 ) -> Result<String, (axum::http::StatusCode, String)> {
     let secret_key = stripe_secret_key()?;
-    let price_id = stripe_pro_price_id()?;
+    let price_id = if plan == "pro" {
+        stripe_pro_price_id(billing_cycle)?
+    } else {
+        stripe_pro_price_id("monthly")?
+    };
     let workspace_id_str = workspace_id.to_string();
     let client = reqwest::Client::new();
 
@@ -3297,6 +3317,7 @@ async fn get_workspace(
 #[derive(serde::Deserialize)]
 struct UpgradeWorkspaceRequest {
     plan: String,
+    billing_cycle: Option<String>,
 }
 
 async fn upgrade_workspace(
@@ -3308,6 +3329,17 @@ async fn upgrade_workspace(
     if plan.is_empty() {
         return Err((axum::http::StatusCode::BAD_REQUEST, "Plan is required".into()));
     }
+
+    let billing_cycle = match payload.billing_cycle.as_deref().unwrap_or("monthly").trim().to_lowercase().as_str() {
+        "monthly" => "monthly".to_string(),
+        "yearly" => "yearly".to_string(),
+        other => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("Unsupported billing cycle: {}", other),
+            ));
+        }
+    };
 
     let workspace = sqlx::query_as::<_, UpgradeWorkspaceRow>(
         r#"
@@ -3355,7 +3387,7 @@ async fn upgrade_workspace(
         }
     };
 
-    let stripe_subscription_id = stripe_create_subscription(&stripe_customer_id, workspace.id).await?;
+    let stripe_subscription_id = stripe_create_subscription(&stripe_customer_id, workspace.id, &plan, &billing_cycle).await?;
 
     let mut tx = state.pool.begin().await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -3432,6 +3464,7 @@ async fn upgrade_workspace(
         },
         "billing": {
             "requested_plan": plan,
+            "requested_billing_cycle": billing_cycle,
             "status": confirmed_status,
             "confirmed_plan": confirmed_plan,
             "stripe_customer_id": stripe_customer_id,

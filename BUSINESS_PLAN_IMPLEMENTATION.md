@@ -7,8 +7,9 @@ The Business plan ($49/month) is now implemented across the entire PulseGrid sta
 ### Environment Variables (for reference)
 
 ```bash
-# Existing - Pro plan price
-PRO_PRICE_ID=price_xxxxxxxxxxxx
+# Existing - Pro plan prices
+PRO_MONTHLY_PRICE_ID=price_xxxxxxxxxxxx
+PRO_YEARLY_PRICE_ID=price_yyyyyyyyyyyy
 
 # New - Business plan price (add to your .env)
 BUSINESS_PRICE_ID=price_yyyyyyyyyyyy

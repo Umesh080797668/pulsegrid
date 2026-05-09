@@ -3,3 +3,4 @@
 /.build/
 .env
 .DS_Store
+/config/pulsegrid-5b4e8-firebase-adminsdk-fbsvc-592e8d1601.json

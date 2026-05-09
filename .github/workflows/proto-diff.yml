@@ -12,7 +12,8 @@ on:
 
 jobs:
   check-proto-wrapper:
-    runs-on: ubuntu-latest
+    # Run on local/self-hosted runner to avoid GitHub-hosted minutes.
+    runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v4
       - name: Run proto wrapper check

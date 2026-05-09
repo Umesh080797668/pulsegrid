@@ -34,12 +34,16 @@ export class DailyDigestService {
       return;
     }
 
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    if (!serviceAccountJson) {
-      this.logger.warn('FIREBASE_SERVICE_ACCOUNT_JSON is not set; daily digests will skip push delivery');
+    const fs = require('fs');
+    const path = require('path');
+    const configPath = path.join(process.cwd(), 'api-gateway/config/pulsegrid-5b4e8-firebase-adminsdk-fbsvc-592e8d1601.json');
+    
+    if (!fs.existsSync(configPath)) {
+      this.logger.warn('Firebase config file not found at ' + configPath + '; daily digests will skip push delivery');
       return;
     }
 
+    const serviceAccountJson = fs.readFileSync(configPath, 'utf-8');
     const serviceAccount = JSON.parse(serviceAccountJson) as admin.ServiceAccount;
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     this.firebaseInitialized = true;

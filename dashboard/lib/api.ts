@@ -178,6 +178,7 @@ export type WorkspaceSubscriptionStatus = {
   };
   billing?: {
     requested_plan?: string;
+    requested_billing_cycle?: string;
     confirmed_plan?: string;
     status?: string;
     stripe_customer_id?: string | null;
@@ -189,6 +190,7 @@ export type WorkspaceSubscriptionStatus = {
 export async function upgradeWorkspacePlan(params: {
   workspaceId: string;
   plan: string;
+  billingCycle?: 'monthly' | 'yearly';
   token: string;
   setToken: (token: string) => void;
 }) {
@@ -199,7 +201,7 @@ export async function upgradeWorkspacePlan(params: {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan: params.plan }),
+      body: JSON.stringify({ plan: params.plan, billing_cycle: params.billingCycle }),
     },
   );
 }
