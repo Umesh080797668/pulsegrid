@@ -32,6 +32,7 @@ mod grpc;
 mod models;
 mod cache;
 mod approval;
+mod approval_state;
 use cache::LocalCache;
 #[allow(unused_imports)]
 use models::{
@@ -5930,9 +5931,9 @@ async fn approval_decision_handler(
 
     // Update flow run status and resume if approved
     let decision_status = if payload.decision.eq_ignore_ascii_case("approved") {
-        "pending_approval_approved"
+        approval_state::PENDING_APPROVAL_APPROVED
     } else {
-        "pending_approval_rejected"
+        approval_state::PENDING_APPROVAL_REJECTED
     };
 
     sqlx::query(

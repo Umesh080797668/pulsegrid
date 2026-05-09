@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS flow_environments (
 CREATE INDEX IF NOT EXISTS idx_flow_env_flow_environment
 ON flow_environments(flow_id, environment);
 
-ALTER TABLE flow_runs
+ALTER TABLE IF EXISTS flow_runs
 ADD COLUMN IF NOT EXISTS environment VARCHAR(32) NOT NULL DEFAULT 'production';
 
 CREATE INDEX IF NOT EXISTS idx_flow_runs_workspace_env_started

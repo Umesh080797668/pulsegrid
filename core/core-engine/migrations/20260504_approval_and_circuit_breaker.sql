@@ -1,15 +1,22 @@
 -- Add approval and circuit breaker state tracking
 -- Update flow_runs with approval and circuit breaker states
-ALTER TABLE flow_runs 
+ALTER TABLE IF EXISTS flow_runs 
 ADD COLUMN IF NOT EXISTS approval_state VARCHAR(20) DEFAULT NULL,
 ADD COLUMN IF NOT EXISTS current_step_index INT DEFAULT 0,
 ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ DEFAULT NULL,
 ADD COLUMN IF NOT EXISTS paused_reason VARCHAR(100) DEFAULT NULL;
 
 -- Add constraint for valid approval states
-ALTER TABLE flow_runs 
+ALTER TABLE IF EXISTS flow_runs 
 ADD CONSTRAINT valid_approval_state CHECK (
-    approval_state IS NULL OR approval_state IN ('pending_approval', 'approval_timeout', 'none')
+    approval_state IS NULL OR approval_state IN (
+        'pending_approval',
+        'pending_approval_approved',
+        'pending_approval_rejected',
+        'approval_timeout',
+        'paused_circuit_open',
+        'none'
+    )
 );
 
 -- Create multi-approver table

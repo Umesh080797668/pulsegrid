@@ -1,0 +1,21 @@
+name: Proto Diff Check
+
+on:
+  push:
+    paths:
+      - 'core/core-proto/proto/**'
+      - 'api-gateway/src/proto/**'
+  pull_request:
+    paths:
+      - 'core/core-proto/proto/**'
+      - 'api-gateway/src/proto/**'
+
+jobs:
+  check-proto-wrapper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run proto wrapper check
+        run: |
+          chmod +x ./scripts/check-proto-diff.sh
+          ./scripts/check-proto-diff.sh

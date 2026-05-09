@@ -11,6 +11,7 @@ use core_vm::CoreVm;
 use rhai::{Array as RhaiArray, Dynamic, Engine, Map as RhaiMap};
 use serde_json::{Value, json};
 use crate::approval::ApprovalManager;
+use crate::approval_state;
 use uuid::Uuid;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -229,17 +230,18 @@ impl FlowExecutor {
         sqlx::query(
             r#"
             UPDATE flow_runs
-            SET approval_state = 'paused_circuit_open', 
+            SET approval_state = $1, 
                 paused_at = NOW(),
-                paused_reason = $1,
+                paused_reason = $2,
                 updated_at = NOW()
             WHERE status = 'running' 
             AND flow_id IN (
                 SELECT DISTINCT flow_id FROM flow_connector_impact
-                WHERE connector_id = $2 AND workspace_id = $3
+                WHERE connector_id = $3 AND workspace_id = $4
             )
             "#,
         )
+        .bind(approval_state::PAUSED_CIRCUIT_OPEN)
         .bind(format!("Circuit breaker open for connector: {}", connector_id))
         .bind(connector_id)
         .bind(workspace_id)
@@ -260,17 +262,18 @@ impl FlowExecutor {
         sqlx::query(
             r#"
             UPDATE flow_runs
-            SET approval_state = 'none', 
+            SET approval_state = $1, 
                 paused_at = NULL,
                 paused_reason = NULL,
                 updated_at = NOW()
-            WHERE paused_reason LIKE $1
+            WHERE paused_reason LIKE $2
             AND flow_id IN (
                 SELECT DISTINCT flow_id FROM flow_connector_impact
-                WHERE connector_id = $2 AND workspace_id = $3
+                WHERE connector_id = $3 AND workspace_id = $4
             )
             "#,
         )
+        .bind(approval_state::NONE)
         .bind(format!("Circuit breaker open for connector: {}", connector_id))
         .bind(connector_id)
         .bind(workspace_id)
@@ -1704,10 +1707,11 @@ impl FlowExecutor {
         let approval_id: uuid::Uuid = row.id;
 
         // Mark flow_run as waiting for approval
-        let _ = sqlx::query!(
-            r#"UPDATE flow_runs SET approval_state = 'pending_approval' WHERE id = $1"#,
-            flow_run_id
+        let _ = sqlx::query(
+            r#"UPDATE flow_runs SET approval_state = $1 WHERE id = $2"#
         )
+        .bind(approval_state::PENDING_APPROVAL)
+        .bind(flow_run_id)
         .execute(&self.pool)
         .await; 
 
