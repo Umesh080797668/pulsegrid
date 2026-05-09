@@ -144,6 +144,72 @@ export class EventsGateway implements OnModuleInit, OnModuleDestroy {
     return { ok: true, workspaceId };
   }
 
+  /**
+   * Subscribe to live per-step streaming events during flow execution
+   * Emits step_io_update events with state transitions (queued/running/success/failed)
+   * for real-time debugger UX
+   */
+  @SubscribeMessage('subscribe_step_stream')
+  async handleSubscribeStepStream(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { flowId?: string; runId?: string },
+  ) {
+    const userId = client.data?.user?.id as string | undefined;
+    if (!userId) {
+      return { ok: false, error: 'Unauthorized websocket session' };
+    }
+
+    const flowId = body?.flowId?.trim();
+    const runId = body?.runId?.trim();
+
+    if (!flowId || !runId) {
+      return { ok: false, error: 'flowId and runId are required' };
+    }
+
+    // Join a room for this flow run's step stream
+    const stepStreamRoom = `step_stream:${flowId}:${runId}`;
+    client.join(stepStreamRoom);
+
+    this.logger.debug(`User ${userId} subscribed to step stream ${stepStreamRoom}`);
+    return { ok: true, flowId, runId, room: stepStreamRoom };
+  }
+
+  /**
+   * Unsubscribe from step streaming events
+   */
+  @SubscribeMessage('unsubscribe_step_stream')
+  handleUnsubscribeStepStream(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: { flowId?: string; runId?: string },
+  ) {
+    const flowId = body?.flowId?.trim();
+    const runId = body?.runId?.trim();
+
+    if (!flowId || !runId) {
+      return { ok: false, error: 'flowId and runId are required' };
+    }
+
+    const stepStreamRoom = `step_stream:${flowId}:${runId}`;
+    client.leave(stepStreamRoom);
+
+    return { ok: true, flowId, runId };
+  }
+
+  /**
+   * Broadcast a step streaming event to all connected clients watching this run
+   * Called by flow execution engine to push per-step I/O in real-time
+   * Message: 'step_io_update'
+   * Payload includes state_transition (queued/running/success/failed) for timeline
+   */
+  public broadcastStepUpdate(
+    flowId: string,
+    runId: string,
+    stepUpdate: Record<string, unknown>,
+  ): void {
+    const stepStreamRoom = `step_stream:${flowId}:${runId}`;
+    this.server.to(stepStreamRoom).emit('step_io_update', stepUpdate);
+  }
+
   private async startRelayLoop(): Promise<void> {
     while (this.shouldRun) {
       try {

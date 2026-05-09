@@ -469,9 +469,38 @@ export async function runFlowInEnvironment(params: {
   return (await response.json()) as Record<string, unknown>;
 }
 
+/**
+ * Step state transitions for real-time streaming UX
+ * Represents the step lifecycle during flow execution
+ */
+export type StepStateTransition = 'queued' | 'running' | 'success' | 'failed';
+
+/**
+ * Represents a single step's real-time streaming event during flow execution
+ * Pushed via WebSocket as steps progress through their lifecycle
+ */
+export type StepStreamingEvent = {
+  flow_id: string;
+  run_id: string;
+  step_id: string;
+  timestamp: string;
+  state_transition: StepStateTransition;
+  duration_ms?: number;
+  input?: unknown;
+  output?: unknown;
+  error?: string | null;
+  step_outputs_snapshot?: Record<string, unknown> | null;
+  trigger_event?: Record<string, unknown> | null;
+};
+
+/**
+ * Persisted step log for run history
+ * Includes both execution data and state transitions
+ */
 export type FlowRunStepLog = {
   step_id: string;
   status?: string;
+  state_transitions?: StepStateTransition[];
   duration_ms?: number | null;
   error?: string | null;
   input?: unknown;
@@ -479,6 +508,8 @@ export type FlowRunStepLog = {
   step_outputs_snapshot?: Record<string, unknown> | null;
   trigger_event?: Record<string, unknown> | null;
   replay?: boolean;
+  started_at?: string;
+  completed_at?: string | null;
 };
 
 export type FlowRunRecord = {
