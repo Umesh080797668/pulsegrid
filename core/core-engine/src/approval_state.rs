@@ -2,6 +2,7 @@
 pub const PENDING_APPROVAL: &str = "pending_approval";
 pub const PENDING_APPROVAL_APPROVED: &str = "pending_approval_approved";
 pub const PENDING_APPROVAL_REJECTED: &str = "pending_approval_rejected";
+#[allow(dead_code)]
 pub const APPROVAL_TIMEOUT: &str = "approval_timeout";
 pub const PAUSED_CIRCUIT_OPEN: &str = "paused_circuit_open";
 pub const NONE: &str = "none";

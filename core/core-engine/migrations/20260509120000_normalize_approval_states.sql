@@ -3,12 +3,12 @@ BEGIN;
 
 -- Map legacy 'pending_approval_approved' and 'pending_approval_rejected' to 'none'
 UPDATE flow_runs
-SET approval_state = 'none', updated_at = NOW()
+SET approval_state = 'none'
 WHERE approval_state IN ('pending_approval_approved', 'pending_approval_rejected');
 
 -- For any unexpected values, NULL them so they don't violate constraints
 UPDATE flow_runs
-SET approval_state = NULL, updated_at = NOW()
+SET approval_state = NULL
 WHERE approval_state IS NOT NULL
   AND approval_state NOT IN (
     'pending_approval',

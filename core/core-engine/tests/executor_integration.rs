@@ -8,6 +8,9 @@ mod models;
 #[path = "../src/approval.rs"]
 mod approval;
 #[allow(dead_code)]
+#[path = "../src/approval_state.rs"]
+mod approval_state;
+#[allow(dead_code)]
 #[path = "../src/workspace_vault.rs"]
 mod workspace_vault;
 
